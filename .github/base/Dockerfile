@@ -56,7 +56,7 @@ RUN git clone --depth=1 https://github.com/gpac/gpac.git /tmp/gpac && \
 # ==============================
 # 第二阶段：生产镜像
 # ==============================
-FROM mcr.microsoft.com/playwright:v1.56.1-noble
+FROM python:3.12-slim
 
 # ---- 设置环境变量 ----
 ENV TZ=Asia/Shanghai \
@@ -88,7 +88,7 @@ RUN mkdir -p /usr/local/bin && \
     chmod +x /usr/local/bin/N_m3u8DL-RE 
 
 # 安装 Playwright
-RUN pip install playwright && playwright install chromium
+# RUN pip install playwright && playwright install chromium
 
 # 拷贝 FFmpeg + MP4Box 二进制
 COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/bin/MP4Box /usr/local/bin/
