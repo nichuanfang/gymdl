@@ -71,10 +71,9 @@ var linkTypeMatchers = []linkTypeMatcher{
 
 	/* ---------------------- QQ 音乐 ---------------------- */
 	{
-		domains: []string{"y.qq.com", "c.y.qq.com", "m.y.qq.com"},
+		domains: []string{"y.qq.com", "c.y.qq.com", "m.y.qq.com", "i.y.qq.com"},
 		patterns: []*regexp.Regexp{
-			// 支持 song / album / playlist + id 参数 或 URL 路径形式
-			regexp.MustCompile(`^https?://(?:y\.qq\.com|c\.y\.qq\.com|m\.y\.qq\.com)/(?:song|album|playlist)(?:/[A-Za-z0-9_\-]+)?(?:\?id=\d+|/[\dA-Za-z]+)(?:&.*)?$`),
+			regexp.MustCompile(`^https?://(?:y\.qq\.com|c\d*\.y\.qq\.com|m\.y\.qq\.com|i\.y\.qq\.com)/(?:n/ryqq/(?:songDetail|albumDetail|playlist)|base/fcgi-bin/u|v8/playsong\.html)(?:[/?#].*)?$`),
 		},
 		handler: &music.QQMusicProcessor{},
 	},

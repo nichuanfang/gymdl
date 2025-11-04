@@ -43,3 +43,5 @@ config.json
 storage/*
 *.yaml
 !docker-compose-local.yml
+
+.cache/

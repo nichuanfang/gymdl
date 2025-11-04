@@ -53,33 +53,75 @@ RUN git clone --depth=1 https://github.com/gpac/gpac.git /tmp/gpac && \
     rm -rf /tmp/gpac /tmp/build
 
 # ==============================
-# 第二阶段：生产镜像
+# 第三阶段：安装 Playwright + Chromium
+# ==============================
+FROM golang:1.22-slim AS playwright-builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Shanghai \
+
+# 安装 Chromium 运行所需依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+    libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 \
+    libpangocairo-1.0-0 libgtk-3-0 libxshmfence1 unzip \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 安装 Playwright-go CLI + Chromium
+RUN go install github.com/playwright-community/playwright-go/cmd/playwright@latest \
+    && playwright install --with-deps chromium
+
+# ==============================
+# 第三阶段：生产镜像
 # ==============================
 FROM python:3.12-slim
 
-# 安装运行依赖
-RUN apt update && apt install -y --no-install-recommends \
-    tzdata ca-certificates wget curl tar unzip libicu-dev && \
-    ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
-    echo Asia/Shanghai > /etc/timezone && \
-    rm -rf /var/lib/apt/lists/* 
+# ---- 设置环境变量 ----
+ENV TZ=Asia/Shanghai \
+    DEBIAN_FRONTEND=noninteractive \
+    PATH="/root/.deno/bin:/app/data/bin:${PATH}"
 
-# 安装 Deno
+# ---- 安装运行依赖 ----
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata \
+    ca-certificates  \
+    curl \
+    tar \
+    unzip \
+    libicu-dev \
+    inetutils-telnet \
+    libnss3  \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpangocairo-1.0-0 \
+    libgtk-3-0 \
+    libxshmfence1 \
+ && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+ && echo Asia/Shanghai > /etc/timezone \
+ && python3 -m pip install --upgrade pip setuptools wheel \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ---- 安装 Deno ----
 RUN curl -fsSL https://deno.land/install.sh | sh && \
+    deno cache https://deno.land/std@0.224.0/version.ts && \
     rm -rf /root/.cache/deno
 
-# 安装 N_m3u8DL-RE
-WORKDIR /tmp
-RUN curl -L -o N_m3u8DL-RE.tar.gz \
-    https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.3.0-beta/N_m3u8DL-RE_v0.3.0-beta_linux-x64_20241203.tar.gz && \
-    tar -xzf N_m3u8DL-RE.tar.gz && \
-    mv N_m3u8DL-RE /usr/local/bin/N_m3u8DL-RE && \
-    chmod +x /usr/local/bin/N_m3u8DL-RE && \
-    rm -rf /tmp/*
+# ---- 安装 N_m3u8DL-RE ----
+RUN mkdir -p /usr/local/bin && \
+    curl -sL https://github.com/nilaoda/N_m3u8DL-RE/releases/download/v0.3.0-beta/N_m3u8DL-RE_v0.3.0-beta_linux-x64_20241203.tar.gz \
+      | tar -xz -C /usr/local/bin && \
+    chmod +x /usr/local/bin/N_m3u8DL-RE 
+
+# 拷贝 Playwright CLI + Chromium 缓存
+COPY --from=playwright-builder /root/go/bin/playwright /usr/local/bin/playwright
+COPY --from=playwright-builder /root/.cache/ms-playwright /root/.cache/ms-playwright
 
 # 拷贝 FFmpeg + MP4Box 二进制
 COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/bin/MP4Box /usr/local/bin/
-
-ENV TZ=Asia/Shanghai \
-    PATH="/root/.deno/bin:/app/data/bin:${PATH}" \
-    DEBIAN_FRONTEND=noninteractive
