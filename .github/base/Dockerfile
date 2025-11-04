@@ -112,7 +112,7 @@ RUN mkdir -p /usr/local/bin && \
 RUN pip install --no-cache-dir playwright
 
 # 安装浏览器内核 (Chromium, Firefox, WebKit)
-RUN playwright install chromium
+RUN playwright install chromium && rm -rf /root/.cache/ms-playwright
 
 # 拷贝 FFmpeg + MP4Box 二进制
 COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/ffprobe /usr/local/bin/MP4Box /usr/local/bin/
