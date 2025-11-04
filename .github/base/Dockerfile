@@ -55,7 +55,7 @@ RUN git clone --depth=1 https://github.com/gpac/gpac.git /tmp/gpac && \
 # ==============================
 # 第二阶段：安装 Playwright + Chromium
 # ==============================
-FROM golang:1.24 AS playwright-builder
+FROM mcr.microsoft.com/playwright:v1.48.0-jammy AS playwright-builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai
@@ -71,7 +71,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # 安装 Playwright-go CLI + Chromium
 RUN go install github.com/playwright-community/playwright-go/cmd/playwright@latest \
-    && playwright install --with-deps chromium
+    && playwright install chromium
 
 # ==============================
 # 第三阶段：生产镜像
