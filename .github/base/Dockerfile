@@ -55,7 +55,7 @@ RUN git clone --depth=1 https://github.com/gpac/gpac.git /tmp/gpac && \
 # ==============================
 # 第二阶段：安装 Playwright + Chromium
 # ==============================
-FROM golang:1.22-slim AS playwright-builder
+FROM golang:1.24 AS playwright-builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai
