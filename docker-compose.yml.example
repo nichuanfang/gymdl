@@ -31,8 +31,6 @@ services:
     environment:
       - PUID=1000
       - PGID=1000
-    volumes:
-      - ./data:/app
     expose:
       - 8000
     networks:
