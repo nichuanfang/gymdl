@@ -62,9 +62,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # 安装 Chromium 运行所需依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+    curl ca-certificates unzip \
+    libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
     libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 \
-    libpangocairo-1.0-0 libgtk-3-0 libxshmfence1 unzip \
+    libpangocairo-1.0-0 libgtk-3-0 libxshmfence1 \
+    fonts-unifont fonts-liberation fonts-dejavu-core fonts-freefont-ttf \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 安装 Playwright-go CLI + Chromium
@@ -83,26 +85,11 @@ ENV TZ=Asia/Shanghai \
 
 # ---- 安装运行依赖 ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tzdata \
-    ca-certificates  \
-    curl \
-    tar \
-    unzip \
-    libicu-dev \
-    inetutils-telnet \
-    libnss3  \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpangocairo-1.0-0 \
-    libgtk-3-0 \
-    libxshmfence1 \
+    tzdata ca-certificates curl tar unzip libicu-dev inetutils-telnet \
+    libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+    libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2 \
+    libpangocairo-1.0-0 libgtk-3-0 libxshmfence1 \
+    fonts-unifont fonts-liberation fonts-dejavu-core fonts-freefont-ttf \
  && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
  && echo Asia/Shanghai > /etc/timezone \
  && python3 -m pip install --upgrade pip setuptools wheel \
