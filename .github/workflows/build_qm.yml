@@ -1,6 +1,8 @@
 name: build_qm.yml
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 19 * * 0'
 
 jobs:
   docker:
