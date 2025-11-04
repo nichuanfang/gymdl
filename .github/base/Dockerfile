@@ -107,7 +107,7 @@ RUN mkdir -p /usr/local/bin && \
     chmod +x /usr/local/bin/N_m3u8DL-RE 
 
 # 拷贝 Playwright CLI + Chromium 缓存
-COPY --from=playwright-builder /root/go/bin/playwright /usr/local/bin/playwright
+COPY --from=playwright-builder /go/bin/playwright /usr/local/bin/playwright
 COPY --from=playwright-builder /root/.cache/ms-playwright /root/.cache/ms-playwright
 
 # 拷贝 FFmpeg + MP4Box 二进制
