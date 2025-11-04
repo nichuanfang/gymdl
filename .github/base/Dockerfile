@@ -56,7 +56,7 @@ RUN git clone --depth=1 https://github.com/gpac/gpac.git /tmp/gpac && \
 # ==============================
 # 第二阶段：生产镜像
 # ==============================
-FROM python:3.12-slim
+FROM mcr.microsoft.com/playwright:v1.56.1-noble
 
 # ---- 设置环境变量 ----
 ENV TZ=Asia/Shanghai \
