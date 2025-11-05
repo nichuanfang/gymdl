@@ -8,7 +8,7 @@ on:
 
 jobs:
   docker:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
@@ -52,7 +52,7 @@ jobs:
           fi
 
   build:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     needs: docker
     permissions:
       contents: write
