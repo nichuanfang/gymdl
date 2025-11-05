@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -256,4 +257,15 @@ func DownloadFile(url, filepath string) error {
 
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+// MakeSafeFileName 去掉非法字符，只保留字母、数字、空格和常见符号
+func MakeSafeFileName(name string) string {
+	invalidChars := regexp.MustCompile(`[<>:"/\\|?*]`)
+	cleaned := invalidChars.ReplaceAllString(name, "")
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" {
+		cleaned = "unknown"
+	}
+	return cleaned
 }

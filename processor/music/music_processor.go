@@ -94,21 +94,36 @@ func ReadMusicDir(tempDir string, tidyType string, p Processor) ([]*SongInfo, er
 	if err != nil {
 		return nil, fmt.Errorf("读取临时目录失败: %w", err)
 	}
+
 	songs := make([]*SongInfo, 0, len(files))
 	for _, f := range files {
-		// 目录跳过
+		// 跳过目录
 		if f.IsDir() {
 			continue
 		}
+
 		ext := strings.ToLower(filepath.Ext(f.Name()))
 		if utils.Contains(p.DecryptedExts(), ext) {
 			fullPath := filepath.Join(tempDir, f.Name())
+
 			song, err := ReadTags(fullPath)
-			// 嵌入默认标签
 			FillDefaultTags(fullPath, song)
+
 			if err != nil {
 				return nil, fmt.Errorf("处理文件 %s 失败: %w", f.Name(), err)
 			}
+
+			// 重命名逻辑 - 如果已有同名文件，直接覆盖
+			safeName := utils.MakeSafeFileName(song.SongName) + ext
+			newPath := filepath.Join(tempDir, safeName)
+
+			if f.Name() != safeName {
+				if err := os.Rename(fullPath, newPath); err != nil {
+					return nil, fmt.Errorf("重命名文件 %s 失败: %w", f.Name(), err)
+				}
+				fullPath = newPath
+			}
+
 			song.Tidy = tidyType
 			songs = append(songs, song)
 		}

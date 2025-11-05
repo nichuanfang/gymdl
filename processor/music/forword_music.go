@@ -1,10 +1,16 @@
 package music
 
 import (
+	"errors"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/processor"
+	"github.com/nichuanfang/gymdl/utils"
 )
 
 // 转发的音乐处理器
@@ -15,6 +21,7 @@ type ForwardProcessor struct {
 	cfg        *config.Config
 	tempDir    string
 	songs      []*SongInfo
+	FileName   string
 	AudioBytes []byte
 }
 
@@ -39,42 +46,117 @@ func (fp *ForwardProcessor) Songs() []*SongInfo {
 
 func (fp *ForwardProcessor) DownloadMusic(url string, callback func(string)) error {
 	// TODO implement me
-	panic("implement me")
+	err := processor.CreateOutputDir(fp.tempDir)
+	if err != nil {
+		return err
+	}
+	err = os.WriteFile(filepath.Join(fp.tempDir, fp.FileName), fp.AudioBytes, 0644)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (fp *ForwardProcessor) DownloadCommand(url string) *exec.Cmd {
-	// TODO implement me
-	panic("implement me")
+	return nil
 }
 
 func (fp *ForwardProcessor) BeforeTidy() error {
-	// TODO implement me
-	panic("implement me")
+	songs, err := ReadMusicDir(fp.tempDir, processor.DetermineTidyType(fp.cfg), fp)
+	if err != nil {
+		return err
+	}
+	// 更新元信息列表
+	fp.songs = songs
+	return nil
 }
 
 func (fp *ForwardProcessor) NeedRemoveDRM() bool {
-	// TODO implement me
-	panic("implement me")
+	return false
 }
 
 func (fp *ForwardProcessor) DRMRemove() error {
-	// TODO implement me
-	panic("implement me")
+	return nil
 }
 
 func (fp *ForwardProcessor) TidyMusic() error {
-	// TODO implement me
-	panic("implement me")
+	files, err := os.ReadDir(fp.tempDir)
+	if err != nil {
+		return fmt.Errorf("读取临时目录失败: %w", err)
+	}
+	if len(files) == 0 {
+		utils.WarnWithFormat("[Forward] ⚠️ 未找到待整理的音乐文件")
+		return errors.New("未找到待整理的音乐文件")
+	}
+
+	switch fp.cfg.Tidy.Mode {
+	case 1:
+		return fp.tidyToLocal(files)
+	case 2:
+		return fp.tidyToWebDAV(files, core.GlobalWebDAV)
+	default:
+		return fmt.Errorf("未知整理模式: %d", fp.cfg.Tidy.Mode)
+	}
 }
 
 func (fp *ForwardProcessor) EncryptedExts() []string {
-	// TODO implement me
-	panic("implement me")
+	return make([]string, 0)
 }
 
 func (fp *ForwardProcessor) DecryptedExts() []string {
-	// TODO implement me
-	panic("implement me")
+    return []string{".aac", ".m4a", ".flac",".mp3",".ogg"}
 }
 
 /* ------------------------ 拓展方法 ------------------------ */
+
+// 整理到本地
+func (fp *ForwardProcessor) tidyToLocal(files []os.DirEntry) error {
+	dstDir := fp.cfg.Tidy.DistDir
+	if dstDir == "" {
+		_ = processor.RemoveTempDir(fp.tempDir)
+		return errors.New("未配置输出目录")
+	}
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		_ = processor.RemoveTempDir(fp.tempDir)
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
+
+	for _, f := range files {
+		src := filepath.Join(fp.tempDir, f.Name())
+		dst := filepath.Join(dstDir, utils.SanitizeFileName(f.Name()))
+		err := processor.ToLocal(src, dst)
+		if err != nil {
+			return err
+		}
+		utils.InfoWithFormat("[Forward] 📦 已整理: %s", dst)
+	}
+	// 清除临时目录
+	err := processor.RemoveTempDir(fp.tempDir)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// 整理到webdav
+func (fp *ForwardProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.WebDAV) error {
+	if webdav == nil {
+		_ = processor.RemoveTempDir(fp.tempDir)
+		return errors.New("WebDAV 未初始化")
+	}
+
+	for _, f := range files {
+		filePath := filepath.Join(fp.tempDir, f.Name())
+		if err := webdav.Upload(filePath); err != nil {
+			utils.WarnWithFormat("[Forward] ☁️ 上传失败 %s: %v", f.Name(), err)
+			continue
+		}
+		utils.InfoWithFormat("[Forward] ☁️ 已上传: %s", f.Name())
+	}
+	// 清除临时目录
+	err := processor.RemoveTempDir(fp.tempDir)
+	if err != nil {
+		return err
+	}
+	return nil
+}

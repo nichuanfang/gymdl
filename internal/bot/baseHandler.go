@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"time"
 
 	"github.com/nichuanfang/gymdl/internal/bot/dispatch"
@@ -71,7 +72,7 @@ func HandleAudio(c tb.Context) error {
 	b := c.Bot()
 
 	// 初始提示
-	msg, _ := b.Send(user, "处理中...")
+	msg, _ := b.Send(user, "🎧 正在处理音频...")
 
 	// 创建会话对象
 	session := &dispatch.Session{
@@ -100,8 +101,10 @@ func HandleAudio(c tb.Context) error {
 		return err
 	}
 
-	// data 就是完整的音频字节数组，可以传给 processor
+	// data 完整的音频字节数组
 	processor.AudioBytes = data
+	// file.FilePath
+	processor.FileName = filepath.Base(file.FilePath)
 
 	// 处理音频
 	err = session.HandleMusic(processor)
