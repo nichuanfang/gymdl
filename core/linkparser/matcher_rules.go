@@ -73,7 +73,11 @@ var linkTypeMatchers = []linkTypeMatcher{
 	{
 		domains: []string{"y.qq.com", "c.y.qq.com", "m.y.qq.com", "i.y.qq.com"},
 		patterns: []*regexp.Regexp{
+			// 原来的匹配
 			regexp.MustCompile(`^https?://(?:y\.qq\.com|c\d*\.y\.qq\.com|m\.y\.qq\.com|i\.y\.qq\.com)/(?:n/ryqq/(?:songDetail|albumDetail|playlist)|base/fcgi-bin/u|v8/playsong\.html)(?:[/?#].*)?$`),
+
+			// 新增：匹配新版分享页（歌单、专辑、歌曲等）
+			regexp.MustCompile(`^https?://(?:i\.y\.qq\.com|m\.y\.qq\.com)/n2/m/share/details/(?:taoge|album|song)\.html(?:[/?#].*)?$`),
 		},
 		handler: &music.QQMusicProcessor{},
 	},
