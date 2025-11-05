@@ -42,17 +42,17 @@ type SongInfo struct {
 	SongName        string // 音乐名称
 	SongArtists     string // 艺术家
 	SongAlbum       string // 专辑
-	SongAlbumArtist string //专辑艺术家
+	SongAlbumArtist string // 专辑艺术家
 	FileExt         string // 格式
 	MusicSize       int64  // 音乐大小
 	Bitrate         string // 码率
 	Duration        int    // 时长
-	Url             string //下载地址
-	MusicPath       string //音乐文件路径
+	Url             string // 下载地址
+	MusicPath       string // 音乐文件路径
 	PicUrl          string // 封面图url
 	Lyric           string // 歌词
 	Year            int    // 年份
-	Genre           string //流派
+	Genre           string // 流派
 	Tidy            string // 入库方式(默认/webdav)
 }
 
@@ -83,6 +83,9 @@ var SoundcloudTempDir = filepath.Join(BaseTempDir, "Soundcloud")
 // Spotify临时文件夹
 var SpotifyTempDir = filepath.Join(BaseTempDir, "Spotify")
 
+// Forward临时文件夹
+var ForwardTempDir = filepath.Join(BaseTempDir, "Forward")
+
 /* ---------------------- 音乐下载相关业务函数 ---------------------- */
 
 // 读取音乐目录 返回元信息列表
@@ -93,7 +96,7 @@ func ReadMusicDir(tempDir string, tidyType string, p Processor) ([]*SongInfo, er
 	}
 	songs := make([]*SongInfo, 0, len(files))
 	for _, f := range files {
-		//目录跳过
+		// 目录跳过
 		if f.IsDir() {
 			continue
 		}
@@ -101,7 +104,7 @@ func ReadMusicDir(tempDir string, tidyType string, p Processor) ([]*SongInfo, er
 		if utils.Contains(p.DecryptedExts(), ext) {
 			fullPath := filepath.Join(tempDir, f.Name())
 			song, err := ReadTags(fullPath)
-			//嵌入默认标签
+			// 嵌入默认标签
 			FillDefaultTags(fullPath, song)
 			if err != nil {
 				return nil, fmt.Errorf("处理文件 %s 失败: %w", f.Name(), err)
@@ -174,25 +177,25 @@ func ReadTags(path string) (*SongInfo, error) {
 func FillDefaultTags(path string, info *SongInfo) {
 	updates := make(map[string][]string)
 
-	//默认专辑艺术家
+	// 默认专辑艺术家
 	if info.SongAlbumArtist == "" {
 		info.SongAlbumArtist = info.SongArtists
 		updates[taglib.AlbumArtist] = []string{info.SongAlbumArtist}
 	}
 
-	//默认年份
+	// 默认年份
 	if info.Year == 0 {
 		info.Year = 2020
 		updates[taglib.Date] = []string{strconv.Itoa(info.Year)}
 	}
 
-	//默认歌词
+	// 默认歌词
 	if info.Lyric == "" {
 		info.Lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
 		updates[taglib.Lyrics] = []string{info.Lyric}
 	}
 
-	//默认流派
+	// 默认流派
 	/*if info.Genre == "" {
 	    info.Genre = "缺省"
 	    updates[taglib.Genre] = []string{info.Genre}
@@ -272,7 +275,7 @@ func WriteTagsWithCoverURL(song *SongInfo, filePath string) error {
 		taglib.Lyrics:      {song.Lyric},
 	}
 
-	//opts传taglib.Clear则会清除原标签 传0则不清除
+	// opts传taglib.Clear则会清除原标签 传0则不清除
 	if err := taglib.WriteTags(filePath, tags, 0); err != nil {
 		return fmt.Errorf("write metadata failed for %s: %w", filePath, err)
 	}

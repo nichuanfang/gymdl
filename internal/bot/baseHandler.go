@@ -3,6 +3,7 @@ package bot
 import (
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/nichuanfang/gymdl/internal/bot/dispatch"
@@ -55,6 +56,55 @@ func HandleText(c tb.Context) error {
 	default:
 		err = errors.New(fmt.Sprintf("未知处理器类型: %v", expr))
 	}
+	if err != nil {
+		_ = c.Send(fmt.Sprintf("处理失败：%s", err.Error()))
+	}
+	return nil
+}
+
+// HandleAudio 处理音频
+func HandleAudio(c tb.Context) error {
+	file := &c.Message().Audio.File
+
+	text := c.Text()
+	user := c.Sender()
+	b := c.Bot()
+
+	// 初始提示
+	msg, _ := b.Send(user, "处理中...")
+
+	// 创建会话对象
+	session := &dispatch.Session{
+		Text:    text,
+		Context: c,
+		User:    user,
+		Bot:     b,
+		Msg:     msg,
+		Start:   time.Now(),
+		Cfg:     app.cfg,
+	}
+
+	processor := &music.ForwardProcessor{}
+	processor.Init(app.cfg)
+
+	// 获取文件流
+	closer, err := b.File(file)
+	if err != nil {
+		return err
+	}
+	defer closer.Close()
+
+	// 读取全部文件内容
+	data, err := io.ReadAll(closer)
+	if err != nil {
+		return err
+	}
+
+	// data 就是完整的音频字节数组，可以传给 processor
+	processor.AudioBytes = data
+
+	// 处理音频
+	err = session.HandleMusic(processor)
 	if err != nil {
 		_ = c.Send(fmt.Sprintf("处理失败：%s", err.Error()))
 	}
