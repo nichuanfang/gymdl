@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - v*
+      - 'v*.*.*'  
 
 jobs:
   docker:
@@ -26,20 +26,34 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            VERSION="latest"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
       - name: Build and Push Docker image
         run: |
           IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/gymdl
-          VERSION=${GITHUB_REF_NAME}
-          
-          echo "Building image: $IMAGE_NAME:$VERSION"
-          docker build -t $IMAGE_NAME:$VERSION -t $IMAGE_NAME:latest .
-          
-          
-          echo "Pushing image to GHCR..."
-          docker push $IMAGE_NAME:$VERSION
-          docker push $IMAGE_NAME:latest
+          if [ "${VERSION}" = "latest" ]; then
+            echo "Building image: $IMAGE_NAME:latest"
+            docker build -t $IMAGE_NAME:latest .
+            echo "Pushing latest image..."
+            docker push $IMAGE_NAME:latest
+          else
+            echo "Building image: $IMAGE_NAME:${VERSION} and latest"
+            docker build -t $IMAGE_NAME:${VERSION} -t $IMAGE_NAME:latest .
+            echo "Pushing versioned and latest images..."
+            docker push $IMAGE_NAME:${VERSION}
+            docker push $IMAGE_NAME:latest
+          fi
+
   build:
     runs-on: self-hosted
+    needs: docker
     permissions:
       contents: write
       packages: write
@@ -50,19 +64,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup
+      - name: Setup Go
         uses: actions/setup-go@v6
         with:
           go-version-file: "go.mod"
 
-      - name: Build
+      - name: Build release artifacts
         run: make release
 
       - name: Release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.VERSION }}
           files: release/*
           draft: false
-          generate_release_notes: true
-          body: |
-            * 自动化构建完成，更新日志稍后补充。
+          generate_release_notes: false
