@@ -55,6 +55,14 @@ ai:
   api_key: ""  # AI 服务的 API Key
   system_prompt: ""  # 默认系统提示词
 
+# qq音乐api配置
+qq_music_api:
+  enable: false #是否启用 如果不启用则默认使用洛雪api提供的服务
+  endpoint: "" #服务地址 
+  login_type: 0 #登录方式: 0未登录 1微信 2QQ
+  enable_sign: false #是否启用加密接口 加密接口会多一个解密操作 但是更安全
+  enable_cache: true #是否启用接口缓存
+
 # 附加配置
 additional_config:
   enable_cron: false  # 是否启用定时任务功能 只有开启此配置才会尝试同步cookie文件(重要)

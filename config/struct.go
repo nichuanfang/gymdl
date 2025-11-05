@@ -8,6 +8,7 @@ type Config struct {
 	Log              *LogConfig         `yaml:"log"`               // 日志配置
 	Telegram         *TelegramConfig    `yaml:"telegram"`          // telegram配置
 	AI               *AIConfig          `yaml:"ai"`                // AI配置
+	QQMusicApiConfig *QQMusicApiConfig  `yaml:"qq_music_api"`      //qq-music-api服务配置
 	AdditionalConfig *AdditionalConfig  `yaml:"additional_config"` // 附属配置
 	ProxyConfig      *ProxyConfig       `yaml:"proxy"`             // 代理配置
 }
@@ -63,6 +64,14 @@ type AIConfig struct {
 	Model        string `yaml:"model"`         // 使用的模型
 	ApiKey       string `yaml:"api_key"`       // apiKey
 	SystemPrompt string `yaml:"system_prompt"` // 默认系统提示词
+}
+
+type QQMusicApiConfig struct {
+	Enable      bool   `yaml:"enable"`       //是否启用 如果不启用则默认使用洛雪api提供的服务
+	Endpoint    string `yaml:"endpoint"`     //qm-api服务地址
+	LoginType   int    `yaml:"login_type"`   //qm-api登录方式: 0未登录 1微信 2QQ
+	EnableSign  bool   `yaml:"enable_sign"`  //是否启用加密接口 加密接口会多一个解密操作 但是更安全
+	EnableCache bool   `yaml:"enable_cache"` //是否启用接口缓存
 }
 
 type AdditionalConfig struct {
