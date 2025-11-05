@@ -1,8 +1,8 @@
 package utils
 
 import (
-	"encoding/json"
-	"fmt"
+    "encoding/json"
+    "fmt"
 )
 
 type FileInfo struct {

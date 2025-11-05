@@ -164,7 +164,7 @@ func VerifyMD5(filePath string, md5str string) (bool, error) {
 		return false, err
 	}
 	if hex.EncodeToString(md5hash.Sum(nil)) != md5str {
-		return false, fmt.Errorf(md5VerFailed)
+		return false, fmt.Errorf("failed:%v", md5VerFailed)
 	}
 	return true, nil
 }
@@ -180,10 +180,10 @@ func ParseMusicID(text string) (int, int) {
 	if len(musicUrl) != 0 {
 		var linkType int
 		if strings.Contains(musicUrl[0], "song") {
-			//单曲
+			// 单曲
 			linkType = 1
 		} else if strings.Contains(musicUrl[0], "playlist") {
-			//列表
+			// 列表
 			linkType = 2
 		}
 		ur, _ := url.Parse(musicUrl[0])
@@ -192,7 +192,7 @@ func ParseMusicID(text string) (int, int) {
 			return linkType, musicid
 		}
 	}
-	//降级
+	// 降级
 	musicid, _ := strconv.Atoi(linkTestMusic(messageText))
 	return 1, musicid
 }
