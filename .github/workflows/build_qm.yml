@@ -1,8 +1,6 @@
 name: build_qm.yml
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 19 * * 0'
 
 jobs:
   docker:
@@ -17,7 +15,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          repository: 'L-1124/QQMusicApi'
+          repository: 'nichuanfang/QQMusicApi'
           ref: main
           fetch-depth: 0
 
