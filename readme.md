@@ -22,19 +22,19 @@ CookieCloud 自动同步登录、WebDAV 上传、下载器监控、Telegram Bot 
 | 功能                                                   | 状态     |
 |------------------------------------------------------|--------|
 | 主流音乐平台：Apple Music、Spotify、YouTube Music、SoundCloud等 | ✅      |
-| 智能链接识别与解析                                              | ✅      |
-| CookieCloud 自动同步登录状态                                    | ✅      |
-| WebDAV 自动上传整理后的音乐                                     | ✅      |
-| Telegram Bot 控制下载、接收通知                                 | ✅      |
-| 定时任务调度（gocron）                                          | ✅      |
-| 重构模块                                                       | ✅ |
-| 下载器监控                                                     | ✅ |
-| 支持下载列表                                                   | ✅ |
-| 视频下载                                                      | 🚧 开发中 |
-| YoutubeMusic下载                                              | 🚧 开发中 |
-| 多个通知渠道                                                   | ⚠️ 规划中 |
-| AI 助手                                                       | ⚠️ 规划中 |
-| Web UI                                                        | ⚠️ 规划中 |
+| 智能链接识别与解析                                            | ✅      |
+| CookieCloud 自动同步登录状态                                 | ✅      |
+| WebDAV 自动上传整理后的音乐                                    | ✅      |
+| Telegram Bot 控制下载、接收通知                               | ✅      |
+| 定时任务调度（gocron）                                       | ✅      |
+| 重构模块                                                 | ✅      |
+| 下载器监控                                                | ✅      |
+| 支持下载列表                                               | ✅      |
+| 视频下载                                                 | 🚧 开发中 |
+| YoutubeMusic下载                                       | 🚧 开发中 |
+| 多个通知渠道                                               | ⚠️ 规划中 |
+| AI 助手                                                | ⚠️ 规划中 |
+| Web UI                                               | ⚠️ 规划中 |
 
 ---
 
@@ -104,7 +104,7 @@ telegram:
 
 # qq音乐api配置
 qq_music_api:
-  enable: false #是否启用 如果不启用则默认使用洛雪api提供的服务
+  enable: false #是否启用
   endpoint: "" #服务地址 
   login_type: 0 #登录方式: 0未登录 1微信 2QQ
   enable_sign: false #是否启用加密接口 加密接口会多一个解密操作 但是更安全
