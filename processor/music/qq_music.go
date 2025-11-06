@@ -64,6 +64,12 @@ type QQSong struct {
 	File       utils.QQFileInfo `json:"file"`
 }
 
+type QQPlaylist struct {
+	TotalSongNum int      `json:"total_song_num"`
+	SonglistSize int      `json:"songlist_size"`
+	Songlist     []QQSong `json:"songlist"`
+}
+
 // QQMusicAPI 自建qq-music-api
 type QQMusicAPI struct {
 	baseUrl string            // 服务端点
@@ -110,6 +116,9 @@ func (qm *QQMusicProcessor) Songs() []*SongInfo {
 func (qm *QQMusicProcessor) DownloadMusic(url string, callback func(string)) error {
 	var err error
 	var qqMusicLink QQMusicLink
+	if !qm.cfg.QQMusicApiConfig.Enable {
+		return errors.New("QQMusicApiConfig is disabled")
+	}
 	qqMusicLink, err = qm.parseQQMusicLink(url)
 	if err != nil {
 		return err
@@ -197,8 +206,124 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 
 	songData, err := qmApi.querySong(musicid)
 	if err != nil {
+		_ = processor.RemoveTempDir(qm.tempDir)
 		return err
 	}
+
+	mid := songData.Mid
+	fileMetadata, err := utils.ParseQQFileMetadate(songData.File, songData.Interval)
+	if err != nil {
+		_ = processor.RemoveTempDir(qm.tempDir)
+		return err
+	}
+
+	songUrl, err := qmApi.getSongUrl(mid, fileMetadata.Quality)
+	if err != nil {
+		_ = processor.RemoveTempDir(qm.tempDir)
+		return err
+	}
+
+	sanitizeFileName := qm.safeFileName(songData.Title, songData.Singer[0].Name, fileMetadata.Ext)
+	tempPath := filepath.Join(qm.tempDir, sanitizeFileName)
+
+	// 并发下载封面和歌词
+	var coverUrl string
+	var lyric string
+	var wg sync.WaitGroup
+	var coverErr, lyricErr error
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		coverUrl, coverErr = qmApi.queryCoverUrl(songData.Album.Mid)
+	}()
+	go func() {
+		defer wg.Done()
+		lyric, lyricErr = qmApi.queryLyric(mid)
+	}()
+
+	// 下载音乐文件（主任务）
+	if err := utils.DownloadFile(qmApi.client, songUrl, tempPath); err != nil {
+		_ = processor.RemoveTempDir(qm.tempDir)
+		return err
+	}
+
+	wg.Wait()
+	if coverErr != nil {
+		_ = processor.RemoveTempDir(qm.tempDir)
+		return coverErr
+	}
+	if lyricErr != nil {
+		_ = processor.RemoveTempDir(qm.tempDir)
+		return lyricErr
+	}
+
+	// 下载封面
+	tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, songData.Singer[0].Name))
+	if err := utils.DownloadFile(qmApi.client, coverUrl, tempCoverPath); err != nil {
+		_ = processor.RemoveTempDir(qm.tempDir)
+		return err
+	}
+
+	qmApi.updateSongInfo(qm, songData, fileMetadata, lyric)
+
+	utils.InfoWithFormat("[QQMusic] ✅ 下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
+	callback(fmt.Sprintf("下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond)))
+	return nil
+}
+
+// downloadSonglist 下载歌单
+func (qmApi *QQMusicAPI) downloadSonglist(qm *QQMusicProcessor, songlistId string, callback func(string)) error {
+	start := time.Now()
+	utils.DebugWithFormat("[QQMusic] 获取歌单数据: ID=%d", songlistId)
+	var err error
+	songlist, err := qmApi.querySonglist(songlistId)
+	if err != nil {
+		utils.ErrorWithFormat("[QQMusic] ❌ 获取歌单数据失败: %v", err)
+		_ = processor.RemoveTempDir(qm.tempDir)
+		return err
+	}
+	if len(songlist.Songlist) == 0 {
+		errMsg := "未获取到有效歌曲信息或歌曲无下载地址"
+		utils.ErrorWithFormat("[QQMusic] ❌ %s: 歌单ID=%d", errMsg, songlistId)
+		_ = processor.RemoveTempDir(qm.tempDir)
+		return errors.New(errMsg)
+	}
+	utils.InfoWithFormat("[QQMusic] 开始下载歌单: %s (%d首)", songlistId, len(songlist.Songlist))
+	callback(fmt.Sprintf("开始下载歌单: %s (%d首)", songlistId, len(songlist.Songlist)))
+	for index, song := range songlist.Songlist {
+		callback(fmt.Sprintf("开始下载第%d首...", index+1))
+		utils.InfoWithFormat("[QQMusic] 正在下载第%d首: %s", index+1, song.Title)
+		err = qmApi.downloadPlaylistSong(qm, song, callback)
+		if err != nil {
+			utils.ErrorWithFormat("[QQMusic] ❌ 歌单下载中断，第%d首下载失败: %v", index+1, err)
+			_ = processor.RemoveTempDir(qm.tempDir)
+			return err
+		}
+	}
+	utils.InfoWithFormat("[QQMusic] ✅ 歌单下载完成: %s （耗时 %v）", songlistId, time.Since(start).Truncate(time.Millisecond))
+	callback(fmt.Sprintf("歌单下载完成: %s （耗时 %v）", songlistId, time.Since(start).Truncate(time.Millisecond)))
+	return nil
+}
+
+// querySong 查询歌曲信息
+func (qmApi *QQMusicAPI) querySong(songId string) (QQSong, error) {
+	params := map[string]string{
+		"value": songId,
+	}
+	songRes, err := doGetRequestWithRetry[[]QQSong](qmApi, "/song/query_song", params, 3)
+	if err != nil {
+		return QQSong{}, err
+	}
+	if songRes == nil {
+		return QQSong{}, nil
+	}
+	return songRes.Data[0], nil
+}
+
+// downloadSong 单曲下载
+func (qmApi *QQMusicAPI) downloadPlaylistSong(qm *QQMusicProcessor, songData QQSong, callback func(string)) error {
+	start := time.Now()
 
 	mid := songData.Mid
 	fileMetadata, err := utils.ParseQQFileMetadate(songData.File, songData.Interval)
@@ -249,31 +374,29 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 		return err
 	}
 
-	qmApi.buildSongInfo(qm, songData, fileMetadata, lyric)
+	qmApi.updateSongInfo(qm, songData, fileMetadata, lyric)
 
 	utils.InfoWithFormat("[QQMusic] ✅ 下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
 	callback(fmt.Sprintf("下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond)))
 	return nil
 }
 
-// downloadSonglist 下载歌单
-func (qmApi *QQMusicAPI) downloadSonglist(qm *QQMusicProcessor, songlistId string, callback func(string)) error {
-	return nil
-}
-
-// querySong 查询歌曲信息
-func (qmApi *QQMusicAPI) querySong(songId string) (QQSong, error) {
+// querySong 查询歌单信息
+func (qmApi *QQMusicAPI) querySonglist(songlistId string) (QQPlaylist, error) {
 	params := map[string]string{
-		"value": songId,
+		"songlist_id": songlistId, //歌单id
+		"num":         "20",       //最多20首
+		"page":        "1",        //页码
+		"onlysong":    "true",     //是否仅返回歌曲信息
 	}
-	songRes, err := doGetRequestWithRetry[[]QQSong](qmApi, "/song/query_song", params, 3)
+	playlistRes, err := doGetRequestWithRetry[QQPlaylist](qmApi, "/songlist/get_detail", params, 3)
 	if err != nil {
-		return QQSong{}, err
+		return QQPlaylist{}, err
 	}
-	if songRes == nil {
-		return QQSong{}, nil
+	if playlistRes == nil {
+		return QQPlaylist{}, nil
 	}
-	return songRes.Data[0], nil
+	return playlistRes.Data, nil
 }
 
 // queryCoverUrl 获取专辑封面url
@@ -417,8 +540,8 @@ func (qmApi *QQMusicAPI) newGetRequest(path string, params map[string]string) (*
 	return req, nil
 }
 
-// buildSongInfo 更新元信息
-func (qmApi *QQMusicAPI) buildSongInfo(qm *QQMusicProcessor, data QQSong, fileMetadata utils.QQMusicFileMetadata, lyric string) {
+// updateSongInfo 更新元信息
+func (qmApi *QQMusicAPI) updateSongInfo(qm *QQMusicProcessor, data QQSong, fileMetadata utils.QQMusicFileMetadata, lyric string) {
 	tidyType := processor.DetermineTidyType(qm.cfg)
 	if lyric == "" {
 		lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
