@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
@@ -193,14 +194,13 @@ func (qmApi *QQMusicAPI) download(qm *QQMusicProcessor, musicLink QQMusicLink, c
 // downloadSong 单曲下载
 func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, callback func(string)) error {
 	start := time.Now()
-	var err error
+
 	songData, err := qmApi.querySong(musicid)
 	if err != nil {
 		return err
 	}
-	// ----------------------- 获取音乐基础信息 --------------------------
+
 	mid := songData.Mid
-	//解析部分元信息
 	fileMetadata, err := utils.ParseQQFileMetadate(songData.File, songData.Interval)
 	if err != nil {
 		return err
@@ -210,32 +210,45 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 	if err != nil {
 		return err
 	}
-	// -----------------------下载音乐文件--------------------------
-	// 音乐文件路径
+
 	sanitizeFileName := qm.safeFileName(songData.Title, songData.Singer[0].Name, fileMetadata.Ext)
 	tempPath := filepath.Join(qm.tempDir, sanitizeFileName)
-	err = utils.DownloadFile(qmApi.client, songUrl, tempPath)
-	if err != nil {
+
+	// 并发下载封面和歌词
+	var coverUrl string
+	var lyric string
+	var wg sync.WaitGroup
+	var coverErr, lyricErr error
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		coverUrl, coverErr = qmApi.queryCoverUrl(songData.Album.Mid)
+	}()
+	go func() {
+		defer wg.Done()
+		lyric, lyricErr = qmApi.queryLyric(mid)
+	}()
+
+	// 下载音乐文件（主任务）
+	if err := utils.DownloadFile(qmApi.client, songUrl, tempPath); err != nil {
 		return err
 	}
-	// -----------------------下载封面--------------------------
-	// 封面文件路径
-	sanitizeCoverFileName := qm.safeCoverFileName(songData.Title, songData.Singer[0].Name)
-	tempCoverPath := filepath.Join(qm.tempDir, sanitizeCoverFileName)
-	coverUrl, err := qmApi.queryCoverUrl(songData.Album.Mid)
-	if err != nil {
+
+	wg.Wait()
+	if coverErr != nil {
+		return coverErr
+	}
+	if lyricErr != nil {
+		return lyricErr
+	}
+
+	// 下载封面
+	tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, songData.Singer[0].Name))
+	if err := utils.DownloadFile(qmApi.client, coverUrl, tempCoverPath); err != nil {
 		return err
 	}
-	err = utils.DownloadFile(qmApi.client, coverUrl, tempCoverPath)
-	if err != nil {
-		return err
-	}
-	// -----------------------歌词--------------------------
-	lyric, err := qmApi.queryLyric(mid)
-	if err != nil {
-		return err
-	}
-	// -----------------------更新元信息--------------------------
+
 	qmApi.buildSongInfo(qm, songData, fileMetadata, lyric)
 
 	utils.InfoWithFormat("[QQMusic] ✅ 下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
@@ -253,9 +266,12 @@ func (qmApi *QQMusicAPI) querySong(songId string) (QQSong, error) {
 	params := map[string]string{
 		"value": songId,
 	}
-	songRes, err := doGetRequest[[]QQSong](qmApi, "/song/query_song", params)
+	songRes, err := doGetRequestWithRetry[[]QQSong](qmApi, "/song/query_song", params, 3)
 	if err != nil {
 		return QQSong{}, err
+	}
+	if songRes == nil {
+		return QQSong{}, nil
 	}
 	return songRes.Data[0], nil
 }
@@ -265,9 +281,12 @@ func (qmApi *QQMusicAPI) queryCoverUrl(albumMid string) (string, error) {
 	params := map[string]string{
 		"mid": albumMid,
 	}
-	coverRes, err := doGetRequest[string](qmApi, "/album/get_cover", params)
+	coverRes, err := doGetRequestWithRetry[string](qmApi, "/album/get_cover", params, 3)
 	if err != nil {
 		return "", err
+	}
+	if coverRes == nil {
+		return "", nil
 	}
 	return coverRes.Data, nil
 }
@@ -278,9 +297,12 @@ func (qmApi *QQMusicAPI) queryLyric(mid string) (string, error) {
 		"value": mid,
 		"trans": "false",
 	}
-	lyricRes, err := doGetRequest[map[string]string](qmApi, "/lyric/get_lyric", params)
+	lyricRes, err := doGetRequestWithRetry[map[string]string](qmApi, "/lyric/get_lyric", params, 3)
 	if err != nil {
 		return "", err
+	}
+	if lyricRes == nil {
+		return "", nil
 	}
 	return lyricRes.Data["lyric"], nil
 }
@@ -291,8 +313,11 @@ func (qmApi *QQMusicAPI) getSongUrl(songMid string, fileType string) (string, er
 		"mid":       songMid,
 		"file_type": fileType,
 	}
-	songUrlsRes, err := doGetRequest[map[string]string](qmApi, "/song/get_song_urls", params)
+	songUrlsRes, err := doGetRequestWithRetry[map[string]string](qmApi, "/song/get_song_urls", params, 3)
 	if err != nil {
+		return "", err
+	}
+	if songUrlsRes == nil {
 		return "", err
 	}
 	return songUrlsRes.Data[songMid], nil
@@ -326,6 +351,20 @@ func doGetRequest[T any](qm *QQMusicAPI, endpoint string, params map[string]stri
 	}
 
 	return result, nil
+}
+
+// doGetRequestWithRetry 带自动重试的请求
+func doGetRequestWithRetry[T any](qm *QQMusicAPI, endpoint string, params map[string]string, retries int) (*QQApiResponse[T], error) {
+	var lastErr error
+	for i := 0; i < retries; i++ {
+		res, err := doGetRequest[T](qm, endpoint, params)
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+		time.Sleep(time.Duration(i+1) * 500 * time.Millisecond)
+	}
+	return nil, lastErr
 }
 
 // initHeaders 初始化请求头
