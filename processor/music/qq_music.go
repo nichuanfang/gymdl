@@ -420,6 +420,9 @@ func (qmApi *QQMusicAPI) newGetRequest(path string, params map[string]string) (*
 // buildSongInfo 更新元信息
 func (qmApi *QQMusicAPI) buildSongInfo(qm *QQMusicProcessor, data QQSong, fileMetadata utils.QQMusicFileMetadata, lyric string) {
 	tidyType := processor.DetermineTidyType(qm.cfg)
+	if lyric == "" {
+		lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
+	}
 	//组装元信息
 	songInfo := &SongInfo{
 		SongName:        data.Title,
