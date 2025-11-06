@@ -26,7 +26,7 @@ type QQMusicProcessor struct {
 	tempDir     string
 	songs       []*SongInfo
 	apiProvider QQApiProvider // api提供者
-	client      *http.Client  //http请求池
+	client      *http.Client  // http请求池
 }
 
 type QQMusicLink struct {
@@ -49,11 +49,12 @@ type QQSong struct {
 	Mid    string `json:"mid"`
 	Name   string `json:"name"`
 	Title  string `json:"title"`
-	Singer struct {
+	Singer []struct {
 		Name string `json:"name"`
 	} `json:"singer"`
 	Album struct {
 		Name string `json:"name"`
+		Mid  string `json:"mid"`
 	} `json:"album"`
 	Interval   int              `json:"interval"`
 	IsOnly     int              `json:"isonly"`
@@ -206,15 +207,14 @@ func (qm *QQMusicAPI) download(musicLink QQMusicLink, tempDir string, callback f
 // download 下载单曲
 func (qm *QQMusicAPI) downloadSong(musicid string, tempDir string, callback func(string)) error {
 	start := time.Now()
-	songRes, err := qm.querySong(musicid)
+	songData, err := qm.querySong(musicid)
 	if err != nil {
 		return err
 	}
-	songData := songRes.Data
 	// 获取mid
-	mid := songData[0].Mid
+	mid := songData.Mid
 	// 获取最高音质的文件类型
-	fileData, err := json.Marshal(songData[0].File)
+	fileData, err := json.Marshal(songData.File)
 	if err != nil {
 		return err
 	}
@@ -222,18 +222,25 @@ func (qm *QQMusicAPI) downloadSong(musicid string, tempDir string, callback func
 	if err != nil {
 		return err
 	}
+	// ----------------下载音乐------------------------
 	// 获取下载链接
 	songUrl, err := qm.getSongUrl(mid, string(quality))
 	if err != nil {
 		return err
 	}
-	sanitizeFileName := utils.SanitizeFileName(songData[0].Title)
+	sanitizeFileName := utils.SanitizeFileName(songData.Title)
 	tempPath := filepath.Join(tempDir, sanitizeFileName+ext)
 	// 下载单曲
 	err = utils.DownloadFile(songUrl, tempPath)
 	if err != nil {
 		return err
 	}
+	// ----------------下载封面图片------------------------
+
+	// ----------------获取歌词------------------------
+
+	// ----------------更新歌曲元信息------------------------
+
 	utils.InfoWithFormat("[QQMusic] ✅ 下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
 	callback(fmt.Sprintf("下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond)))
 	return nil
@@ -245,34 +252,40 @@ func (qm *QQMusicAPI) downloadSonglist(url string, tempDir string, callback func
 }
 
 // querySong 查询歌曲信息
-func (qm *QQMusicAPI) querySong(songId string) (*QQApiResponse[[]QQSong], error) {
+func (qm *QQMusicAPI) querySong(songId string) (QQSong, error) {
 	params := map[string]string{
 		"value": songId,
 	}
-	request, err := qm.newGetRequest("/song/query_song", params)
+	songRes, err := doGetRequest[[]QQSong](qm, "/song/query_song", params)
 	if err != nil {
-		return nil, err
+		return QQSong{}, err
 	}
-	// 发送请求
-	resp, err := qm.client.Do(request)
+	return songRes.Data[0], nil
+}
+
+// querySong 查询专辑封面url
+func (qm *QQMusicAPI) queryCoverUrl(albumMid string) (string, error) {
+	params := map[string]string{
+		"mid": albumMid,
+	}
+	coverRes, err := doGetRequest[string](qm, "/album/get_cover", params)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	defer resp.Body.Close()
+	return coverRes.Data, nil
+}
 
-	// 读取响应内容
-	body, err := io.ReadAll(resp.Body)
+// querySong 查询歌词
+func (qm *QQMusicAPI) queryLyric(mid string) (string, error) {
+	params := map[string]string{
+		"value": mid,
+		"trans": "false",
+	}
+	lyricRes, err := doGetRequest[map[string]string](qm, "/lyric/get_lyric", params)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	songRes := &QQApiResponse[[]QQSong]{}
-	_ = json.Unmarshal(body, songRes)
-
-	if songRes.Code != http.StatusOK {
-		return nil, errors.New(songRes.Message)
-	}
-
-	return songRes, nil
+	return lyricRes.Data["lyric"], nil
 }
 
 // querySong 查询歌曲下载链接
@@ -281,30 +294,41 @@ func (qm *QQMusicAPI) getSongUrl(songMid string, fileType string) (string, error
 		"mid":       songMid,
 		"file_type": fileType,
 	}
-	request, err := qm.newGetRequest("/song/get_song_urls", params)
+	songUrlsRes, err := doGetRequest[map[string]string](qm, "/song/get_song_urls", params)
 	if err != nil {
 		return "", err
 	}
-	// 发送请求
+	return songUrlsRes.Data[songMid], nil
+}
+
+// doGetRequest 发送QQMusicApi请求
+func doGetRequest[T any](qm *QQMusicAPI, endpoint string, params map[string]string) (*QQApiResponse[T], error) {
+	request, err := qm.newGetRequest(endpoint, params)
+	if err != nil {
+		return nil, err
+	}
+
 	resp, err := qm.client.Do(request)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	// 读取响应内容
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
-	}
-	songUrlsRes := &QQApiResponse[map[string]string]{}
-	_ = json.Unmarshal(body, songUrlsRes)
-
-	if songUrlsRes.Code != http.StatusOK {
-		return "", errors.New(songUrlsRes.Message)
+		return nil, err
 	}
 
-	return songUrlsRes.Data[songMid], nil
+	result := &QQApiResponse[T]{}
+	if err := json.Unmarshal(body, result); err != nil {
+		return nil, err
+	}
+
+	if result.Code != http.StatusOK {
+		return nil, errors.New(result.Message)
+	}
+
+	return result, nil
 }
 
 // initHeaders 初始化请求头
