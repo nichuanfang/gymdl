@@ -7,12 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/utils"
 )
@@ -125,12 +127,16 @@ func (qm *QQMusicProcessor) DownloadMusic(url string, callback func(string)) err
 }
 
 func (qm *QQMusicProcessor) DownloadCommand(url string) *exec.Cmd {
-	// TODO implement me
 	return nil
 }
 
 func (qm *QQMusicProcessor) BeforeTidy() error {
-	// TODO implement me
+	songs, err := ReadMusicDir(qm.tempDir, processor.DetermineTidyType(qm.cfg), qm)
+	if err != nil {
+		return err
+	}
+	// 更新元信息列表
+	qm.songs = songs
 	return nil
 }
 
@@ -143,8 +149,23 @@ func (qm *QQMusicProcessor) DRMRemove() error {
 }
 
 func (qm *QQMusicProcessor) TidyMusic() error {
-	// TODO implement me
-	return nil
+	files, err := os.ReadDir(qm.tempDir)
+	if err != nil {
+		return fmt.Errorf("读取临时目录失败: %w", err)
+	}
+	if len(files) == 0 {
+		utils.WarnWithFormat("[QQMusic] ⚠️ 未找到待整理的音乐文件")
+		return errors.New("未找到待整理的音乐文件")
+	}
+
+	switch qm.cfg.Tidy.Mode {
+	case 1:
+		return qm.tidyToLocal(files)
+	case 2:
+		return qm.tidyToWebDAV(files, core.GlobalWebDAV)
+	default:
+		return fmt.Errorf("未知整理模式: %d", qm.cfg.Tidy.Mode)
+	}
 }
 
 func (qm *QQMusicProcessor) EncryptedExts() []string {
@@ -172,6 +193,7 @@ func (qm *QQMusicAPI) download(musicLink QQMusicLink, tempDir string, callback f
 
 // download 下载单曲
 func (qm *QQMusicAPI) downloadSong(musicid string, tempDir string, callback func(string)) error {
+	start := time.Now()
 	songRes, err := qm.querySong(musicid)
 	if err != nil {
 		return err
@@ -200,6 +222,8 @@ func (qm *QQMusicAPI) downloadSong(musicid string, tempDir string, callback func
 	if err != nil {
 		return err
 	}
+	utils.InfoWithFormat("[QQMusic] ✅ 下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
+	callback(fmt.Sprintf("下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond)))
 	return nil
 }
 
@@ -438,4 +462,65 @@ func getFirstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// 整理到本地
+func (qm *QQMusicProcessor) tidyToLocal(files []os.DirEntry) error {
+	dstDir := qm.cfg.Tidy.DistDir
+	if dstDir == "" {
+		_ = processor.RemoveTempDir(qm.tempDir)
+		return errors.New("未配置输出目录")
+	}
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		_ = processor.RemoveTempDir(qm.tempDir)
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
+
+	for _, f := range files {
+		if !utils.FilterMusicFile(f, qm.EncryptedExts(), qm.DecryptedExts()) {
+			utils.DebugWithFormat("[QQMusic] 跳过非音乐文件: %s", f.Name())
+			continue
+		}
+		src := filepath.Join(qm.tempDir, f.Name())
+		dst := filepath.Join(dstDir, utils.SanitizeFileName(f.Name()))
+		err := processor.ToLocal(src, dst)
+		if err != nil {
+			return err
+		}
+		utils.InfoWithFormat("[QQMusic] 📦 已整理: %s", dst)
+	}
+	// 清除临时目录
+	err := processor.RemoveTempDir(qm.tempDir)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// 整理到webdav
+func (qm *QQMusicProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.WebDAV) error {
+	if webdav == nil {
+		_ = processor.RemoveTempDir(qm.tempDir)
+		return errors.New("WebDAV 未初始化")
+	}
+
+	for _, f := range files {
+		if !utils.FilterMusicFile(f, qm.EncryptedExts(), qm.DecryptedExts()) {
+			utils.DebugWithFormat("[QQMusic] 跳过非音乐文件: %s", f.Name())
+			continue
+		}
+
+		filePath := filepath.Join(qm.tempDir, f.Name())
+		if err := webdav.Upload(filePath); err != nil {
+			utils.WarnWithFormat("[QQMusic] ☁️ 上传失败 %s: %v", f.Name(), err)
+			continue
+		}
+		utils.InfoWithFormat("[QQMusic] ☁️ 已上传: %s", f.Name())
+	}
+	// 清除临时目录
+	err := processor.RemoveTempDir(qm.tempDir)
+	if err != nil {
+		return err
+	}
+	return nil
 }
