@@ -301,3 +301,16 @@ func ParseNCMYear(detailData *types.SongsDetailData) int {
 	t := time.Unix(publishTime/1000, 0)
 	return t.Year()
 }
+
+// ParseNCMYear 解析年代 2020-10-16
+func ParseQQYear(timePublic string) int {
+	if len(timePublic) < 4 {
+		return 0
+	}
+	yearStr := timePublic[:4]
+	year, err := strconv.Atoi(yearStr)
+	if err != nil {
+		return 0
+	}
+	return year
+}

@@ -1,10 +1,11 @@
 package utils
 
 import (
-	"encoding/json"
 	"fmt"
+	"strings"
 )
 
+// QQFileInfo QQ 音乐接口返回的文件大小信息
 type QQFileInfo struct {
 	SizeFlac   int64   `json:"size_flac"`
 	Size192Ogg int64   `json:"size_192ogg"`
@@ -17,6 +18,16 @@ type QQFileInfo struct {
 	SizeNew    []int64 `json:"size_new"`
 }
 
+// QQMusicFileMetadata 返回的文件元信息
+type QQMusicFileMetadata struct {
+	Quality   string // 音质类型（最高可用）
+	FileExt   string // 文件扩展名(带 .)
+	Ext       string //扩展(不带 .)
+	MusicSize int64  // 文件大小（字节）
+	Bitrate   int    // 比特率（kbps，无单位）
+}
+
+// QQSongFileType 音乐文件类型定义
 type QQSongFileType string
 
 const (
@@ -46,13 +57,10 @@ var fileExtensionMap = map[QQSongFileType]string{
 	ACC_48:  ".m4a",
 }
 
-// GetBestQuality 返回最高可用音质类型和对应文件后缀
-func GetBestQuality(data []byte) (QQSongFileType, string, error) {
-	file := &QQFileInfo{}
-	if err := json.Unmarshal(data, file); err != nil {
-		return "", "", err
-	}
+// GetBestQuality 根据 QQ 音乐文件信息返回最高可用音质
+func ParseQQFileMetadate(file QQFileInfo, interval int) (QQMusicFileMetadata, error) {
 
+	// 各音质文件存在性与大小映射
 	exists := map[QQSongFileType]int64{
 		FLAC:    file.SizeFlac,
 		OGG_640: getArrayValue(file.SizeNew, 5),
@@ -66,6 +74,7 @@ func GetBestQuality(data []byte) (QQSongFileType, string, error) {
 		ACC_48:  file.Size48Aac,
 	}
 
+	// 音质优先级排序
 	order := []QQSongFileType{
 		FLAC, OGG_640, OGG_320, OGG_192,
 		MP3_320, ACC_192, OGG_96, MP3_128,
@@ -73,18 +82,36 @@ func GetBestQuality(data []byte) (QQSongFileType, string, error) {
 	}
 
 	for _, t := range order {
-		if exists[t] > 0 {
+		size := exists[t]
+		if size > 0 {
 			ext := fileExtensionMap[t]
-			return t, ext, nil
+			bitrate := calculateBitrate(size, interval)
+			return QQMusicFileMetadata{
+				Quality:   string(t),
+				FileExt:   ext,
+				Ext:       strings.TrimPrefix(ext, "."),
+				MusicSize: size,
+				Bitrate:   bitrate,
+			}, nil
 		}
 	}
 
-	return "", "", fmt.Errorf("未找到可用音质")
+	return QQMusicFileMetadata{}, fmt.Errorf("未找到可用音质")
 }
 
+// getArrayValue 安全读取数组元素
 func getArrayValue(arr []int64, index int) int64 {
 	if index >= 0 && index < len(arr) {
 		return arr[index]
 	}
 	return 0
+}
+
+// calculateBitrate 根据文件大小与时长计算比特率（kbps）
+func calculateBitrate(sizeBytes int64, durationSec int) int {
+	if durationSec <= 0 || sizeBytes <= 0 {
+		return 0
+	}
+	// sizeBytes * 8 / durationSec / 1000
+	return int((sizeBytes * 8) / int64(durationSec) / 1000)
 }
