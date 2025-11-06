@@ -383,7 +383,7 @@ func (qmApi *QQMusicAPI) buildSongInfo(qm *QQMusicProcessor, data QQSong, fileMe
 	tidyType := processor.DetermineTidyType(qm.cfg)
 	//组装元信息
 	songInfo := &SongInfo{
-		SongName:        data.Name,
+		SongName:        data.Title,
 		SongArtists:     data.Singer[0].Name,
 		SongAlbum:       data.Album.Name,
 		SongAlbumArtist: data.Singer[0].Name,
