@@ -26,6 +26,7 @@ type QQMusicProcessor struct {
 	tempDir     string
 	songs       []*SongInfo
 	apiProvider QQApiProvider // api提供者
+	client      *http.Client  //http请求池
 }
 
 type QQMusicLink struct {
@@ -68,6 +69,7 @@ type QQSong struct {
 type QQMusicAPI struct {
 	baseUrl string            // 服务端点
 	headers map[string]string // 请求头
+	client  *http.Client
 }
 
 // LXMusicAPI 洛雪api
@@ -76,6 +78,7 @@ type LXMusicAPI struct {
 	apiVersion string            // 接口版本
 	key        string            // 密钥
 	headers    map[string]string // 请求头
+	client     *http.Client
 }
 
 // 已知需要重定向的域名列表
@@ -88,15 +91,24 @@ func (qm *QQMusicProcessor) Init(cfg *config.Config) {
 	qm.cfg = cfg
 	qm.songs = make([]*SongInfo, 0)
 	qm.tempDir = processor.BuildOutputDir(QQTempDir)
+	qm.client = &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	if cfg.QQMusicApiConfig.Enable {
 		qmApi := &QQMusicAPI{
 			baseUrl: cfg.QQMusicApiConfig.Endpoint,
+			client:  qm.client,
 		}
 		qmApi.initHeaders(cfg)
 		qm.apiProvider = qmApi
 	} else {
 		// 默认启用洛雪
-		qm.apiProvider = &LXMusicAPI{}
+		qm.apiProvider = &LXMusicAPI{
+			client: qm.client,
+		}
 	}
 }
 
@@ -242,8 +254,7 @@ func (qm *QQMusicAPI) querySong(songId string) (*QQApiResponse[[]QQSong], error)
 		return nil, err
 	}
 	// 发送请求
-	client := &http.Client{}
-	resp, err := client.Do(request)
+	resp, err := qm.client.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -275,8 +286,7 @@ func (qm *QQMusicAPI) getSongUrl(songMid string, fileType string) (string, error
 		return "", err
 	}
 	// 发送请求
-	client := &http.Client{}
-	resp, err := client.Do(request)
+	resp, err := qm.client.Do(request)
 	if err != nil {
 		return "", err
 	}
@@ -300,7 +310,7 @@ func (qm *QQMusicAPI) getSongUrl(songMid string, fileType string) (string, error
 // initHeaders 初始化请求头
 func (qm *QQMusicAPI) initHeaders(cfg *config.Config) {
 	headers := map[string]string{
-		"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+		"User-Agent": UserAgent,
 		"Referer":    "https://y.qq.com/",
 	}
 	if cfg.QQMusicApiConfig.EnableSign {
@@ -397,22 +407,53 @@ func (qm *QQMusicProcessor) parseQQMusicLink(raw string) (QQMusicLink, error) {
 	return result, nil
 }
 
-// getRedirectLocation 获取短链的重定向地址（Location）
+// getRedirectLocation 获取重定向的Location
 func (qm *QQMusicProcessor) getRedirectLocation(link string) (string, error) {
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	const maxRedirects = 10
+	currentURL := link
+
+	for i := 0; i < maxRedirects; i++ {
+		req, err := http.NewRequest("GET", currentURL, nil)
+		if err != nil {
+			return "", err
+		}
+
+		req.Header.Set("User-Agent", UserAgent)
+		resp, err := qm.client.Do(req)
+		if err != nil {
+			return "", err
+		}
+
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		// 如果不是重定向，返回当前 URL
+		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+			return currentURL, nil
+		}
+
+		loc := resp.Header.Get("Location")
+		if loc == "" {
+			return currentURL, nil
+		}
+
+		// 处理相对路径
+		u, err := url.Parse(loc)
+		if err != nil {
+			return "", err
+		}
+		if !u.IsAbs() {
+			base, err := url.Parse(currentURL)
+			if err != nil {
+				return "", err
+			}
+			loc = base.ResolveReference(u).String()
+		}
+
+		currentURL = loc
 	}
 
-	resp, err := client.Get(link)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	return resp.Header.Get("Location"), nil
+	return "", fmt.Errorf("too many redirects (> %d)", maxRedirects)
 }
 
 // tryParseDirect 尝试直接从 URL 提取 ID 和类型
