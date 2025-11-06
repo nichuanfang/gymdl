@@ -1,11 +1,11 @@
 package utils
 
 import (
-    "encoding/json"
-    "fmt"
+	"encoding/json"
+	"fmt"
 )
 
-type FileInfo struct {
+type QQFileInfo struct {
 	SizeFlac   int64   `json:"size_flac"`
 	Size192Ogg int64   `json:"size_192ogg"`
 	Size96Ogg  int64   `json:"size_96ogg"`
@@ -17,42 +17,43 @@ type FileInfo struct {
 	SizeNew    []int64 `json:"size_new"`
 }
 
-type SongData struct {
-	File FileInfo `json:"file"`
-}
-
-type Root struct {
-	Data []SongData `json:"data"`
-}
-
-type SongFileType string
+type QQSongFileType string
 
 const (
-	FLAC    SongFileType = "FLAC"
-	OGG_640 SongFileType = "OGG_640"
-	OGG_320 SongFileType = "OGG_320"
-	OGG_192 SongFileType = "OGG_192"
-	OGG_96  SongFileType = "OGG_96"
-	MP3_320 SongFileType = "MP3_320"
-	MP3_128 SongFileType = "MP3_128"
-	ACC_192 SongFileType = "ACC_192"
-	ACC_96  SongFileType = "ACC_96"
-	ACC_48  SongFileType = "ACC_48"
+	FLAC    QQSongFileType = "FLAC"
+	OGG_640 QQSongFileType = "OGG_640"
+	OGG_320 QQSongFileType = "OGG_320"
+	OGG_192 QQSongFileType = "OGG_192"
+	OGG_96  QQSongFileType = "OGG_96"
+	MP3_320 QQSongFileType = "MP3_320"
+	MP3_128 QQSongFileType = "MP3_128"
+	ACC_192 QQSongFileType = "ACC_192"
+	ACC_96  QQSongFileType = "ACC_96"
+	ACC_48  QQSongFileType = "ACC_48"
 )
 
-func GetBestQuality(data []byte) (SongFileType, error) {
-	var root Root
-	if err := json.Unmarshal(data, &root); err != nil {
-		return "", err
+// 文件后缀映射表
+var fileExtensionMap = map[QQSongFileType]string{
+	FLAC:    ".flac",
+	OGG_640: ".ogg",
+	OGG_320: ".ogg",
+	OGG_192: ".ogg",
+	OGG_96:  ".ogg",
+	MP3_320: ".mp3",
+	MP3_128: ".mp3",
+	ACC_192: ".m4a",
+	ACC_96:  ".m4a",
+	ACC_48:  ".m4a",
+}
+
+// GetBestQuality 返回最高可用音质类型和对应文件后缀
+func GetBestQuality(data []byte) (QQSongFileType, string, error) {
+	file := &QQFileInfo{}
+	if err := json.Unmarshal(data, file); err != nil {
+		return "", "", err
 	}
 
-	if len(root.Data) == 0 {
-		return "", fmt.Errorf("响应中没有 data 数组")
-	}
-
-	file := root.Data[0].File
-
-	exists := map[SongFileType]int64{
+	exists := map[QQSongFileType]int64{
 		FLAC:    file.SizeFlac,
 		OGG_640: getArrayValue(file.SizeNew, 5),
 		OGG_320: getArrayValue(file.SizeNew, 3),
@@ -65,7 +66,7 @@ func GetBestQuality(data []byte) (SongFileType, error) {
 		ACC_48:  file.Size48Aac,
 	}
 
-	order := []SongFileType{
+	order := []QQSongFileType{
 		FLAC, OGG_640, OGG_320, OGG_192,
 		MP3_320, ACC_192, OGG_96, MP3_128,
 		ACC_96, ACC_48,
@@ -73,11 +74,12 @@ func GetBestQuality(data []byte) (SongFileType, error) {
 
 	for _, t := range order {
 		if exists[t] > 0 {
-			return t, nil
+			ext := fileExtensionMap[t]
+			return t, ext, nil
 		}
 	}
 
-	return "", fmt.Errorf("未找到可用音质")
+	return "", "", fmt.Errorf("未找到可用音质")
 }
 
 func getArrayValue(arr []int64, index int) int64 {

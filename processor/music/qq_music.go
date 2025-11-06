@@ -2,6 +2,7 @@ package music
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/processor"
-	"github.com/nichuanfang/gymdl/processor/music/struct"
 	"github.com/nichuanfang/gymdl/utils"
 )
 
@@ -23,30 +23,57 @@ type QQMusicProcessor struct {
 	cfg         *config.Config
 	tempDir     string
 	songs       []*SongInfo
-	apiProvider QQApiProvider //api提供者
+	apiProvider QQApiProvider // api提供者
 }
 
 type QQMusicLink struct {
-	id     string //歌曲或者歌单id
-	isSong bool   //是否为歌曲
+	id     string // 歌曲或者歌单id
+	isSong bool   // 是否为歌曲
 }
 
 type QQApiProvider interface {
-	download(url QQMusicLink, callback func(string)) error
+	download(url QQMusicLink, dir string, callback func(string)) error
+}
+
+type QQApiResponse[T any] struct {
+	Code      int    `json:"code"`
+	Message   string `json:"message"`
+	Data      T      `json:"data"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+type QQSong struct {
+	Mid    string `json:"mid"`
+	Name   string `json:"name"`
+	Title  string `json:"title"`
+	Singer struct {
+		Name string `json:"name"`
+	} `json:"singer"`
+	Album struct {
+		Name string `json:"name"`
+	} `json:"album"`
+	Interval   int              `json:"interval"`
+	IsOnly     int              `json:"isonly"`
+	Language   int              `json:"language"`
+	Genre      int              `json:"genre"`
+	IndexCD    int              `json:"index_cd"`
+	IndexAlbum int              `json:"index_album"`
+	TimePublic string           `json:"time_public"`
+	File       utils.QQFileInfo `json:"file"`
 }
 
 // QQMusicAPI 自建qq-music-api
 type QQMusicAPI struct {
-	baseUrl string            //服务端点
-	headers map[string]string //请求头
+	baseUrl string            // 服务端点
+	headers map[string]string // 请求头
 }
 
 // LXMusicAPI 洛雪api
 type LXMusicAPI struct {
-	baseUrl    string            //服务端点
-	apiVersion string            //接口版本
-	key        string            //密钥
-	headers    map[string]string //请求头
+	baseUrl    string            // 服务端点
+	apiVersion string            // 接口版本
+	key        string            // 密钥
+	headers    map[string]string // 请求头
 }
 
 // 已知需要重定向的域名列表
@@ -66,7 +93,7 @@ func (qm *QQMusicProcessor) Init(cfg *config.Config) {
 		qmApi.initHeaders(cfg)
 		qm.apiProvider = qmApi
 	} else {
-		//默认启用洛雪
+		// 默认启用洛雪
 		qm.apiProvider = &LXMusicAPI{}
 	}
 }
@@ -90,7 +117,7 @@ func (qm *QQMusicProcessor) DownloadMusic(url string, callback func(string)) err
 	if err != nil {
 		return err
 	}
-	err = qm.apiProvider.download(qqMusicLink, callback)
+	err = qm.apiProvider.download(qqMusicLink, qm.tempDir, callback)
 	if err != nil {
 		return err
 	}
@@ -131,39 +158,66 @@ func (qm *QQMusicProcessor) DecryptedExts() []string {
 /* ------------------------ qq-music-api ------------------------ */
 
 // download 下载qq音乐
-func (qm *QQMusicAPI) download(musicLink QQMusicLink, callback func(string)) error {
+func (qm *QQMusicAPI) download(musicLink QQMusicLink, tempDir string, callback func(string)) error {
+	err := processor.CreateOutputDir(tempDir)
+	if err != nil {
+		return err
+	}
 	if musicLink.isSong {
-		return qm.downloadSong(musicLink.id, callback)
+		return qm.downloadSong(musicLink.id, tempDir, callback)
 	} else {
-		return qm.downloadSonglist(musicLink.id, callback)
+		return qm.downloadSonglist(musicLink.id, tempDir, callback)
 	}
 }
 
 // download 下载单曲
-func (qm *QQMusicAPI) downloadSong(musicid string, callback func(string)) error {
+func (qm *QQMusicAPI) downloadSong(musicid string, tempDir string, callback func(string)) error {
 	songRes, err := qm.querySong(musicid)
 	if err != nil {
 		return err
 	}
-	utils.InfoWithFormat(songRes.Message)
-	//todo 获取mid
-	//todo 获取最高音质的文件类型
-	//todo 获取下载链接
+	songData := songRes.Data
+	// 获取mid
+	mid := songData[0].Mid
+	// 获取最高音质的文件类型
+	fileData, err := json.Marshal(songData[0].File)
+	if err != nil {
+		return err
+	}
+	quality, ext, err := utils.GetBestQuality(fileData)
+	if err != nil {
+		return err
+	}
+	// 获取下载链接
+	songUrl, err := qm.getSongUrl(mid, string(quality))
+	if err != nil {
+		return err
+	}
+	sanitizeFileName := utils.SanitizeFileName(songData[0].Title)
+	tempPath := filepath.Join(tempDir, sanitizeFileName+ext)
+	// 下载单曲
+	err = utils.DownloadFile(songUrl, tempPath)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
 // download 下载歌单
-func (qm *QQMusicAPI) downloadSonglist(url string, callback func(string)) error {
+func (qm *QQMusicAPI) downloadSonglist(url string, tempDir string, callback func(string)) error {
 	return nil
 }
 
 // querySong 查询歌曲信息
-func (qm *QQMusicAPI) querySong(songId string) (*_struct.QuerySongResponse, error) {
-	request, err := qm.newGetRequest("/song/query_song", map[string]string{"value": songId})
+func (qm *QQMusicAPI) querySong(songId string) (*QQApiResponse[[]QQSong], error) {
+	params := map[string]string{
+		"value": songId,
+	}
+	request, err := qm.newGetRequest("/song/query_song", params)
 	if err != nil {
 		return nil, err
 	}
-	// 4. 发送请求
+	// 发送请求
 	client := &http.Client{}
 	resp, err := client.Do(request)
 	if err != nil {
@@ -171,33 +225,74 @@ func (qm *QQMusicAPI) querySong(songId string) (*_struct.QuerySongResponse, erro
 	}
 	defer resp.Body.Close()
 
-	// 5. 读取响应内容
+	// 读取响应内容
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
-	songRes := &_struct.QuerySongResponse{}
+	songRes := &QQApiResponse[[]QQSong]{}
 	_ = json.Unmarshal(body, songRes)
+
+	if songRes.Code != http.StatusOK {
+		return nil, errors.New(songRes.Message)
+	}
+
 	return songRes, nil
+}
+
+// querySong 查询歌曲下载链接
+func (qm *QQMusicAPI) getSongUrl(songMid string, fileType string) (string, error) {
+	params := map[string]string{
+		"mid":       songMid,
+		"file_type": fileType,
+	}
+	request, err := qm.newGetRequest("/song/get_song_urls", params)
+	if err != nil {
+		return "", err
+	}
+	// 发送请求
+	client := &http.Client{}
+	resp, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	// 读取响应内容
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	songUrlsRes := &QQApiResponse[map[string]string]{}
+	_ = json.Unmarshal(body, songUrlsRes)
+
+	if songUrlsRes.Code != http.StatusOK {
+		return "", errors.New(songUrlsRes.Message)
+	}
+
+	return songUrlsRes.Data[songMid], nil
 }
 
 // initHeaders 初始化请求头
 func (qm *QQMusicAPI) initHeaders(cfg *config.Config) {
-	headers := make(map[string]string)
+	headers := map[string]string{
+		"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+		"Referer":    "https://y.qq.com/",
+	}
 	if cfg.QQMusicApiConfig.EnableSign {
 		headers["X-Enable-Sign"] = "true"
 	}
 	if cfg.QQMusicApiConfig.EnableSign {
 		headers["X-Enable-Cache"] = "true"
 	}
-	//获取cookie
+	// 获取cookie
 	qqCookies := utils.GetCookiesByDomain(filepath.Join(cfg.CookieCloud.CookieFilePath, cfg.CookieCloud.CookieFile), ".qq.com")
 	switch cfg.QQMusicApiConfig.LoginType {
 	case 1:
-		//微信
+		// 微信
 		headers["Cookie"] = fmt.Sprintf("musicid=%s;musickey=%s", qqCookies["wxuin"], qqCookies["qqmusic_key"])
 	case 2:
-		//qq
+		// qq
 		headers["Cookie"] = fmt.Sprintf("musicid=%s;musickey=%s", qqCookies["uin"], qqCookies["qqmusic_key"])
 	}
 	qm.headers = headers
@@ -237,8 +332,8 @@ func (qm *QQMusicAPI) newGetRequest(path string, params map[string]string) (*htt
 /* ------------------------ 洛雪 ------------------------ */
 
 // download 下载qq音乐
-func (lx *LXMusicAPI) download(musicLink QQMusicLink, callback func(string)) error {
-	//todo
+func (lx *LXMusicAPI) download(url QQMusicLink, tempDir string, callback func(string)) error {
+	// todo
 	return nil
 }
 
