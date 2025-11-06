@@ -88,6 +88,9 @@ var SpotifyTempDir = filepath.Join(BaseTempDir, "Spotify")
 // Forward临时文件夹
 var ForwardTempDir = filepath.Join(BaseTempDir, "Forward")
 
+// 封面拓展名
+const CoverExt = ".jpg"
+
 /* ---------------------- 音乐下载相关业务函数 ---------------------- */
 
 // 读取音乐目录 返回元信息列表

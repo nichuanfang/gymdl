@@ -79,6 +79,15 @@ func SanitizeFileName(name string) string {
 	return name
 }
 
+// SanitizeFileName 合法的封面名
+func SanitizeCoverFileName(name string) string {
+	invalidChars := []string{"/", "\\", ":", "*", "?", "\"", "<", ">", "|"}
+	for _, c := range invalidChars {
+		name = strings.ReplaceAll(name, c, "_")
+	}
+	return name + "_cover"
+}
+
 // contains 判断 slice 是否包含元素
 func Contains(slice []string, item string) bool {
 	for _, s := range slice {
@@ -241,20 +250,34 @@ func ClearTempDirs(root string) error {
 	return nil
 }
 
-// downloadFile 下载网络文件到本地
-func DownloadFile(url, filepath string) error {
-	resp, err := http.Get(url)
+// DownloadFile 使用指定的 http.Client 下载网络文件到本地
+func DownloadFile(client *http.Client, url, filepath string) error {
+	// 创建请求
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+
+	// 发起请求
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
+	// 检查状态码
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to download file: status code %d", resp.StatusCode)
+	}
+
+	// 创建目标文件
 	out, err := os.Create(filepath)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
+	// 拷贝数据
 	_, err = io.Copy(out, resp.Body)
 	return err
 }

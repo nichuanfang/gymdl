@@ -112,7 +112,7 @@ func (qm *QQMusicProcessor) DownloadMusic(url string, callback func(string)) err
 	if err != nil {
 		return err
 	}
-	err = qm.qmApi.download(qqMusicLink, qm.tempDir, callback)
+	err = qm.qmApi.download(qqMusicLink, qm.tempDir, qm.songs, callback)
 	if err != nil {
 		return err
 	}
@@ -170,20 +170,21 @@ func (qm *QQMusicProcessor) DecryptedExts() []string {
 
 /* ------------------------ qq-music-api ------------------------ */
 
-func (qm *QQMusicAPI) download(musicLink QQMusicLink, tempDir string, callback func(string)) error {
+func (qm *QQMusicAPI) download(musicLink QQMusicLink, tempDir string, songs []*SongInfo, callback func(string)) error {
 	err := processor.CreateOutputDir(tempDir)
 	if err != nil {
 		return err
 	}
 	if musicLink.isSong {
-		return qm.downloadSong(musicLink.id, tempDir, callback)
+		return qm.downloadSong(musicLink.id, tempDir, songs, callback)
 	} else {
-		return qm.downloadSonglist(musicLink.id, tempDir, callback)
+		return qm.downloadSonglist(musicLink.id, tempDir, songs, callback)
 	}
 }
 
-func (qm *QQMusicAPI) downloadSong(musicid string, tempDir string, callback func(string)) error {
+func (qm *QQMusicAPI) downloadSong(musicid string, tempDir string, songs []*SongInfo, callback func(string)) error {
 	start := time.Now()
+	var err error
 	songData, err := qm.querySong(musicid)
 	if err != nil {
 		return err
@@ -203,20 +204,40 @@ func (qm *QQMusicAPI) downloadSong(musicid string, tempDir string, callback func
 	if err != nil {
 		return err
 	}
+	// -----------------------下载音乐文件--------------------------
+	// 音乐文件路径
 	sanitizeFileName := utils.SanitizeFileName(songData.Title)
 	tempPath := filepath.Join(tempDir, sanitizeFileName+ext)
-
-	err = utils.DownloadFile(songUrl, tempPath)
+	err = utils.DownloadFile(qm.client, songUrl, tempPath)
 	if err != nil {
 		return err
 	}
+	// -----------------------下载封面--------------------------
+	// 封面文件路径
+	sanitizeCoverFileName := utils.SanitizeCoverFileName(songData.Title)
+	tempCoverPath := filepath.Join(tempDir, sanitizeCoverFileName+CoverExt)
+	coverUrl, err := qm.queryCoverUrl(songData.Album.Mid)
+	if err != nil {
+		return err
+	}
+	err = utils.DownloadFile(qm.client, coverUrl, tempCoverPath)
+	if err != nil {
+		return err
+	}
+	// -----------------------歌词--------------------------
+	lyric, err := qm.queryLyric(mid)
+	if err != nil {
+		return err
+	}
+	// -----------------------更新元信息--------------------------
+	qm.buildSongInfo(songs, songData, lyric)
 
 	utils.InfoWithFormat("[QQMusic] ✅ 下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
 	callback(fmt.Sprintf("下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond)))
 	return nil
 }
 
-func (qm *QQMusicAPI) downloadSonglist(url string, tempDir string, callback func(string)) error {
+func (qm *QQMusicAPI) downloadSonglist(url string, tempDir string, songs []*SongInfo, callback func(string)) error {
 	return nil
 }
 
@@ -341,6 +362,18 @@ func (qm *QQMusicAPI) newGetRequest(path string, params map[string]string) (*htt
 	}
 
 	return req, nil
+}
+
+// buildSongInfo 更新元信息
+func (qm *QQMusicAPI) buildSongInfo(songs []*SongInfo, data QQSong, lyric string) {
+	songInfo := &SongInfo{
+		SongName:        data.Name,
+		SongArtists:     data.Singer[0].Name,
+		SongAlbum:       data.Album.Name,
+		SongAlbumArtist: data.Singer[0].Name,
+		Lyric:           lyric,
+	}
+	songs = append(songs, songInfo)
 }
 
 /* ------------------------ 拓展方法 ------------------------ */
