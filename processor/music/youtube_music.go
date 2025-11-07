@@ -1,6 +1,7 @@
 package music
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -30,6 +31,13 @@ func (p *YoutubeMusicProcessor) Init(cfg *config.Config) {
 	p.tempDir = processor.BuildOutputDir(YoutubeTempDir)
 }
 
+// AudioFormat 结构用来解析 yt-dlp -j 输出
+type AudioFormat struct {
+	FormatID string `json:"format_id"`
+	Ext      string `json:"ext"`
+	Acodec   string `json:"acodec"`
+}
+
 /* ---------------------- 基础接口实现 ---------------------- */
 
 func (p *YoutubeMusicProcessor) Name() processor.LinkType {
@@ -47,6 +55,9 @@ func (p *YoutubeMusicProcessor) DownloadMusic(url string, callback func(string))
 	utils.InfoWithFormat("[YoutubeMusic] 🎵 开始下载: %s", url)
 
 	cmd := p.DownloadCommand(url)
+	if cmd == nil {
+		return errors.New("download command build failed")
+	}
 	utils.DebugWithFormat("[YoutubeMusic] 执行命令: %s", strings.Join(cmd.Args, " "))
 
 	// 创建临时目录
@@ -74,23 +85,64 @@ func (p *YoutubeMusicProcessor) DownloadMusic(url string, callback func(string))
 	return nil
 }
 
-// DownloadCommand 创建yt-dlp音乐下载指令
 func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
+	// 1️⃣ 获取可用音轨信息
+	cmdInfo := exec.Command("yt-dlp", "--no-playlist", "-F", url)
+	var out bytes.Buffer
+	cmdInfo.Stdout = &out
+	err := cmdInfo.Run()
+	if err != nil {
+		utils.WarnWithFormat("获取视频信息失败: %w", err)
+		return nil
+	}
+
+	outputText := out.String()
+	lines := strings.Split(outputText, "\n")
+
+	var has141, has251 bool
+	for _, line := range lines {
+		// 每行以空格分割，第一个字段是 format ID
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		formatID := fields[0]
+		ext := fields[1]
+
+		if formatID == "141" && strings.Contains(ext, "m4a") {
+			has141 = true
+		}
+		if formatID == "251" && strings.Contains(ext, "webm") {
+			has251 = true
+		}
+	}
+
+	// 2️⃣ 根据存在情况构造 yt-dlp 命令
+
 	//cookiePath := filepath.Join(p.cfg.CookieCloud.CookieFilePath, p.cfg.CookieCloud.CookieFile)
+
 	args := []string{
 		//"--cookies", cookiePath,   // yt-dlp传递cookie文件有问题 暂时不开放
-		//"-f", "141/251/140", //音轨质量优先级: 【141】为会员音轨256aac 【251】为中等质量opus 【140】为中等质量m4a
-		"-f", "251/140",
-		"-x",                    //只提取音频
-		"--no-playlist",         //严格列表模式
-		"--audio-format", "aac", //格式为aac
-		"--postprocessor-args", "-c:a libfdk_aac -vbr 5", //ffmpeg转码使用libfdk_aac
-		"--audio-quality", "0", //最高质量
-		"--embed-metadata",                                  //添加基本元数据 除封面外 还缺失 `专辑` `专辑艺术家` `歌词` 需配合mtw手动刮削
-		"--embed-thumbnail",                                 //嵌入封面
-		"-o", filepath.Join(p.tempDir, "%(title)s.%(ext)s"), // 输出路径
-		url,
+		"-x",
+		"--no-playlist",
+		"--embed-metadata",
+		"--embed-thumbnail",
+		"-o", filepath.Join(p.tempDir, "%(title)s.%(ext)s"),
 	}
+
+	if has141 {
+		// 存在 141 AAC，直接下载
+		args = append([]string{"-f", "141"}, args...)
+	} else if has251 {
+		// 不存在 141，用 251 转 AAC
+		args = append([]string{"-f", "251"}, args...)
+		args = append(args, "--audio-format", "aac", "--postprocessor-args", "-c:a libfdk_aac -vbr 5", "--audio-quality", "0")
+	} else {
+		// 其他情况，退而求其次下载 140 AAC
+		args = append([]string{"-f", "140"}, args...)
+	}
+
+	args = append(args, url)
 	return exec.Command("yt-dlp", args...)
 }
 

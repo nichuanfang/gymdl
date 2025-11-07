@@ -80,11 +80,9 @@ func (p *SoundCloudProcessor) DownloadCommand(url string) *exec.Cmd {
 	args := []string{
 		//"--cookies", cookiePath,   // yt-dlp传递cookie文件有问题 暂时不开放
 		//"-f", "141/251/140", //音轨质量优先级: 【141】为会员音轨256aac 【251】为中等质量opus 【140】为中等质量m4a
-		"-f", "hls_aac_160k/http_mp3_1_0",
-		"-x",                    //只提取音频
-		"--no-playlist",         //严格列表模式
-		"--audio-format", "aac", //格式为aac
-		"--audio-quality", "0", //最高质量
+		"-f", "hls_aac_160k",
+		"-x",                                                //只提取音频
+		"--no-playlist",                                     //严格列表模式
 		"--embed-metadata",                                  //添加基本元数据 除封面外 还缺失 `专辑` `专辑艺术家` `歌词` 需配合mtw手动刮削
 		"--embed-thumbnail",                                 //嵌入封面
 		"-o", filepath.Join(p.tempDir, "%(title)s.%(ext)s"), // 输出路径
