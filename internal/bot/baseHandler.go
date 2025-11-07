@@ -91,7 +91,8 @@ func HandleAudio(c tb.Context) error {
 	// 获取文件流
 	closer, err := b.File(file)
 	if err != nil {
-		return err
+		_ = c.Send(fmt.Sprintf("处理失败：%s", err.Error()))
+		return nil
 	}
 	defer closer.Close()
 
@@ -99,6 +100,7 @@ func HandleAudio(c tb.Context) error {
 	data, err := io.ReadAll(closer)
 	if err != nil {
 		_ = c.Send(fmt.Sprintf("处理失败：%s", err.Error()))
+		return nil
 	}
 
 	// data 完整的音频字节数组
@@ -110,6 +112,7 @@ func HandleAudio(c tb.Context) error {
 	err = session.HandleMusic(processor)
 	if err != nil {
 		_ = c.Send(fmt.Sprintf("处理失败：%s", err.Error()))
+		return nil
 	}
 	return nil
 }
