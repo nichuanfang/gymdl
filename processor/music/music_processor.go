@@ -169,6 +169,8 @@ func ReadTags(path string) (*SongInfo, error) {
 
 	if al, ok := tags[taglib.Album]; ok && len(al) > 0 {
 		songInfo.SongAlbum = al[0]
+	} else {
+		songInfo.SongAlbum = "未知专辑"
 	}
 
 	if aa, ok := tags[taglib.AlbumArtist]; ok && len(aa) > 0 {
