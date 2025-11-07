@@ -88,7 +88,7 @@ func HandleAudio(c tb.Context) error {
 	processor := &music.ForwardProcessor{}
 	processor.Init(app.cfg)
 
-	// 获取文件流
+	// 获取文件流 最大支持20MB
 	closer, err := b.File(file)
 	if err != nil {
 		_, _ = b.Edit(msg, fmt.Sprintf("处理失败：%s", err.Error()))
