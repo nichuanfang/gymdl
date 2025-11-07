@@ -32,5 +32,5 @@ func SetupRouter(c *config.Config) *gin.Engine {
 	RegisterTextRoutes(apiGroup)
 	// 注册指令处理器路由
 	RegisterCommandRoutes(apiGroup)
-
+	return engine
 }
