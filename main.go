@@ -68,7 +68,13 @@ func initWebDAV(c *config.WebDAVConfig) {
 func initCookieCloud(cfg *config.CookieCloudConfig) {
 	core.InitCookieCloud(cfg)
 	if core.GlobalCookieCloud.CheckConnection() {
-		utils.ServiceIsOn("CookieCloud 服务已加载")
+		var syncMode string
+		if cfg.Mode == 1 {
+			syncMode = "定时刷新"
+		} else {
+			syncMode = "Webhook"
+		}
+		utils.ServiceIsOn(fmt.Sprintf("CookieCloud 服务已加载，运行模式：【%s】", syncMode))
 	} else {
 		utils.Warning("CookieCloud 服务不可用，请检查配置或网络连接")
 	}
