@@ -7,4 +7,6 @@ import (
 
 func RegisterBaseRoutes(rg *gin.RouterGroup) {
 	rg.GET("/", controller.HelloWorld)
+	// cookiecloud同步
+	rg.POST("/cookiecloud", controller.SyncCookieCloud)
 }
