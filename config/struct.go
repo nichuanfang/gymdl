@@ -22,6 +22,7 @@ type WebConfig struct {
 }
 
 type CookieCloudConfig struct {
+	Mode            int    `yaml:"mode"`             // cookiecloud同步模式: 1定时刷新 2webhook 默认为1 当同步模式为2时必须启用Gin Web服务
 	CookieCloudUrl  string `yaml:"cookiecloud_url"`  // cookiecloud 地址
 	CookieCloudUUID string `yaml:"cookiecloud_uuid"` // cookiecloud uuid
 	CookieCloudKEY  string `yaml:"cookiecloud_key"`  // cookiecloud 密码（tips：如果有多个同步端需要上传需要绑定同一个key）

@@ -24,18 +24,6 @@ services:
     networks:
       - mynet
     restart: always
-    
-  qq-music-api:
-    image: ghcr.io/nichuanfang/gymdl-qm:latest
-    container_name: qm
-    environment:
-      - PUID=1000
-      - PGID=1000
-    expose:
-      - 8000
-    networks:
-      - mynet
-    restart: always
 
 networks:
   mynet:

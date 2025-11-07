@@ -1,0 +1,19 @@
+# qq音乐下载服务
+
+version: '3'
+services:
+  qq-music-api:
+    image: ghcr.io/nichuanfang/gymdl-qm:latest
+    container_name: qm
+    environment:
+      - PUID=1000
+      - PGID=1000
+    expose:
+      - 8000
+    networks:
+      - mynet
+    restart: always
+
+networks:
+  mynet:
+    external: true

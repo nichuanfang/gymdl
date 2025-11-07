@@ -1,0 +1,14 @@
+# Cookiecloud同步服务(该版本实现了webhook通知)
+
+version: '3'
+services:
+  cookiecloud:
+    image: ghcr.io/nichuanfang/cookiecloud:latest
+    container_name: cookiecloud
+    restart: always
+    environment:
+      WEBHOOK_URL: YOUR_WEBHOOK_URL
+    volumes:
+      - ./data:/data/api/data
+    ports:
+      - "8088:8088"
