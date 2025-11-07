@@ -69,10 +69,10 @@ func initCookieCloud(cfg *config.CookieCloudConfig) {
 	core.InitCookieCloud(cfg)
 	if core.GlobalCookieCloud.CheckConnection() {
 		var syncMode string
-		if cfg.Mode == 1 {
-			syncMode = "定时刷新"
-		} else {
+		if cfg.Mode == 2 {
 			syncMode = "Webhook"
+		} else {
+			syncMode = "定时刷新"
 		}
 		utils.ServiceIsOn(fmt.Sprintf("CookieCloud 服务已加载，运行模式：【%s】", syncMode))
 	} else {
