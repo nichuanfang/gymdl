@@ -68,11 +68,17 @@ type AIConfig struct {
 }
 
 type QQMusicApiConfig struct {
-	Enable      bool   `yaml:"enable"`       // 是否启用
-	Endpoint    string `yaml:"endpoint"`     // qm-api服务地址
-	LoginType   int    `yaml:"login_type"`   // qm-api登录方式: 0未登录 1微信 2QQ
-	EnableSign  bool   `yaml:"enable_sign"`  // 是否启用加密接口 加密接口会多一个解密操作 但是更安全
-	EnableCache bool   `yaml:"enable_cache"` // 是否启用接口缓存
+	Enable       bool   `yaml:"enable"`        // 是否启用
+	Endpoint     string `yaml:"endpoint"`      // qm-api服务地址
+	LoginType    int    `yaml:"login_type"`    // qm-api登录方式: 0未登录 1微信 2QQ
+	RefreshKey   string `yaml:"refresh_key"`   // 用于刷新已失效的musickey musickey1小时会过期
+	RefreshToken string `yaml:"refresh_token"` //用于刷新已失效的musickey musickey1小时会过期
+	MusicId      string `yaml:"music_id"`      //用于刷新已失效的musickey
+	MusicKey     string `yaml:"music_key"`     //用于刷新已失效的musickey
+	Interval     int    `yaml:"interval"`      //定时检测间隔(分钟)
+	EncryptUin   string `yaml:"encrypt_uin"`   //用于获取用户信息
+	EnableSign   bool   `yaml:"enable_sign"`   // 是否启用加密接口 加密接口会多一个解密操作 但是更安全
+	EnableCache  bool   `yaml:"enable_cache"`  // 是否启用接口缓存
 }
 
 type AdditionalConfig struct {
