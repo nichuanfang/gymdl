@@ -58,7 +58,7 @@ func HandleText(c tb.Context) error {
 		err = errors.New(fmt.Sprintf("未知处理器类型: %v", expr))
 	}
 	if err != nil {
-		_ = c.Send(fmt.Sprintf("处理失败：%s", err.Error()))
+		_, _ = b.Edit(msg, fmt.Sprintf("处理失败：%s", err.Error()))
 	}
 	return nil
 }
@@ -91,7 +91,7 @@ func HandleAudio(c tb.Context) error {
 	// 获取文件流
 	closer, err := b.File(file)
 	if err != nil {
-		_ = c.Send(fmt.Sprintf("处理失败：%s", err.Error()))
+		_, _ = b.Edit(msg, fmt.Sprintf("处理失败：%s", err.Error()))
 		return nil
 	}
 	defer closer.Close()
@@ -99,7 +99,7 @@ func HandleAudio(c tb.Context) error {
 	// 读取全部文件内容
 	data, err := io.ReadAll(closer)
 	if err != nil {
-		_ = c.Send(fmt.Sprintf("处理失败：%s", err.Error()))
+		_, _ = b.Edit(msg, fmt.Sprintf("处理失败：%s", err.Error()))
 		return nil
 	}
 
@@ -111,7 +111,7 @@ func HandleAudio(c tb.Context) error {
 	// 处理音频
 	err = session.HandleMusic(processor)
 	if err != nil {
-		_ = c.Send(fmt.Sprintf("处理失败：%s", err.Error()))
+		_, _ = b.Edit(msg, fmt.Sprintf("处理失败：%s", err.Error()))
 		return nil
 	}
 	return nil
