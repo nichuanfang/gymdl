@@ -98,7 +98,7 @@ func HandleAudio(c tb.Context) error {
 	// 读取全部文件内容
 	data, err := io.ReadAll(closer)
 	if err != nil {
-		return err
+		_ = c.Send(fmt.Sprintf("处理失败：%s", err.Error()))
 	}
 
 	// data 完整的音频字节数组
