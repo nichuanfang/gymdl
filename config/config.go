@@ -109,6 +109,7 @@ func (c *Config) setDefaults() {
 	}
 	if c.CookieCloud == nil {
 		c.CookieCloud = &CookieCloudConfig{
+			Mode:            1,
 			CookieCloudUrl:  "",
 			CookieCloudUUID: "",
 			CookieCloudKEY:  "",

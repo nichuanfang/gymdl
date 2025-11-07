@@ -11,6 +11,7 @@ web_config:
 
 # CookieCloud 配置
 cookie_cloud:
+  mode: 1 # cookiecloud同步模式: 1定时刷新 2webhook 默认为1 当同步模式为2时必须启用Gin Web服务
   cookiecloud_url: ""  # CookieCloud 服务地址
   cookiecloud_uuid: ""  # CookieCloud UUID
   cookiecloud_key: ""  # CookieCloud key (多个同步端需填写同一个key，否则会解密失败)
