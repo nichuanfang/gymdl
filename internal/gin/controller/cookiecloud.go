@@ -8,6 +8,8 @@ import (
 
 // SyncCookieCloud 同步cookie
 func SyncCookieCloud(c *gin.Context) {
-	core.GlobalCookieCloud.Sync()
+	go func() {
+		core.GlobalCookieCloud.Sync()
+	}()
 	response.Success(c, "cookiecloud sync success")
 }
