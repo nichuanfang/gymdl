@@ -84,6 +84,7 @@ func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
 		"-x",                    //只提取音频
 		"--no-playlist",         //严格列表模式
 		"--audio-format", "aac", //格式为aac
+		"--postprocessor-args", "-c:a libfdk_aac -vbr 5", //ffmpeg转码使用libfdk_aac
 		"--audio-quality", "0", //最高质量
 		"--embed-metadata",                                  //添加基本元数据 除封面外 还缺失 `专辑` `专辑艺术家` `歌词` 需配合mtw手动刮削
 		"--embed-thumbnail",                                 //嵌入封面
