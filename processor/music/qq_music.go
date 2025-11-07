@@ -17,6 +17,7 @@ import (
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/internal/cron"
 	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/utils"
 )
@@ -501,15 +502,78 @@ func (qmApi *QQMusicAPI) initHeaders(cfg *config.Config) {
 		headers["X-Enable-Cache"] = "true"
 	}
 
-	cookiePath := filepath.Join(cfg.CookieCloud.CookieFilePath, cfg.CookieCloud.CookieFile)
-	qqCookies := utils.GetCookiesByDomain(cookiePath, ".qq.com")
+	// 尝试读取 musickey.json
+	musickeyPath := filepath.Join("data", "temp", "musickey.json")
+	var musicData cron.MusickeyData
+	useCookieCloud := false
 
-	switch cfg.QQMusicApiConfig.LoginType {
-	case 1:
-		headers["Cookie"] = fmt.Sprintf("musicid=%s;musickey=%s", qqCookies["wxuin"], qqCookies["qqmusic_key"])
-	case 2:
-		headers["Cookie"] = fmt.Sprintf("musicid=%s;musickey=%s", qqCookies["uin"], qqCookies["qqmusic_key"])
+	bytes, err := os.ReadFile(musickeyPath)
+	if err != nil {
+		// 文件不存在或读取失败，使用 cookiecloud
+		useCookieCloud = true
+	} else {
+		if err := json.Unmarshal(bytes, &musicData); err != nil {
+			// JSON 解析失败，也退回 cookiecloud
+			useCookieCloud = true
+		} else {
+			// 如果已过期，也退回 cookiecloud
+			if time.Now().Unix() >= musicData.ExpiredAt {
+				useCookieCloud = true
+			}
+		}
 	}
+
+	if useCookieCloud {
+		// 从 cookiecloud 获取数据
+		cookiePath := filepath.Join(cfg.CookieCloud.CookieFilePath, cfg.CookieCloud.CookieFile)
+		qqCookies := utils.GetCookiesByDomain(cookiePath, ".qq.com")
+
+		switch cfg.QQMusicApiConfig.LoginType {
+		case 1: // wx
+			headers["Cookie"] = fmt.Sprintf(
+				"musicid=%s;musickey=%s",
+				cfg.QQMusicApiConfig.MusicId,
+				cfg.QQMusicApiConfig.MusicKey,
+			)
+			if wxuin := qqCookies["wxuin"]; wxuin != "" {
+				headers["Cookie"] = fmt.Sprintf(
+					"musicid=%s;musickey=%s",
+					wxuin,
+					qqCookies["qqmusic_key"],
+				)
+			}
+		case 2: // qq
+			headers["Cookie"] = fmt.Sprintf(
+				"musicid=%s;musickey=%s",
+				cfg.QQMusicApiConfig.MusicId,
+				cfg.QQMusicApiConfig.MusicKey,
+			)
+			if uin := qqCookies["uin"]; uin != "" {
+				headers["Cookie"] = fmt.Sprintf(
+					"musicid=%s;musickey=%s",
+					uin,
+					qqCookies["qqmusic_key"],
+				)
+			}
+		}
+	} else {
+		// 直接用 musickey.json 中的数据
+		switch cfg.QQMusicApiConfig.LoginType {
+		case 1:
+			headers["Cookie"] = fmt.Sprintf(
+				"musicid=%d;musickey=%s",
+				musicData.Musicid,
+				musicData.Musickey,
+			)
+		case 2:
+			headers["Cookie"] = fmt.Sprintf(
+				"musicid=%d;musickey=%s",
+				musicData.Musicid,
+				musicData.Musickey,
+			)
+		}
+	}
+
 	qmApi.headers = headers
 }
 
