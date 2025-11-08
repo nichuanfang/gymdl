@@ -29,10 +29,14 @@ CookieCloud 自动同步登录、WebDAV 上传、下载器监控、Telegram Bot 
 | 定时任务调度（gocron）                                       | ✅      |
 | 重构模块                                                 | ✅      |
 | 下载器监控                                                | ✅      |
-| 支持下载列表                                               | ✅      |
-| 视频下载                                                 | 🚧 开发中 |
-| YoutubeMusic下载                                       | 🚧 开发中 |
-| 多个通知渠道                                               | ⚠️ 规划中 |
+| QQ音乐下载                                               | ✅      |
+| 网易云音乐下载                                               | ✅      |
+| AppleMusic下载                                               | ✅      |
+| YoutubeMusic下载                                            | ✅ |
+| Soundcloud下载                                              | ✅ |
+| Spotify下载                                                 | 🚧 开发中 |
+| 视频下载                                                    | 🚧 开发中 |
+| 多个通知渠道                                                | ⚠️ 规划中 |
 | AI 助手                                                | ⚠️ 规划中 |
 | Web UI                                               | ⚠️ 规划中 |
 
@@ -105,7 +109,7 @@ telegram:
 
 # qq音乐api配置
 qq_music_api:
-  enable: false #是否启用 如果不启用则默认使用洛雪api提供的服务
+  enable: false #是否启用
   endpoint: "" #服务地址 
   login_type: 0 #登录方式: 0未登录 1微信 2QQ
   refresh_key: "" #用于刷新已失效的musickey  musickey1小时会过期
