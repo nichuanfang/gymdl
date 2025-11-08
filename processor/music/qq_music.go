@@ -78,9 +78,12 @@ type QQMusicAPI struct {
 	client  *http.Client
 }
 
-// 已知需要重定向的域名列表
-var needRedirectHosts = map[string]bool{
-	"c6.y.qq.com": true,
+// ⚙️ QQ 音乐常见短链/跳转域名（后缀匹配）
+var redirectHostSuffixes = []string{
+	"y.qq.com",
+	"c.y.qq.com",
+	"c6.y.qq.com",
+	"music.qq.com",
 }
 
 // Init 初始化（只使用自建 API）
@@ -652,80 +655,81 @@ func (qmApi *QQMusicAPI) updateSongInfo(qm *QQMusicProcessor, data QQSong, fileM
 
 /* ------------------------ 拓展方法 ------------------------ */
 
-// parseQQMusicLink 解析qq分享链接
+// parseQQMusicLink 解析 QQ 音乐分享链接，自动识别跳转并返回最终 ID
 func (qm *QQMusicProcessor) parseQQMusicLink(raw string) (QQMusicLink, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return QQMusicLink{}, err
 	}
 
-	var result QQMusicLink
-
-	if needRedirectHosts[u.Host] {
-		location, err := qm.getRedirectLocation(raw)
-		if err != nil {
-			return QQMusicLink{}, err
+	hostname := u.Hostname()
+	needRedirect := false
+	for _, suffix := range redirectHostSuffixes {
+		if strings.HasSuffix(hostname, suffix) {
+			needRedirect = true
+			break
 		}
-		result = qm.tryParseDirect(location)
-		return result, nil
 	}
 
-	result = qm.tryParseDirect(raw)
+	// 1️⃣ 优先尝试直接解析
+	result := qm.tryParseDirect(raw)
 	if result.id != "" {
 		return result, nil
 	}
 
-	location, err := qm.getRedirectLocation(raw)
+	// 2️⃣ 需要跳转的域名 → 获取最终 URL 再解析
+	if needRedirect {
+		finalURL, err := qm.getFinalURL(raw)
+		if err != nil {
+			return QQMusicLink{}, fmt.Errorf("重定向失败: %w", err)
+		}
+		return qm.tryParseDirect(finalURL), nil
+	}
+
+	// 3️⃣ 兜底：再试一次最终 URL
+	finalURL, err := qm.getFinalURL(raw)
 	if err != nil {
 		return QQMusicLink{}, err
 	}
-	result = qm.tryParseDirect(location)
-	return result, nil
+	return qm.tryParseDirect(finalURL), nil
 }
 
-func (qm *QQMusicProcessor) getRedirectLocation(link string) (string, error) {
+// getFinalURL 返回最终重定向后的真实 URL。
+func (qm *QQMusicProcessor) getFinalURL(raw string) (string, error) {
 	const maxRedirects = 10
-	currentURL := link
-	utils.DebugWithFormat("[QQMusic] 🔁 处理重定向: %s", link)
+	start := time.Now()
 
-	for i := 0; i < maxRedirects; i++ {
-		req, err := http.NewRequest("GET", currentURL, nil)
-		if err != nil {
-			return "", err
-		}
-		req.Header.Set("User-Agent", UserAgent)
-		resp, err := qm.client.Do(req)
-		if err != nil {
-			utils.WarnWithFormat("[QQMusic] ⚠️ 重定向请求失败: %v", err)
-			return "", err
-		}
+	utils.DebugWithFormat("[QQMusic] 🔗 检查重定向: %s", raw)
 
-		loc := resp.Header.Get("Location")
-		resp.Body.Close()
-		utils.DebugWithFormat("[QQMusic] Redirect[%d]: %s -> %s (Status=%d)", i+1, currentURL, loc, resp.StatusCode)
-
-		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
-			return currentURL, nil
+	qm.client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirects {
+			return http.ErrUseLastResponse
 		}
-		if loc == "" {
-			return currentURL, nil
-		}
-
-		u, err := url.Parse(loc)
-		if err != nil {
-			return "", err
-		}
-		if !u.IsAbs() {
-			base, _ := url.Parse(currentURL)
-			loc = base.ResolveReference(u).String()
-		}
-		currentURL = loc
+		return nil
 	}
 
-	utils.ErrorWithFormat("[QQMusic] ❌ 重定向过多 (> %d)", maxRedirects)
-	return "", fmt.Errorf("too many redirects (> %d)", maxRedirects)
+	req, err := http.NewRequest(http.MethodGet, raw, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", UserAgent)
+
+	resp, err := qm.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.Request == nil || resp.Request.URL == nil {
+		return "", errors.New("无法解析最终 URL")
+	}
+
+	finalURL := resp.Request.URL.String()
+	utils.DebugWithFormat("[QQMusic] ✅ 最终URL: %s (耗时 %v)", finalURL, time.Since(start).Truncate(time.Millisecond))
+	return finalURL, nil
 }
 
+// tryParseDirect 直接解析
 func (qm *QQMusicProcessor) tryParseDirect(raw string) QQMusicLink {
 	u, err := url.Parse(raw)
 	if err != nil {
