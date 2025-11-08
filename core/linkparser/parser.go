@@ -6,7 +6,10 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/processor"
+	"github.com/nichuanfang/gymdl/processor/music"
+	"github.com/nichuanfang/gymdl/processor/video"
 )
 
 // 链接解析器
@@ -26,10 +29,14 @@ var matcherMap = make(map[string]*linkTypeMatcher)
 // 通用 URL 提取
 var genericURLRegex = regexp.MustCompile(`https?://[^\s<>"'()]*[\w/#?=&-]`)
 
+// 配置
+var cfg *config.Config
+
 /* ---------------------- 解析器初始化 ---------------------- */
 
 // 初始化
-func init() {
+func InitLinkParser(c *config.Config) {
+	cfg = c
 	for i := range linkTypeMatchers {
 		l := &linkTypeMatchers[i]
 		for _, d := range l.domains {
@@ -92,12 +99,16 @@ func cleanURLTrailingChars(s string) string {
 	return string(runes[:end])
 }
 
-// quickMatch 先基于域名进行快速判断
 func quickMatch(host string, u *url.URL) (processor.Processor, bool) {
 	if p, ok := matcherMap[host]; ok {
-		// 再进行一次轻量正则或路径判断
 		for _, re := range p.patterns {
 			if re.MatchString(u.String()) {
+				// 如果开启了 YoutubeMusicMode，并且当前匹配的是普通 YouTube 视频处理器
+				if cfg.YTDLPConfig.YoutubeMusicMode {
+					if _, isYoutubeVideo := p.handler.(*video.YoutubeProcessor); isYoutubeVideo {
+						return &music.YoutubeMusicProcessor{}, true
+					}
+				}
 				return p.handler, true
 			}
 		}

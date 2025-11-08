@@ -113,9 +113,14 @@ func (p *YoutubeMusicProcessor) getAvailableFormats(url string, cookiePath strin
 		"--skip-download",
 		"--no-check-certificates",
 		"--no-warnings",
-		"--cookies", cookiePath,
-		"-F", url,
 	}
+
+	// 根据配置决定是否传递 cookies
+	if p.cfg.YTDLPConfig.PassCookies {
+		args = append(args, "--cookies", cookiePath)
+	}
+
+	args = append(args, "-F", url)
 
 	cmd := exec.Command("yt-dlp", args...)
 
@@ -177,16 +182,16 @@ func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
 	var postArgs []string
 	switch {
 	case formats["141"]:
-		formatID = "141" // 原生 AAC
+		formatID = "141" // 高质量 AAC
 	case formats["251"]:
-		formatID = "251" // webm 转 AAC
+		formatID = "251" // 中等质量 opus
 		postArgs = []string{
 			"--audio-format", "aac",
 			"--postprocessor-args", "-c:a libfdk_aac -vbr 5",
 			"--audio-quality", "0",
 		}
 	default:
-		formatID = "140" // 备用 AAC
+		formatID = "140" // 中等质量 AAC
 	}
 
 	// 构造 yt-dlp 命令
@@ -197,9 +202,13 @@ func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
 		"--embed-thumbnail",
 		"--no-check-certificates",
 		"--no-warnings",
-		"--cookies", cookiePath,
-		"-o", filepath.Join(p.tempDir, "%(title)s.%(ext)s"),
 	}
+
+	// 根据配置决定是否传递 cookies
+	if p.cfg.YTDLPConfig.PassCookies {
+		args = append(args, "--cookies", cookiePath)
+	}
+	args = append(args, "-o", filepath.Join(p.tempDir, "%(title)s.%(ext)s"))
 	args = append(args, postArgs...)
 	args = append([]string{"-f", formatID}, args...)
 	args = append(args, url)

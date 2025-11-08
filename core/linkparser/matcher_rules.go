@@ -32,7 +32,7 @@ var linkTypeMatchers = []linkTypeMatcher{
 
 	/* ---------------------- YouTube Music ---------------------- */
 	{
-		domains: []string{"youtube.com", "music.youtube.com", "youtu.be"},
+		domains: []string{"music.youtube.com"},
 		patterns: []*regexp.Regexp{
 			// YouTube Music 视频
 			regexp.MustCompile(`^https?://music\.youtube\.com/watch\?v=[\w-]+(?:&.*)?$`),
@@ -93,7 +93,7 @@ var linkTypeMatchers = []linkTypeMatcher{
 	},
 	/* ---------------------- YouTube ---------------------- */
 	{
-		domains: []string{"youtube.com", "music.youtube.com", "youtu.be"},
+		domains: []string{"www.youtube.com", "youtube.com", "youtu.be"},
 		patterns: []*regexp.Regexp{
 			// 普通 YouTube 视频
 			regexp.MustCompile(`^https?://(?:www\.)?youtube\.com/watch\?v=[\w-]+(?:&.*)?$`),

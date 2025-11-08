@@ -26,6 +26,7 @@ func HandleText(c tb.Context) error {
 	msg, _ := b.Send(user, "🔍 正在识别链接...")
 
 	// 解析链接link:有效链接 linkType:链接类型
+	linkparser.InitLinkParser(app.cfg)
 	link, executor := linkparser.ParseLink(text)
 	if link == "" {
 		_, _ = b.Edit(msg, "❌ 暂不支持该类型的链接")
