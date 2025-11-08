@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - 'v*.*.*'  
+      - 'v*.*.*'
 
 jobs:
   docker:
@@ -28,16 +28,12 @@ jobs:
 
       - name: Set version
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            VERSION="latest"
-          else
-            VERSION="${GITHUB_REF_NAME}"
-          fi
+          VERSION="${GITHUB_REF_NAME:-latest}"
           echo "VERSION=$VERSION" >> $GITHUB_ENV
 
       - name: Build and Push Docker image
         run: |
-          IMAGE_NAME=ghcr.io/${{ github.repository_owner }}/gymdl
+          IMAGE_NAME=ghcr.io/${{ github.repository }}
           if [ "${VERSION}" = "latest" ]; then
             echo "Building image: $IMAGE_NAME:latest"
             docker build -t $IMAGE_NAME:latest .
@@ -73,10 +69,67 @@ jobs:
       - name: Build release artifacts
         run: make release
 
+      - name: Commit log
+        id: commits
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          PREV_TAG=$(git describe --tags --abbrev=0 $(git rev-list --tags --skip=1 --max-count=1) 2>/dev/null || echo "")
+          echo "Previous tag: $PREV_TAG"
+          if [ -z "$PREV_TAG" ]; then
+              COMMITS=$(git log --pretty=format:"%s")
+          else
+              COMMITS=$(git log ${PREV_TAG}..${TAG} --pretty=format:"%s")
+          fi
+          echo "COMMITS<<EOF" >> $GITHUB_ENV
+          echo "$COMMITS" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      - name: Generate Release Notes
+        id: ai_notes
+        run: |
+          MODEL="${{ secrets.AI_MODEL }}"
+          BASE_URL="${{ secrets.AI_BASE_URL }}"
+          API_KEY="${{ secrets.AI_API_KEY }}"
+
+          TODAY=$(date +'%Y-%m-%d')
+
+          PROMPT="你是一个专业的版本说明生成助手，请根据以下 commit 列表生成一份美观、结构清晰、语言流畅的 GitHub Release Notes。
+          要求：
+          1. 使用 Markdown 格式。
+          2. 第一行显示版本号和发布日期，例如：## 📦 Release ${GITHUB_REF_NAME} (${TODAY})
+          3. 按 commit 类型分类：
+             - feat: ✨ 新功能
+             - perf: 🚀 性能优化
+             - fix: 🐛 修复问题
+             - docs: 📝 文档更新
+             - chore: 🔧 其他改动
+             - refactor: ♻️ 重构优化
+          4. 每个分类下按列表展示 commit 内容，去掉前缀（如 feat:, fix:）。
+          5. 如果某个分类没有内容，则省略该分类。
+          6. 保证中文描述自然流畅，适当优化措辞。
+          
+          Commit 列表：
+          $COMMITS"
+
+          RESPONSE=$(curl -s -X POST "$BASE_URL/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $API_KEY" \
+            -d "{
+              \"model\": \"$MODEL\",
+              \"messages\": [
+                {\"role\": \"system\", \"content\": \"你是一个专业的版本说明生成助手\"},
+                {\"role\": \"user\", \"content\": \"$PROMPT\"}
+              ],
+              \"temperature\": 0.7
+            }")
+
+          NOTES=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
+          echo "$NOTES" > release_notes.md
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.VERSION }}
+          tag_name: ${{ github.ref_name }}
           files: release/*
           draft: false
-          generate_release_notes: false
+          body_path: release_notes.md
