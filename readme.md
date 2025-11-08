@@ -29,10 +29,14 @@ CookieCloud 自动同步登录、WebDAV 上传、下载器监控、Telegram Bot 
 | 定时任务调度（gocron）                                       | ✅      |
 | 重构模块                                                 | ✅      |
 | 下载器监控                                                | ✅      |
-| 支持下载列表                                               | ✅      |
-| 视频下载                                                 | 🚧 开发中 |
-| YoutubeMusic下载                                       | 🚧 开发中 |
-| 多个通知渠道                                               | ⚠️ 规划中 |
+| QQ音乐下载                                               | ✅      |
+| 网易云音乐下载                                               | ✅      |
+| AppleMusic下载                                               | ✅      |
+| YoutubeMusic下载                                            | ✅ |
+| Soundcloud下载                                              | ✅ |
+| Spotify下载                                                 | 🚧 开发中 |
+| 视频下载                                                    | 🚧 开发中 |
+| 多个通知渠道                                                | ⚠️ 规划中 |
 | AI 助手                                                | ⚠️ 规划中 |
 | Web UI                                               | ⚠️ 规划中 |
 
