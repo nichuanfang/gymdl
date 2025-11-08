@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/utils"
@@ -169,8 +170,6 @@ func ReadTags(path string) (*SongInfo, error) {
 
 	if al, ok := tags[taglib.Album]; ok && len(al) > 0 {
 		songInfo.SongAlbum = al[0]
-	} else {
-		songInfo.SongAlbum = "未知专辑"
 	}
 
 	if aa, ok := tags[taglib.AlbumArtist]; ok && len(aa) > 0 {
@@ -196,6 +195,17 @@ func ReadTags(path string) (*SongInfo, error) {
 func FillDefaultTags(path string, info *SongInfo) {
 	updates := make(map[string][]string)
 
+	// 默认专辑
+	if info.SongAlbum == "" {
+		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		if info.SongArtists != "" {
+			info.SongAlbum = fmt.Sprintf("%s Singles", info.SongArtists)
+		} else {
+			info.SongAlbum = fmt.Sprintf("%s Collection", base)
+		}
+		updates[taglib.Album] = []string{info.SongAlbum}
+	}
+
 	// 默认专辑艺术家
 	if info.SongAlbumArtist == "" {
 		info.SongAlbumArtist = info.SongArtists
@@ -204,8 +214,18 @@ func FillDefaultTags(path string, info *SongInfo) {
 
 	// 默认年份
 	if info.Year == 0 {
-		info.Year = 2020
+		info.Year = time.Now().Year()
 		updates[taglib.Date] = []string{strconv.Itoa(info.Year)}
+	}
+
+	// 默认流派
+	if info.Genre == "" {
+		if info.Lyric == "" {
+			info.Genre = "纯音乐"
+		} else {
+			info.Genre = "流行"
+		}
+		updates[taglib.Genre] = []string{info.Genre}
 	}
 
 	// 默认歌词
@@ -213,12 +233,6 @@ func FillDefaultTags(path string, info *SongInfo) {
 		info.Lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
 		updates[taglib.Lyrics] = []string{info.Lyric}
 	}
-
-	// 默认流派
-	/*if info.Genre == "" {
-	    info.Genre = "缺省"
-	    updates[taglib.Genre] = []string{info.Genre}
-	}*/
 
 	if len(updates) > 0 {
 		if err := taglib.WriteTags(path, updates, 0); err != nil {
