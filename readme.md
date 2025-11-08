@@ -105,7 +105,7 @@ telegram:
 
 # qq音乐api配置
 qq_music_api:
-  enable: false #是否启用 如果不启用则默认使用洛雪api提供的服务
+  enable: false #是否启用
   endpoint: "" #服务地址 
   login_type: 0 #登录方式: 0未登录 1微信 2QQ
   refresh_key: "" #用于刷新已失效的musickey  musickey1小时会过期
