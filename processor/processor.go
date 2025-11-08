@@ -17,7 +17,7 @@ import (
 
 type Processor interface {
 	//构造方法
-	Init(cfg *config.Config) error
+	Init(cfg *config.Config)
 	//处理器名称
 	Name() LinkType
 }

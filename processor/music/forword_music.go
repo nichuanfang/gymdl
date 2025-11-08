@@ -26,11 +26,10 @@ type ForwardProcessor struct {
 }
 
 // Init  初始化
-func (fp *ForwardProcessor) Init(cfg *config.Config) error {
+func (fp *ForwardProcessor) Init(cfg *config.Config) {
 	fp.cfg = cfg
 	fp.songs = make([]*SongInfo, 0)
 	fp.tempDir = processor.BuildOutputDir(ForwardTempDir)
-	return nil
 }
 
 /* ---------------------- 基础接口实现 ---------------------- */

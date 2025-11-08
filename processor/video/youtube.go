@@ -17,11 +17,10 @@ type YoutubeProcessor struct {
 }
 
 // Init  初始化
-func (p *YoutubeProcessor) Init(cfg *config.Config) error {
+func (p *YoutubeProcessor) Init(cfg *config.Config) {
 	p.cfg = cfg
 	p.videos = make([]*VideoInfo, 0)
 	p.tempDir = processor.BuildOutputDir(YoutubeTempDir)
-	return nil
 }
 
 /* ---------------------- 基础接口实现 ---------------------- */

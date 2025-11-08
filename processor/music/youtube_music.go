@@ -25,11 +25,10 @@ type YoutubeMusicProcessor struct {
 }
 
 // Init  初始化
-func (p *YoutubeMusicProcessor) Init(cfg *config.Config) error {
+func (p *YoutubeMusicProcessor) Init(cfg *config.Config) {
 	p.cfg = cfg
 	p.songs = make([]*SongInfo, 0)
 	p.tempDir = processor.BuildOutputDir(YoutubeTempDir)
-	return nil
 }
 
 // AudioFormat 结构用来解析 yt-dlp -j 输出

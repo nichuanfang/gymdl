@@ -35,13 +35,12 @@ type NetEaseProcessor struct {
 }
 
 // Init  初始化
-func (ncm *NetEaseProcessor) Init(cfg *config.Config) error {
+func (ncm *NetEaseProcessor) Init(cfg *config.Config) {
 	ncm.cfg = cfg
 	ncm.songs = make([]*SongInfo, 0)
 	ncm.tempDir = processor.BuildOutputDir(NCMTempDir)
 	cookiePath := filepath.Join(cfg.CookieCloud.CookieFilePath, cfg.CookieCloud.CookieFile)
 	ncm.musicU = utils.GetCookieValue(cookiePath, ".music.163.com", "MUSIC_U")
-	return nil
 }
 
 /* ---------------------- 基础接口实现 ---------------------- */

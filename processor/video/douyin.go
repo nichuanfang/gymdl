@@ -17,11 +17,10 @@ type DouyinProcessor struct {
 }
 
 // Init  初始化
-func (p *DouyinProcessor) Init(cfg *config.Config) error {
+func (p *DouyinProcessor) Init(cfg *config.Config) {
 	p.cfg = cfg
 	p.videos = make([]*VideoInfo, 0)
 	p.tempDir = processor.BuildOutputDir(DouyinTempDir)
-	return nil
 }
 
 /* ---------------------- 基础接口实现 ---------------------- */

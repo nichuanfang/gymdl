@@ -16,11 +16,10 @@ type SpotifyProcessor struct {
 }
 
 // Init  初始化
-func (p *SpotifyProcessor) Init(cfg *config.Config) error {
+func (p *SpotifyProcessor) Init(cfg *config.Config) {
 	p.cfg = cfg
 	p.songs = make([]*SongInfo, 0)
 	p.tempDir = processor.BuildOutputDir(SpotifyTempDir)
-	return nil
 }
 
 /* ---------------------- 基础接口实现 ---------------------- */

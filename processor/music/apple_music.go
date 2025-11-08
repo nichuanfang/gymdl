@@ -24,11 +24,10 @@ type AppleMusicProcessor struct {
 }
 
 // Init  初始化
-func (am *AppleMusicProcessor) Init(cfg *config.Config) error {
+func (am *AppleMusicProcessor) Init(cfg *config.Config) {
 	am.songs = make([]*SongInfo, 0)
 	am.cfg = cfg
 	am.tempDir = processor.BuildOutputDir(AppleMusicTempDir)
-	return nil
 }
 
 /* ---------------------- 基础接口实现 ---------------------- */
