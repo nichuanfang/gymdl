@@ -164,6 +164,12 @@ func (c *Config) setDefaults() {
 			MonitorDirs:      make([]string, 0),
 		}
 	}
+	if c.YTDLPConfig == nil {
+		c.YTDLPConfig = &YTDLPConfig{
+			PassCookies:      false, //是否传递cookie
+			YoutubeMusicMode: false, //默认将youtube音乐和youtube视频分开
+		}
+	}
 	if c.ProxyConfig == nil {
 		c.ProxyConfig = &ProxyConfig{
 			Enable: false,

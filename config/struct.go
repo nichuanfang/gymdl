@@ -10,6 +10,7 @@ type Config struct {
 	AI               *AIConfig          `yaml:"ai"`                // AI配置
 	QQMusicApiConfig *QQMusicApiConfig  `yaml:"qq_music_api"`      // qq-music-api服务配置
 	AdditionalConfig *AdditionalConfig  `yaml:"additional_config"` // 附属配置
+	YTDLPConfig      *YTDLPConfig       `yaml:"ytdlp"`             //ytdlp配置
 	ProxyConfig      *ProxyConfig       `yaml:"proxy"`             // 代理配置
 }
 
@@ -93,4 +94,9 @@ type ProxyConfig struct {
 	User   string `yaml:"user"`   // 代理用户名
 	Pass   string `yaml:"pass"`   // 代理密码
 	Auth   bool   `yaml:"auth"`   // 是否需要认证
+}
+
+type YTDLPConfig struct {
+	PassCookies      bool `yaml:"pass_cookies"`       //是否传递cookie  目前yt-dlp对传递cookie的支持不稳定 推荐设置为false
+	YoutubeMusicMode bool `yaml:"youtube_music_mode"` //是否将youtube视频链接当作YoutubeMusic来处理
 }

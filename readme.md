@@ -135,6 +135,11 @@ additional_config:
     - ""  # 监听的目录,下载器监控
   enable_youtube_cookie: false #是否启用yt-dlp的cookie指令(目前yt-dlp的cookie指令有问题)
 
+# yt-dlp下载配置
+ytdlp:
+  pass_cookies: false #是否传递cookie  目前yt-dlp对传递cookie的支持不稳定 推荐设置为false
+  youtube_music_mode: false #是否将youtube视频链接当作YoutubeMusic来处理 根据个人喜欢设置 
+
 # 代理配置
 proxy:
   enable: false  # 是否启用代理
