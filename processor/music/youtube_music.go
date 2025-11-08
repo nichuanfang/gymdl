@@ -1,7 +1,7 @@
 package music
 
 import (
-	"bytes"
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -22,6 +22,26 @@ type YoutubeMusicProcessor struct {
 	cfg     *config.Config
 	tempDir string
 	songs   []*SongInfo
+}
+
+type Config struct {
+	AdditionalConfig struct {
+		EnableYoutubeCookie bool
+	}
+	CookieCloud struct {
+		CookieFilePath string
+		CookieFile     string
+	}
+}
+
+// Format JSON 解析结构
+type ytFormat struct {
+	FormatID string `json:"format_id"`
+	Ext      string `json:"ext"`
+}
+
+type ytInfo struct {
+	Formats []ytFormat `json:"formats"`
 }
 
 // Init  初始化
@@ -55,6 +75,7 @@ func (p *YoutubeMusicProcessor) DownloadMusic(url string, callback func(string))
 	utils.InfoWithFormat("[YoutubeMusic] 🎵 开始下载: %s", url)
 
 	cmd := p.DownloadCommand(url)
+	callback("yt-dlp下载命令构建完成,开始下载...")
 	if cmd == nil {
 		return errors.New("download command build failed")
 	}
@@ -85,64 +106,104 @@ func (p *YoutubeMusicProcessor) DownloadMusic(url string, callback func(string))
 	return nil
 }
 
-func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
-	// 1️⃣ 获取可用音轨信息
-	cmdInfo := exec.Command("yt-dlp", "--no-playlist", "-F", url)
-	var out bytes.Buffer
-	cmdInfo.Stdout = &out
-	err := cmdInfo.Run()
+// getAvailableFormats 获取可用格式（优化版：流式解析 + 映射表）
+func (p *YoutubeMusicProcessor) getAvailableFormats(url string, cookiePath string) (map[string]bool, error) {
+	args := []string{
+		"--no-playlist",
+		"--skip-download",
+		"--no-check-certificates",
+		"--no-warnings",
+		"--cookies", cookiePath,
+		"-F", url,
+	}
+
+	cmd := exec.Command("yt-dlp", args...)
+
+	// 用流式解析替代一次性读取整个输出
+	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		utils.WarnWithFormat("获取视频信息失败: %w", err)
+		return nil, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	formats := make(map[string]bool)
+
+	// 目标格式映射表
+	targetExt := map[string]string{
+		"141": "m4a",
+		"251": "webm",
+		"140": "m4a",
+	}
+
+	scanner := bufio.NewScanner(stdoutPipe)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) >= 2 {
+			if ext, ok := targetExt[fields[0]]; ok && strings.Contains(fields[1], ext) {
+				formats[fields[0]] = true
+			}
+		}
+	}
+
+	if err = scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	if err = cmd.Wait(); err != nil {
+		return nil, err
+	}
+
+	return formats, nil
+}
+
+// 生成下载命令
+func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
+	cookiePath := filepath.Join(p.cfg.CookieCloud.CookieFilePath, p.cfg.CookieCloud.CookieFile)
+	start := time.Now()
+	// 获取可用格式
+
+	formats, err := p.getAvailableFormats(url, cookiePath)
+	utils.InfoWithFormat("[YoutubeMusic] ✅ 成功解析链接（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
+	if err != nil {
+		// 这里可按你的 utils 警告逻辑
 		return nil
 	}
 
-	outputText := out.String()
-	lines := strings.Split(outputText, "\n")
-
-	var has141, has251 bool
-	for _, line := range lines {
-		// 每行以空格分割，第一个字段是 format ID
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
+	// 根据优先级选择
+	var formatID string
+	var postArgs []string
+	switch {
+	case formats["141"]:
+		formatID = "141" // 原生 AAC
+	case formats["251"]:
+		formatID = "251" // webm 转 AAC
+		postArgs = []string{
+			"--audio-format", "aac",
+			"--postprocessor-args", "-c:a libfdk_aac -vbr 5",
+			"--audio-quality", "0",
 		}
-		formatID := fields[0]
-		ext := fields[1]
-
-		if formatID == "141" && strings.Contains(ext, "m4a") {
-			has141 = true
-		}
-		if formatID == "251" && strings.Contains(ext, "webm") {
-			has251 = true
-		}
+	default:
+		formatID = "140" // 备用 AAC
 	}
 
-	// 2️⃣ 根据存在情况构造 yt-dlp 命令
-
-	//cookiePath := filepath.Join(p.cfg.CookieCloud.CookieFilePath, p.cfg.CookieCloud.CookieFile)
-
+	// 构造 yt-dlp 命令
 	args := []string{
-		//"--cookies", cookiePath,   // yt-dlp传递cookie文件有问题 暂时不开放
 		"-x",
 		"--no-playlist",
 		"--embed-metadata",
 		"--embed-thumbnail",
+		"--no-check-certificates",
+		"--no-warnings",
+		"--cookies", cookiePath,
 		"-o", filepath.Join(p.tempDir, "%(title)s.%(ext)s"),
 	}
-
-	if has141 {
-		// 存在 141 AAC，直接下载
-		args = append([]string{"-f", "141"}, args...)
-	} else if has251 {
-		// 不存在 141，用 251 转 AAC
-		args = append([]string{"-f", "251"}, args...)
-		args = append(args, "--audio-format", "aac", "--postprocessor-args", "-c:a libfdk_aac -vbr 5", "--audio-quality", "0")
-	} else {
-		// 其他情况，退而求其次下载 140 AAC
-		args = append([]string{"-f", "140"}, args...)
-	}
-
+	args = append(args, postArgs...)
+	args = append([]string{"-f", formatID}, args...)
 	args = append(args, url)
+
 	return exec.Command("yt-dlp", args...)
 }
 

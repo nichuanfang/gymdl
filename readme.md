@@ -133,6 +133,7 @@ additional_config:
   enable_monitor: false  # 是否启用目录监听 开启后监听下载目录使用um cli自动解密
   monitor_dirs:
     - ""  # 监听的目录,下载器监控
+  enable_youtube_cookie: false #是否启用yt-dlp的cookie指令(目前yt-dlp的cookie指令有问题)
 
 # 代理配置
 proxy:
