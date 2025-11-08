@@ -20,24 +20,26 @@ var logger *zap.Logger
 func registerTasks(c *config.Config, scheduler gocron.Scheduler) {
 	//请求池
 	client := &http.Client{
-		Timeout: 10 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:       10,
+			IdleConnTimeout:    30 * time.Second,
+			DisableCompression: false,
 		},
 	}
 	// 执行一次依赖安装/更新
 	newTask("installDependency", scheduler, gocron.OneTimeJob(gocron.OneTimeJobStartImmediately()),
-		gocron.NewTask(installDependency, c))
+		gocron.NewTask(installDependency, c, client))
 
 	// 注册依赖更新检测任务(6小时)
-	newTask("updateDependency", scheduler, gocron.DurationJob(time.Hour*6), gocron.NewTask(updateDependency, c))
+	newTask("updateDependency", scheduler, gocron.DurationJob(time.Hour*6), gocron.NewTask(updateDependency, c, client))
 
 	if c.CookieCloud.Mode == 1 {
 		// 定时刷新
 
 		// 注册cookiecloud同步任务(根据配置的时间)
 		newTask("syncCookieCloud", scheduler, gocron.DurationJob(time.Minute*time.Duration(c.CookieCloud.ExpireTime)),
-			gocron.NewTask(syncCookieCloud))
+			gocron.NewTask(syncCookieCloud, client))
 	}
 
 	//刷新cookie
@@ -46,7 +48,7 @@ func registerTasks(c *config.Config, scheduler gocron.Scheduler) {
 		newTask("refreshMusicKey", scheduler, gocron.OneTimeJob(gocron.OneTimeJobStartImmediately()),
 			gocron.NewTask(refreshMusicKey, c, client))
 		//定时检测musickey是否失效
-		newTask("syncCookieCloud", scheduler, gocron.DurationJob(time.Minute*time.Duration(c.QQMusicApiConfig.Interval)),
+		newTask("refreshMusicKey", scheduler, gocron.DurationJob(time.Minute*time.Duration(c.QQMusicApiConfig.Interval)),
 			gocron.NewTask(refreshMusicKey, c, client))
 	}
 

@@ -23,15 +23,6 @@ import (
 const destDir = "./data/bin"
 
 var (
-	httpClient = &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:       10,
-			IdleConnTimeout:    30 * time.Second,
-			DisableCompression: false,
-		},
-	}
-
 	latestVersionCache struct {
 		version   string
 		timestamp time.Time
@@ -45,8 +36,8 @@ var (
 )
 
 // installUm 安装或更新 Um
-func installUm() {
-	version := getLatestVersion()
+func installUm(client *http.Client) {
+	version := getLatestVersion(client)
 	if version == "" {
 		logger.Error("⚠️未获取到最新版本，安装失败")
 		return
@@ -60,7 +51,7 @@ func installUm() {
 	url := buildUmURL(version)
 	logger.Info("Downloading: " + url)
 
-	if err := downloadAndExtract(url, destDir); err != nil {
+	if err := downloadAndExtract(url, destDir, client); err != nil {
 		logger.Error("Installed failed: " + err.Error())
 		return
 	}
@@ -74,8 +65,8 @@ func installUm() {
 }
 
 // updateUm 检查并更新 Um
-func updateUm() {
-	version := getLatestVersion()
+func updateUm(client *http.Client) {
+	version := getLatestVersion(client)
 	if version == "" {
 		return
 	}
@@ -86,7 +77,7 @@ func updateUm() {
 	}
 
 	logger.Info("💡检测到新版本: " + version + "，正在更新 Um...")
-	installUm()
+	installUm(client)
 }
 
 // shouldUpdate 判断是否需要更新
@@ -125,7 +116,7 @@ func getLocalVersionCached(binaryPath string) string {
 }
 
 // getLatestVersion 从 Releases 页面获取最新版本号，带缓存
-func getLatestVersion() string {
+func getLatestVersion(httpClient *http.Client) string {
 	latestVersionCache.mu.Lock()
 	defer latestVersionCache.mu.Unlock()
 
@@ -181,7 +172,7 @@ func buildUmURL(version string) string {
 }
 
 // downloadAndExtract 下载并解压 Um
-func downloadAndExtract(url, destDir string) error {
+func downloadAndExtract(url, destDir string, httpClient *http.Client) error {
 	resp, err := httpClient.Get(url)
 	if err != nil {
 		return fmt.Errorf("下载失败: %w", err)

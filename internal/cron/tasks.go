@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"net/http"
 	"sync"
 
 	"github.com/nichuanfang/gymdl/config"
@@ -8,7 +9,7 @@ import (
 )
 
 // installDependency 安装依赖项
-func installDependency(c *config.Config) {
+func installDependency(c *config.Config, client *http.Client) {
 	group := sync.WaitGroup{}
 	group.Add(3)
 	go func() {
@@ -17,7 +18,7 @@ func installDependency(c *config.Config) {
 	}()
 	go func() {
 		defer group.Done()
-		installUm()
+		installUm(client)
 	}()
 	go func() {
 		defer group.Done()
@@ -27,7 +28,7 @@ func installDependency(c *config.Config) {
 }
 
 // updateDependency 更新依赖项
-func updateDependency(c *config.Config) {
+func updateDependency(c *config.Config, client *http.Client) {
 	group := sync.WaitGroup{}
 	group.Add(2)
 	go func() {
@@ -36,7 +37,7 @@ func updateDependency(c *config.Config) {
 	}()
 	go func() {
 		defer group.Done()
-		updateUm()
+		updateUm(client)
 	}()
 	group.Wait()
 }
