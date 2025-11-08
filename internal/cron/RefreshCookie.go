@@ -45,12 +45,12 @@ func refreshMusicKey(c *config.Config, client *http.Client) {
 	}
 
 	if isExpired(data) {
-		utils.InfoWithFormat("Musickey 已过期，刷新中...")
+		utils.InfoWithFormat("Musickey 已过期 刷新中...")
 		if err = refreshAndSave(false, musickeyPath, c, client); err != nil {
 			utils.ErrorWithFormat("刷新失败: %v", err)
 		}
 	} else {
-		utils.Infof("Musickey 未过期，无需刷新")
+		utils.Infof("Musickey 未过期 无需刷新")
 	}
 }
 
@@ -170,7 +170,7 @@ func refreshMusicKeyHeaders(cfg *config.Config, data *MusickeyData) map[string]s
 			if uin != "" {
 				uin = cfg.QQMusicApiConfig.MusicId
 			}
-			headers["Cookie"] = fmt.Sprintf("login_type=1;musicid=%s;musickey=%s;refresh_key=%s;refresh_token=%s",
+			headers["Cookie"] = fmt.Sprintf("login_type=2;musicid=%s;musickey=%s;refresh_key=%s;refresh_token=%s",
 				uin,
 				qqmusicKey,
 				cfg.QQMusicApiConfig.RefreshKey,

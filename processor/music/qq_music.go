@@ -456,6 +456,7 @@ func doGetRequest[T any](qm *QQMusicAPI, endpoint string, params map[string]stri
 
 	resp, err := qm.client.Do(request)
 	if err != nil {
+		utils.ErrorWithFormat("执行请求报错: %v", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -558,22 +559,13 @@ func (qmApi *QQMusicAPI) initHeaders(cfg *config.Config) {
 		}
 	} else {
 		// 直接用 musickey.json 中的数据
-		switch cfg.QQMusicApiConfig.LoginType {
-		case 1:
-			headers["Cookie"] = fmt.Sprintf(
-				"musicid=%d;musickey=%s",
-				musicData.Musicid,
-				musicData.Musickey,
-			)
-		case 2:
-			headers["Cookie"] = fmt.Sprintf(
-				"musicid=%d;musickey=%s",
-				musicData.Musicid,
-				musicData.Musickey,
-			)
-		}
+		headers["Cookie"] = fmt.Sprintf(
+			"musicid=%d;musickey=%s",
+			musicData.Musicid,
+			musicData.Musickey,
+		)
 	}
-
+	utils.DebugWithFormat("[QQMusic] 请求头: %+v", headers)
 	qmApi.headers = headers
 }
 
