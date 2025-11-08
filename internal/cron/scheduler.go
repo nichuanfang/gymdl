@@ -41,17 +41,6 @@ func registerTasks(c *config.Config, scheduler gocron.Scheduler) {
 		newTask("syncCookieCloud", scheduler, gocron.DurationJob(time.Minute*time.Duration(c.CookieCloud.ExpireTime)),
 			gocron.NewTask(syncCookieCloud, client))
 	}
-
-	//刷新cookie
-	if c.QQMusicApiConfig.Enable {
-		//启动时刷新一次musickey
-		newTask("refreshMusicKey", scheduler, gocron.OneTimeJob(gocron.OneTimeJobStartImmediately()),
-			gocron.NewTask(refreshMusicKey, c, client))
-		//定时检测musickey是否失效
-		newTask("refreshMusicKey", scheduler, gocron.DurationJob(time.Minute*time.Duration(c.QQMusicApiConfig.Interval)),
-			gocron.NewTask(refreshMusicKey, c, client))
-	}
-
 }
 
 // InitScheduler 日志初始化

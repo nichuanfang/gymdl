@@ -48,11 +48,17 @@ func HandleText(c tb.Context) error {
 	switch expr := executor.(type) {
 	case music.Processor:
 		// 初始化音乐处理器
-		expr.Init(app.cfg)
+		err = expr.Init(app.cfg)
+		if err != nil {
+			break
+		}
 		err = session.HandleMusic(expr)
 	case video.Processor:
 		// 初始化视频处理器
-		expr.Init(app.cfg)
+		err = expr.Init(app.cfg)
+		if err != nil {
+			break
+		}
 		err = session.HandleVideo(expr)
 	default:
 		err = errors.New(fmt.Sprintf("未知处理器类型: %v", expr))
@@ -86,7 +92,10 @@ func HandleAudio(c tb.Context) error {
 	}
 
 	processor := &music.ForwardProcessor{}
-	processor.Init(app.cfg)
+	err := processor.Init(app.cfg)
+	if err != nil {
+		_, _ = b.Edit(msg, fmt.Sprintf("处理失败：%s", err.Error()))
+	}
 
 	// 获取文件流 最大支持20MB
 	closer, err := b.File(file)

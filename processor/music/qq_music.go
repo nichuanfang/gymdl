@@ -17,7 +17,6 @@ import (
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
-	"github.com/nichuanfang/gymdl/internal/cron"
 	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/utils"
 )
@@ -25,11 +24,12 @@ import (
 /* ---------------------- 结构体与构造方法 ---------------------- */
 
 type QQMusicProcessor struct {
-	cfg     *config.Config
-	tempDir string
-	songs   []*SongInfo
-	qmApi   *QQMusicAPI
-	client  *http.Client // http请求池
+	cfg          *config.Config
+	tempDir      string
+	songs        []*SongInfo
+	qmApi        *QQMusicAPI
+	client       *http.Client // http请求池
+	musicKeyPath string       //musickey文件路径
 }
 
 type QQMusicLink struct {
@@ -78,6 +78,21 @@ type QQMusicAPI struct {
 	client  *http.Client
 }
 
+type MusickeyData struct {
+	RefreshKey   string `json:"refresh_key"`
+	RefreshToken string `json:"refresh_token"`
+	Musicid      int    `json:"musicid"`
+	Musickey     string `json:"musickey"`
+	ExpiredAt    int64  `json:"expired_at"`
+}
+
+type QQRefreshResponse struct {
+	Code      int          `json:"code"`
+	Message   string       `json:"message"`
+	Data      MusickeyData `json:"data"`
+	Timestamp int64        `json:"timestamp"`
+}
+
 // ⚙️ QQ 音乐常见短链/跳转域名（后缀匹配）
 var redirectHostSuffixes = []string{
 	"y.qq.com",
@@ -87,10 +102,11 @@ var redirectHostSuffixes = []string{
 }
 
 // Init 初始化（只使用自建 API）
-func (qm *QQMusicProcessor) Init(cfg *config.Config) {
+func (qm *QQMusicProcessor) Init(cfg *config.Config) error {
 	qm.cfg = cfg
 	qm.songs = make([]*SongInfo, 0)
 	qm.tempDir = processor.BuildOutputDir(QQTempDir)
+	qm.musicKeyPath = filepath.Join("data", "temp", "musickey.json")
 	qm.client = &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
@@ -98,6 +114,16 @@ func (qm *QQMusicProcessor) Init(cfg *config.Config) {
 			IdleConnTimeout:    30 * time.Second,
 			DisableCompression: false,
 		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
+	//确保凭证有效
+	if err := qm.ensureValidMusickey(); err != nil {
+		return fmt.Errorf("musickey 刷新失败: %w", err)
 	}
 	qmApi := &QQMusicAPI{
 		baseUrl: cfg.QQMusicApiConfig.Endpoint,
@@ -105,6 +131,7 @@ func (qm *QQMusicProcessor) Init(cfg *config.Config) {
 	}
 	qmApi.initHeaders(cfg)
 	qm.qmApi = qmApi
+	return nil
 }
 
 /* ---------------------- 基础接口实现 ---------------------- */
@@ -539,7 +566,7 @@ func (qmApi *QQMusicAPI) initHeaders(cfg *config.Config) {
 
 	// 尝试读取 musickey.json
 	musickeyPath := filepath.Join("data", "temp", "musickey.json")
-	var musicData cron.MusickeyData
+	var musicData MusickeyData
 	useCookieCloud := false
 
 	bytes, err := os.ReadFile(musickeyPath)
@@ -653,6 +680,151 @@ func (qmApi *QQMusicAPI) updateSongInfo(qm *QQMusicProcessor, data QQSong, fileM
 	qm.songs = append(qm.songs, songInfo)
 }
 
+/* ------------------------ 凭证续签 ------------------------ */
+
+// ensureValidMusickey 确保musickey有效
+func (qm *QQMusicProcessor) ensureValidMusickey() error {
+	data, err := qm.loadMusickey(qm.musicKeyPath)
+	if errors.Is(err, os.ErrNotExist) || data == nil {
+		utils.InfoWithFormat("musickey 不存在，立即刷新...")
+		return qm.refreshAndSave(true, qm.musicKeyPath)
+	} else if err != nil {
+		return fmt.Errorf("读取 musickey 失败: %w", err)
+	}
+	if qm.isExpired(data) {
+		utils.InfoWithFormat("musickey 即将过期，刷新中...")
+		return qm.refreshAndSave(false, qm.musicKeyPath)
+	}
+	return nil
+}
+
+// loadMusickey 读取 musickey.json
+func (qm *QQMusicProcessor) loadMusickey(path string) (*MusickeyData, error) {
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var data MusickeyData
+	if err = json.Unmarshal(bytes, &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
+}
+
+// isExpired 判断本地时间戳是否过期
+func (qm *QQMusicProcessor) isExpired(data *MusickeyData) bool {
+	return time.Now().Unix() >= data.ExpiredAt-300
+}
+
+// refreshAndSave 刷新并保存到文件
+func (qm *QQMusicProcessor) refreshAndSave(isNew bool, path string) error {
+	request, err := http.NewRequest(http.MethodGet, qm.cfg.QQMusicApiConfig.Endpoint+"/login/api_refresh_cookies", nil)
+	if err != nil {
+		return err
+	}
+	//处理请求头
+	var headers map[string]string
+	if isNew {
+		headers = qm.refreshMusicKeyHeaders(qm.cfg, &MusickeyData{})
+	} else {
+		var bytes []byte
+		bytes, err = os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var musicKeyData MusickeyData
+		err = json.Unmarshal(bytes, &musicKeyData)
+		if err != nil {
+			return err
+		}
+		headers = qm.refreshMusicKeyHeaders(qm.cfg, &musicKeyData)
+	}
+	for k, v := range headers {
+		request.Header.Set(k, v)
+	}
+	resp, err := qm.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var newData QQRefreshResponse
+	if err = json.NewDecoder(resp.Body).Decode(&newData); err != nil {
+		return err
+	}
+	bytes, _ := json.MarshalIndent(newData.Data, "", "  ")
+	return os.WriteFile(path, bytes, 0644)
+}
+
+// refreshMusicKeyHeaders 刷新musickey的请求头
+func (qm *QQMusicProcessor) refreshMusicKeyHeaders(cfg *config.Config, data *MusickeyData) map[string]string {
+	headers := map[string]string{
+		"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+		"Referer":    "https://y.qq.com/",
+	}
+	if cfg.QQMusicApiConfig.EnableSign {
+		headers["X-Enable-Sign"] = "true"
+		headers["X-Enable-Cache"] = "true"
+	}
+	if data.Musickey != "" {
+		//设置Cookie
+		switch cfg.QQMusicApiConfig.LoginType {
+		case 1:
+			//wx
+			headers["Cookie"] = fmt.Sprintf("login_type=1;musicid=%d;musickey=%s;refresh_key=%s;refresh_token=%s",
+				data.Musicid,
+				data.Musickey,
+				data.RefreshKey,
+				data.RefreshToken,
+			)
+		case 2:
+			//qq
+			headers["Cookie"] = fmt.Sprintf("login_type=2;musicid=%d;musickey=%s;refresh_key=%s;refresh_token=%s",
+				data.Musicid,
+				data.Musickey,
+				data.RefreshKey,
+				data.RefreshToken,
+			)
+		}
+	} else {
+		//读取cookiecloud同步的cookies文件
+		cookiePath := filepath.Join(cfg.CookieCloud.CookieFilePath, cfg.CookieCloud.CookieFile)
+		qqCookies := utils.GetCookiesByDomain(cookiePath, ".qq.com")
+		qqmusicKey := qqCookies["qqmusic_key"]
+		if qqmusicKey == "" {
+			qqmusicKey = cfg.QQMusicApiConfig.MusicKey
+		}
+		//设置Cookie
+		switch cfg.QQMusicApiConfig.LoginType {
+		case 1:
+			//wx
+			wxuin := qqCookies["wxuin"]
+			if wxuin == "" {
+				wxuin = cfg.QQMusicApiConfig.MusicId
+			}
+			headers["Cookie"] = fmt.Sprintf("login_type=1;musicid=%s;musickey=%s;refresh_key=%s;refresh_token=%s",
+				wxuin,
+				qqmusicKey,
+				cfg.QQMusicApiConfig.RefreshKey,
+				cfg.QQMusicApiConfig.RefreshToken,
+			)
+		case 2:
+			//qq
+			uin := qqCookies["uin"]
+			if uin != "" {
+				uin = cfg.QQMusicApiConfig.MusicId
+			}
+			headers["Cookie"] = fmt.Sprintf("login_type=2;musicid=%s;musickey=%s;refresh_key=%s;refresh_token=%s",
+				uin,
+				qqmusicKey,
+				cfg.QQMusicApiConfig.RefreshKey,
+				cfg.QQMusicApiConfig.RefreshToken,
+			)
+		}
+	}
+	return headers
+}
+
 /* ------------------------ 拓展方法 ------------------------ */
 
 // parseQQMusicLink 解析 QQ 音乐分享链接，自动识别跳转并返回最终 ID
@@ -696,17 +868,9 @@ func (qm *QQMusicProcessor) parseQQMusicLink(raw string) (QQMusicLink, error) {
 
 // getFinalURL 返回最终重定向后的真实 URL。
 func (qm *QQMusicProcessor) getFinalURL(raw string) (string, error) {
-	const maxRedirects = 10
 	start := time.Now()
 
 	utils.DebugWithFormat("[QQMusic] 🔗 检查重定向: %s", raw)
-
-	qm.client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= maxRedirects {
-			return http.ErrUseLastResponse
-		}
-		return nil
-	}
 
 	req, err := http.NewRequest(http.MethodGet, raw, nil)
 	if err != nil {

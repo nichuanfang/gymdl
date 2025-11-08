@@ -17,10 +17,11 @@ type XiaohongshuProcessor struct {
 }
 
 // Init  初始化
-func (p *XiaohongshuProcessor) Init(cfg *config.Config) {
+func (p *XiaohongshuProcessor) Init(cfg *config.Config) error {
 	p.cfg = cfg
 	p.videos = make([]*VideoInfo, 0)
 	p.tempDir = processor.BuildOutputDir(XHSTempDir)
+	return nil
 }
 
 /* ---------------------- 基础接口实现 ---------------------- */

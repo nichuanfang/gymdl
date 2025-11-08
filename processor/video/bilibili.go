@@ -17,10 +17,11 @@ type BiliBiliProcessor struct {
 }
 
 // Init  初始化
-func (p *BiliBiliProcessor) Init(cfg *config.Config) {
+func (p *BiliBiliProcessor) Init(cfg *config.Config) error {
 	p.cfg = cfg
 	p.videos = make([]*VideoInfo, 0)
 	p.tempDir = processor.BuildOutputDir(BilibiliTempDir)
+	return nil
 }
 
 /* ---------------------- 基础接口实现 ---------------------- */

@@ -26,10 +26,11 @@ type ForwardProcessor struct {
 }
 
 // Init  初始化
-func (fp *ForwardProcessor) Init(cfg *config.Config) {
+func (fp *ForwardProcessor) Init(cfg *config.Config) error {
 	fp.cfg = cfg
 	fp.songs = make([]*SongInfo, 0)
 	fp.tempDir = processor.BuildOutputDir(ForwardTempDir)
+	return nil
 }
 
 /* ---------------------- 基础接口实现 ---------------------- */
@@ -104,7 +105,7 @@ func (fp *ForwardProcessor) EncryptedExts() []string {
 }
 
 func (fp *ForwardProcessor) DecryptedExts() []string {
-    return []string{".aac", ".m4a", ".flac",".mp3",".ogg"}
+	return []string{".aac", ".m4a", ".flac", ".mp3", ".ogg"}
 }
 
 /* ------------------------ 拓展方法 ------------------------ */

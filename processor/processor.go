@@ -17,7 +17,7 @@ import (
 
 type Processor interface {
 	//构造方法
-	Init(cfg *config.Config)
+	Init(cfg *config.Config) error
 	//处理器名称
 	Name() LinkType
 }
@@ -36,7 +36,7 @@ const (
 	LinkSoundcloud   LinkType = "Soundcloud"
 	LinkSpotify      LinkType = "Spotify"
 	LinkYoutubeMusic LinkType = "YoutubeMusic"
-    LinkForwardMusic LinkType = "ForwardMusic"
+	LinkForwardMusic LinkType = "ForwardMusic"
 
 	/* -------------------------视频平台枚举 ---------------------- */
 

@@ -75,8 +75,6 @@ type QQMusicApiConfig struct {
 	RefreshToken string `yaml:"refresh_token"` //用于刷新已失效的musickey musickey1小时会过期
 	MusicId      string `yaml:"music_id"`      //用于刷新已失效的musickey
 	MusicKey     string `yaml:"music_key"`     //用于刷新已失效的musickey
-	Interval     int    `yaml:"interval"`      //定时检测间隔(分钟)
-	EncryptUin   string `yaml:"encrypt_uin"`   //用于获取用户信息
 	EnableSign   bool   `yaml:"enable_sign"`   // 是否启用加密接口 加密接口会多一个解密操作 但是更安全
 	EnableCache  bool   `yaml:"enable_cache"`  // 是否启用接口缓存
 }
