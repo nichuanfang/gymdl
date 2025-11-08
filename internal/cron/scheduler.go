@@ -20,7 +20,7 @@ var logger *zap.Logger
 func registerTasks(c *config.Config, scheduler gocron.Scheduler) {
 	//请求池
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: 10 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

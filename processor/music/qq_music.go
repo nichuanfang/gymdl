@@ -89,7 +89,7 @@ func (qm *QQMusicProcessor) Init(cfg *config.Config) {
 	qm.songs = make([]*SongInfo, 0)
 	qm.tempDir = processor.BuildOutputDir(QQTempDir)
 	qm.client = &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: 10 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -204,28 +204,36 @@ func (qmApi *QQMusicAPI) download(qm *QQMusicProcessor, musicLink QQMusicLink, c
 // downloadSong 单曲下载
 func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, callback func(string)) error {
 	start := time.Now()
+	utils.InfoWithFormat("[QQMusic] 🎵 开始下载单曲: %s", musicid)
 
 	songData, err := qmApi.querySong(musicid)
 	if err != nil {
+		utils.ErrorWithFormat("[QQMusic] ❌ 查询歌曲信息失败: %v", err)
 		_ = processor.RemoveTempDir(qm.tempDir)
 		return err
 	}
+	utils.DebugWithFormat("[QQMusic] 歌曲信息: Title=%s, Singer=%s, Album=%s", songData.Title, songData.Singer[0].Name, songData.Album.Name)
 
 	mid := songData.Mid
 	fileMetadata, err := utils.ParseQQFileMetadate(songData.File, songData.Interval)
 	if err != nil {
+		utils.ErrorWithFormat("[QQMusic] ❌ 解析文件元数据失败: %v", err)
 		_ = processor.RemoveTempDir(qm.tempDir)
 		return err
 	}
+	utils.DebugWithFormat("[QQMusic] 文件元数据: %+v", fileMetadata)
 
 	songUrl, err := qmApi.getSongUrl(mid, fileMetadata.Quality)
 	if err != nil {
+		utils.ErrorWithFormat("[QQMusic] ❌ 获取下载链接失败: %v", err)
 		_ = processor.RemoveTempDir(qm.tempDir)
 		return err
 	}
+	utils.DebugWithFormat("[QQMusic] 下载链接: %s", songUrl)
 
 	sanitizeFileName := qm.safeFileName(songData.Title, songData.Singer[0].Name, fileMetadata.Ext)
 	tempPath := filepath.Join(qm.tempDir, sanitizeFileName)
+	utils.InfoWithFormat("[QQMusic] ⬇️ 开始下载文件: %s", tempPath)
 
 	// 并发下载封面和歌词
 	var coverUrl string
@@ -236,39 +244,53 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		utils.DebugWithFormat("[QQMusic] 🔍 请求封面URL: %s", songData.Album.Mid)
 		coverUrl, coverErr = qmApi.queryCoverUrl(songData.Album.Mid)
+		if coverErr != nil {
+			utils.WarnWithFormat("[QQMusic] ⚠️ 获取封面失败: %v", coverErr)
+		} else {
+			utils.DebugWithFormat("[QQMusic] ✅ 获取封面URL成功: %s", coverUrl)
+		}
 	}()
 	go func() {
 		defer wg.Done()
+		utils.DebugWithFormat("[QQMusic] 🔍 请求歌词: %s", mid)
 		lyric, lyricErr = qmApi.queryLyric(mid)
+		if lyricErr != nil {
+			utils.WarnWithFormat("[QQMusic] ⚠️ 获取歌词失败: %v", lyricErr)
+		} else {
+			utils.DebugWithFormat("[QQMusic] ✅ 获取歌词成功，长度=%d", len(lyric))
+		}
 	}()
 
 	// 下载音乐文件（主任务）
+	downloadStart := time.Now()
 	if err := utils.DownloadFile(qmApi.client, songUrl, tempPath); err != nil {
+		utils.ErrorWithFormat("[QQMusic] ❌ 下载音乐文件失败: %v", err)
 		_ = processor.RemoveTempDir(qm.tempDir)
 		return err
 	}
+	utils.InfoWithFormat("[QQMusic] ✅ 文件下载完成（耗时 %v）", time.Since(downloadStart).Truncate(time.Millisecond))
 
 	wg.Wait()
 	if coverErr != nil {
-		_ = processor.RemoveTempDir(qm.tempDir)
 		return coverErr
 	}
 	if lyricErr != nil {
-		_ = processor.RemoveTempDir(qm.tempDir)
 		return lyricErr
 	}
 
 	// 下载封面
 	tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, songData.Singer[0].Name))
+	utils.DebugWithFormat("[QQMusic] ⬇️ 下载封面: %s", tempCoverPath)
 	if err := utils.DownloadFile(qmApi.client, coverUrl, tempCoverPath); err != nil {
-		_ = processor.RemoveTempDir(qm.tempDir)
-		return err
+		utils.WarnWithFormat("[QQMusic] ⚠️ 下载封面失败: %v", err)
+	} else {
+		utils.DebugWithFormat("[QQMusic] ✅ 封面下载成功")
 	}
 
 	qmApi.updateSongInfo(qm, songData, fileMetadata, lyric)
-
-	utils.InfoWithFormat("[QQMusic] ✅ 下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
+	utils.InfoWithFormat("[QQMusic] ✅ 单曲下载完成（总耗时 %v）", time.Since(start).Truncate(time.Millisecond))
 	callback(fmt.Sprintf("下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond)))
 	return nil
 }
@@ -449,29 +471,36 @@ func (qmApi *QQMusicAPI) getSongUrl(songMid string, fileType string) (string, er
 
 // doGetRequest 执行请求
 func doGetRequest[T any](qm *QQMusicAPI, endpoint string, params map[string]string) (*QQApiResponse[T], error) {
+	start := time.Now()
 	request, err := qm.newGetRequest(endpoint, params)
 	if err != nil {
+		utils.ErrorWithFormat("[QQMusicAPI] ❌ 构建请求失败: %v", err)
 		return nil, err
 	}
+	utils.DebugWithFormat("[QQMusicAPI] 🌐 请求开始: %s?%s", endpoint, request.URL.RawQuery)
 
 	resp, err := qm.client.Do(request)
 	if err != nil {
-		utils.ErrorWithFormat("执行请求报错: %v", err)
+		utils.ErrorWithFormat("[QQMusicAPI] ❌ 请求失败 (%s): %v", endpoint, err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		utils.ErrorWithFormat("[QQMusicAPI] ❌ 读取响应失败: %v", err)
 		return nil, err
 	}
+	utils.DebugWithFormat("[QQMusicAPI] ⏱️ 请求完成: %s (耗时 %v, 状态码=%d)", endpoint, time.Since(start).Truncate(time.Millisecond), resp.StatusCode)
 
 	result := &QQApiResponse[T]{}
 	if err := json.Unmarshal(body, result); err != nil {
+		utils.ErrorWithFormat("[QQMusicAPI] ❌ JSON解析失败: %v", err)
 		return nil, err
 	}
 
 	if result.Code != http.StatusOK {
+		utils.ErrorWithFormat("[QQMusicAPI] ❌ 请求返回错误: Code=%d, Msg=%s", result.Code, result.Message)
 		return nil, errors.New(result.Message)
 	}
 
@@ -655,28 +684,27 @@ func (qm *QQMusicProcessor) parseQQMusicLink(raw string) (QQMusicLink, error) {
 func (qm *QQMusicProcessor) getRedirectLocation(link string) (string, error) {
 	const maxRedirects = 10
 	currentURL := link
+	utils.DebugWithFormat("[QQMusic] 🔁 处理重定向: %s", link)
 
 	for i := 0; i < maxRedirects; i++ {
 		req, err := http.NewRequest("GET", currentURL, nil)
 		if err != nil {
 			return "", err
 		}
-
 		req.Header.Set("User-Agent", UserAgent)
-
 		resp, err := qm.client.Do(req)
 		if err != nil {
+			utils.WarnWithFormat("[QQMusic] ⚠️ 重定向请求失败: %v", err)
 			return "", err
 		}
 
-		_, _ = io.Copy(io.Discard, resp.Body)
+		loc := resp.Header.Get("Location")
 		resp.Body.Close()
+		utils.DebugWithFormat("[QQMusic] Redirect[%d]: %s -> %s (Status=%d)", i+1, currentURL, loc, resp.StatusCode)
 
 		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
 			return currentURL, nil
 		}
-
-		loc := resp.Header.Get("Location")
 		if loc == "" {
 			return currentURL, nil
 		}
@@ -689,10 +717,10 @@ func (qm *QQMusicProcessor) getRedirectLocation(link string) (string, error) {
 			base, _ := url.Parse(currentURL)
 			loc = base.ResolveReference(u).String()
 		}
-
 		currentURL = loc
 	}
 
+	utils.ErrorWithFormat("[QQMusic] ❌ 重定向过多 (> %d)", maxRedirects)
 	return "", fmt.Errorf("too many redirects (> %d)", maxRedirects)
 }
 
