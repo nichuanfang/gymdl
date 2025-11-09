@@ -75,7 +75,7 @@ func (p *YoutubeMusicProcessor) DownloadMusic(url string, callback func(string))
 	utils.InfoWithFormat("[YoutubeMusic] 🎵 开始下载: %s", url)
 
 	cmd := p.DownloadCommand(url)
-	callback("yt-dlp下载命令构建完成,开始下载...")
+	callback("命令构建完成，开始下载...")
 	if cmd == nil {
 		return errors.New("download command build failed")
 	}
@@ -187,8 +187,7 @@ func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
 		formatID = "251" // 中等质量 opus
 		postArgs = []string{
 			"--audio-format", "aac",
-			"--postprocessor-args", "-c:a libfdk_aac -vbr 5",
-			"--audio-quality", "0",
+			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -cutoff 20000 -afterburner 1",
 		}
 	default:
 		formatID = "140" // 中等质量 AAC
