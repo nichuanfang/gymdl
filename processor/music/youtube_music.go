@@ -187,7 +187,7 @@ func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
 		formatID = "251" // 中等质量 opus
 		postArgs = []string{
 			"--audio-format", "aac",
-			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -cutoff 20000 -afterburner 1",
+			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -afterburner 1",
 		}
 	default:
 		formatID = "140" // 中等质量 AAC
