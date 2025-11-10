@@ -234,7 +234,7 @@ func (ncm *NetEaseProcessor) FetchSongData(musicID int, cfg *config.Config) (*ty
 
 	batch := api.NewBatch(
 		api.BatchAPI{Key: api.SongDetailAPI, Json: api.CreateSongDetailReqJson([]int{musicID})},
-		api.BatchAPI{Key: api.SongUrlAPI, Json: api.CreateSongURLJson(api.SongURLConfig{Ids: []int{musicID}})},
+		api.BatchAPI{Key: api.SongUrlAPI, Json: api.CreateSongURLJson(api.SongURLConfig{EncodeType: "aac", Level: "lossless", Ids: []int{musicID}})},
 		api.BatchAPI{Key: api.SongLyricAPI, Json: api.CreateSongLyricReqJson(musicID)},
 	)
 
@@ -388,7 +388,7 @@ func (ncm *NetEaseProcessor) FetchPlaylistSongData(musicIDs []int, cfg *config.C
 	// 1. 批量请求detail和url
 	batch := api.NewBatch(
 		api.BatchAPI{Key: api.SongDetailAPI, Json: api.CreateSongDetailReqJson(musicIDs)},
-		api.BatchAPI{Key: api.SongUrlAPI, Json: api.CreateSongURLJson(api.SongURLConfig{Ids: musicIDs})},
+		api.BatchAPI{Key: api.SongUrlAPI, Json: api.CreateSongURLJson(api.SongURLConfig{EncodeType: "aac", Level: "lossless", Ids: musicIDs})},
 	)
 	req := ncmutils.RequestData{}
 	if ncm.musicU != "" {
