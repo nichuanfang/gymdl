@@ -201,6 +201,10 @@ func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
 		"--embed-thumbnail",
 		"--no-check-certificates",
 		"--no-warnings",
+		"--concurrent-fragments", "10",
+		"--http-chunk-size", "10M",
+		"--fragment-retries", "20",
+		"--retry-sleep", "1",
 	}
 
 	// 根据配置决定是否传递 cookies
