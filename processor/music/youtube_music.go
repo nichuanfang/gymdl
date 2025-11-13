@@ -113,11 +113,14 @@ func (p *YoutubeMusicProcessor) getAvailableFormats(url string, cookiePath strin
 		"--skip-download",
 		"--no-check-certificates",
 		"--no-warnings",
+		"--no-progress",
 	}
 
 	// 根据配置决定是否传递 cookies
 	if p.cfg.YTDLPConfig.PassCookies {
-		args = append(args, "--cookies", cookiePath)
+		args = append(args, "--cookies", cookiePath, "--extractor-args", "youtube:player_client=web_music")
+	} else {
+		args = append(args, "--extractor-args", "youtube:player_client=tv")
 	}
 
 	args = append(args, "-F", url)
@@ -139,6 +142,7 @@ func (p *YoutubeMusicProcessor) getAvailableFormats(url string, cookiePath strin
 	// 目标格式映射表
 	targetExt := map[string]string{
 		"141": "m4a",
+		"774": "webm",
 		"251": "webm",
 		"140": "m4a",
 	}
@@ -183,14 +187,26 @@ func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
 	switch {
 	case formats["141"]:
 		formatID = "141" // 高质量 AAC
+	case formats["774"]:
+		formatID = "774" // 高质量 opus
+		postArgs = []string{
+			"--audio-format", "aac",
+			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -afterburner 1",
+		}
 	case formats["251"]:
 		formatID = "251" // 中等质量 opus
 		postArgs = []string{
 			"--audio-format", "aac",
 			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -afterburner 1",
 		}
-	default:
+	case formats["140"]:
 		formatID = "140" // 中等质量 AAC
+	default:
+		formatID = "bestaudio" // 默认用最佳音质 转aac
+		postArgs = []string{
+			"--audio-format", "aac",
+			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -afterburner 1",
+		}
 	}
 
 	// 构造 yt-dlp 命令
@@ -201,11 +217,14 @@ func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
 		"--embed-thumbnail",
 		"--no-check-certificates",
 		"--no-warnings",
+		"--no-progress",
 	}
 
 	// 根据配置决定是否传递 cookies
 	if p.cfg.YTDLPConfig.PassCookies {
-		args = append(args, "--cookies", cookiePath)
+		args = append(args, "--cookies", cookiePath, "--extractor-args", "youtube:player_client=web_music")
+	} else {
+		args = append(args, "--extractor-args", "youtube:player_client=tv")
 	}
 	args = append(args, "-o", filepath.Join(p.tempDir, "%(title)s.%(ext)s"))
 	args = append(args, postArgs...)

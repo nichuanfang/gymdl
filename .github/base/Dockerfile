@@ -94,6 +94,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-liberation \
     libappindicator3-1 \
     xdg-utils \
+    aria2 \
  && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
  && echo Asia/Shanghai > /etc/timezone \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
