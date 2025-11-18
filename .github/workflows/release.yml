@@ -66,6 +66,9 @@ jobs:
         with:
           go-version-file: "go.mod"
 
+      - name: Build release artifacts
+        run: make release
+
       - name: Generate Release Notes
         id: generate_changelog
         uses: requarks/changelog-action@v1
@@ -79,7 +82,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           body: ${{ steps.generate_changelog.outputs.changes }}
-          files: |
-            release/*
+          files: release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
