@@ -77,7 +77,6 @@ type QQMusicApiConfig struct {
 	MusicId      string `yaml:"music_id"`      //用于刷新已失效的musickey
 	MusicKey     string `yaml:"music_key"`     //用于刷新已失效的musickey
 	EnableSign   bool   `yaml:"enable_sign"`   // 是否启用加密接口 加密接口会多一个解密操作 但是更安全
-	EnableCache  bool   `yaml:"enable_cache"`  // 是否启用接口缓存
 }
 
 type AdditionalConfig struct {

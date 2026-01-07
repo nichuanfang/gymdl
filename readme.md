@@ -117,7 +117,6 @@ qq_music_api:
   music_id: "" #用于刷新已失效的musickey musickey1小时会过期
   music_key: "" #用于刷新已失效的musickey musickey1小时会过期
   enable_sign: false #是否启用加密接口 加密接口会多一个解密操作 但是更安全
-  enable_cache: true #是否启用接口缓存
 
 # AI 配置
 ai:

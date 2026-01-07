@@ -565,7 +565,6 @@ func (qmApi *QQMusicAPI) initHeaders(cfg *config.Config) {
 	}
 	if cfg.QQMusicApiConfig.EnableSign {
 		headers["X-Enable-Sign"] = "true"
-		headers["X-Enable-Cache"] = "true"
 	}
 	headers["Cookie"] = fmt.Sprintf(
 		"musicid=%d;musickey=%s",
@@ -704,7 +703,6 @@ func (qmApi *QQMusicAPI) refreshMusicKeyHeaders(cfg *config.Config, data *Musick
 	}
 	if cfg.QQMusicApiConfig.EnableSign {
 		headers["X-Enable-Sign"] = "true"
-		headers["X-Enable-Cache"] = "true"
 	}
 	if data.Musickey != "" {
 		//设置Cookie
