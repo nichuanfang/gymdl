@@ -10,7 +10,7 @@ import (
 // StartCommand 响应 /start 命令
 func StartCommand(c tb.Context) error {
 	msg := `👋 欢迎来到 GymDL Bot!
-我可以帮你管理健身相关的任务和信息 🏋️‍♂️
+我可以帮你分析并下载多种音乐链接 🏋️‍♂️
 
 使用 /help 查看可用命令 📜`
 
