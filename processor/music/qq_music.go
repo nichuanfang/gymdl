@@ -815,6 +815,8 @@ func (qm *QQMusicProcessor) getFinalURL(raw string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("User-Agent", UserAgent)
+    req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+    req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 
 	resp, err := qm.client.Do(req)
 	if err != nil {
