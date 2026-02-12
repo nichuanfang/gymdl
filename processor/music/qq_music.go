@@ -1,6 +1,7 @@
 package music
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,12 +73,12 @@ type QQPlaylist struct {
 
 // QQMusicAPI 自建qq-music-api
 type QQMusicAPI struct {
-	cfg          *config.Config    //配置
+	cfg          *config.Config    // 配置
 	headers      map[string]string // 请求头
 	client       *http.Client
-	musicKeyPath string //musickey文件路径
-	musicId      int    //api请求必须
-	musicKey     string //api请求必须
+	musicKeyPath string // musickey文件路径
+	musicId      int    // api请求必须
+	musicKey     string // api请求必须
 }
 
 type MusickeyData struct {
@@ -111,9 +112,8 @@ func (qm *QQMusicProcessor) Init(cfg *config.Config) {
 	qm.client = &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
-			MaxIdleConns:       10,
-			IdleConnTimeout:    30 * time.Second,
-			DisableCompression: false,
+			// 强制禁用 HTTP/2，只使用 HTTP/1.1
+			TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
@@ -161,7 +161,7 @@ func (qm *QQMusicProcessor) DownloadCommand(url string) *exec.Cmd {
 }
 
 func (qm *QQMusicProcessor) BeforeTidy() error {
-	//写入封面 歌词 专辑艺术家 年份
+	// 写入封面 歌词 专辑艺术家 年份
 	var fileName string
 	var coverFileName string
 	for _, song := range qm.songs {
@@ -218,13 +218,13 @@ func (qmApi *QQMusicAPI) download(qm *QQMusicProcessor, musicLink QQMusicLink, c
 	var musicId int
 	var musicKey string
 	var err error
-	//加载密钥
+	// 加载密钥
 	if musicId, musicKey, err = qmApi.ensureValidMusickey(); err != nil {
 		return err
 	}
 	qmApi.musicId = musicId
 	qmApi.musicKey = musicKey
-	//初始化请求头
+	// 初始化请求头
 	qmApi.initHeaders(qmApi.cfg)
 	err = processor.CreateOutputDir(qm.tempDir)
 	if err != nil {
@@ -443,10 +443,10 @@ func (qmApi *QQMusicAPI) downloadPlaylistSong(qm *QQMusicProcessor, songData QQS
 // querySong 查询歌单信息
 func (qmApi *QQMusicAPI) querySonglist(songlistId string) (QQPlaylist, error) {
 	params := map[string]string{
-		"songlist_id": songlistId, //歌单id
-		"num":         "20",       //最多20首
-		"page":        "1",        //页码
-		"onlysong":    "true",     //是否仅返回歌曲信息
+		"songlist_id": songlistId, // 歌单id
+		"num":         "20",       // 最多20首
+		"page":        "1",        // 页码
+		"onlysong":    "true",     // 是否仅返回歌曲信息
 	}
 	playlistRes, err := doGetRequestWithRetry[QQPlaylist](qmApi, "/songlist/get_detail", params, 3)
 	if err != nil {
@@ -608,7 +608,7 @@ func (qmApi *QQMusicAPI) updateSongInfo(qm *QQMusicProcessor, data QQSong, fileM
 	if lyric == "" {
 		lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
 	}
-	//组装元信息
+	// 组装元信息
 	songInfo := &SongInfo{
 		SongName:        data.Title,
 		SongArtists:     data.Singer[0].Name,
@@ -643,7 +643,7 @@ func (qmApi *QQMusicAPI) ensureValidMusickey() (int, string, error) {
 		utils.InfoWithFormat("musickey 即将过期，刷新中...")
 		return qmApi.refreshAndSave(data)
 	}
-	//未过期
+	// 未过期
 	return data.Musicid, data.Musickey, nil
 }
 
@@ -671,7 +671,7 @@ func (qmApi *QQMusicAPI) refreshAndSave(data *MusickeyData) (int, string, error)
 	if err != nil {
 		return 0, "", err
 	}
-	//处理请求头
+	// 处理请求头
 	headers := qmApi.refreshMusicKeyHeaders(qmApi.cfg, data)
 	for k, v := range headers {
 		request.Header.Set(k, v)
@@ -691,7 +691,7 @@ func (qmApi *QQMusicAPI) refreshAndSave(data *MusickeyData) (int, string, error)
 	if err != nil {
 		return 0, "", err
 	}
-	//刷新musickey后的新值
+	// 刷新musickey后的新值
 	return newData.Data.Musicid, newData.Data.Musickey, nil
 }
 
@@ -705,10 +705,10 @@ func (qmApi *QQMusicAPI) refreshMusicKeyHeaders(cfg *config.Config, data *Musick
 		headers["X-Enable-Sign"] = "true"
 	}
 	if data.Musickey != "" {
-		//设置Cookie
+		// 设置Cookie
 		switch cfg.QQMusicApiConfig.LoginType {
 		case 1:
-			//wx
+			// wx
 			headers["Cookie"] = fmt.Sprintf("login_type=1;musicid=%d;musickey=%s;refresh_key=%s;refresh_token=%s",
 				data.Musicid,
 				data.Musickey,
@@ -716,7 +716,7 @@ func (qmApi *QQMusicAPI) refreshMusicKeyHeaders(cfg *config.Config, data *Musick
 				data.RefreshToken,
 			)
 		case 2:
-			//qq
+			// qq
 			headers["Cookie"] = fmt.Sprintf("login_type=2;musicid=%d;musickey=%s;refresh_key=%s;refresh_token=%s",
 				data.Musicid,
 				data.Musickey,
@@ -725,17 +725,17 @@ func (qmApi *QQMusicAPI) refreshMusicKeyHeaders(cfg *config.Config, data *Musick
 			)
 		}
 	} else {
-		//读取cookiecloud同步的cookies文件
+		// 读取cookiecloud同步的cookies文件
 		cookiePath := filepath.Join(cfg.CookieCloud.CookieFilePath, cfg.CookieCloud.CookieFile)
 		qqCookies := utils.GetCookiesByDomain(cookiePath, ".qq.com")
 		qqmusicKey := qqCookies["qqmusic_key"]
 		if qqmusicKey == "" {
 			qqmusicKey = cfg.QQMusicApiConfig.MusicKey
 		}
-		//设置Cookie
+		// 设置Cookie
 		switch cfg.QQMusicApiConfig.LoginType {
 		case 1:
-			//wx
+			// wx
 			wxuin := qqCookies["wxuin"]
 			if wxuin == "" {
 				wxuin = cfg.QQMusicApiConfig.MusicId
@@ -747,7 +747,7 @@ func (qmApi *QQMusicAPI) refreshMusicKeyHeaders(cfg *config.Config, data *Musick
 				cfg.QQMusicApiConfig.RefreshToken,
 			)
 		case 2:
-			//qq
+			// qq
 			uin := qqCookies["uin"]
 			if uin != "" {
 				uin = cfg.QQMusicApiConfig.MusicId
@@ -815,8 +815,8 @@ func (qm *QQMusicProcessor) getFinalURL(raw string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("User-Agent", UserAgent)
-    req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-    req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 
 	resp, err := qm.client.Do(req)
 	if err != nil {
