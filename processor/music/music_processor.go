@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	browser "github.com/EDDYCJY/fake-useragent"
 	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/utils"
 	"go.senan.xyz/taglib"
@@ -62,7 +63,7 @@ type imageResult struct {
 	err  error
 }
 
-const UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+var UserAgent = browser.Chrome()
 
 /* ---------------------- 常量 ---------------------- */
 
