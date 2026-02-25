@@ -110,19 +110,34 @@ func (qm *QQMusicProcessor) Init(cfg *config.Config) {
 	qm.cfg = cfg
 	qm.songs = make([]*SongInfo, 0)
 	qm.tempDir = processor.BuildOutputDir(QQTempDir)
+    // 1. 创建自定义 Transport
+    tr := &http.Transport{
+        // 禁用 HTTP/2，强制使用 HTTP/1.1
+        ForceAttemptHTTP2:     false,
+        TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+        // 禁用 Keep-Alive，防止复用连接导致被服务端判定为长连接爬虫
+        DisableKeepAlives:     true,
+        // 适当调整握手超时
+        TLSHandshakeTimeout:   10 * time.Second,
+        ResponseHeaderTimeout: 10 * time.Second,
+        ExpectContinueTimeout: 1 * time.Second,
+    }
 	qm.client = &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			// 强制禁用 HTTP/2，只使用 HTTP/1.1
-			TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return http.ErrUseLastResponse
-			}
-			return nil
-		},
-	}
+        Transport: tr,
+        Timeout:   15 * time.Second,
+        // 我们可以自定义 CheckRedirect 来直接获取重定向过程中的 URL，
+        // 或者让它自动跟随，最后取 resp.Request.URL
+        CheckRedirect: func(req *http.Request, via []*http.Request) error {
+            // 允许跟随最多 10 次重定向
+            if len(via) >= 10 {
+                return errors.New("stopped after 10 redirects")
+            }
+            // 每次重定向时，务必带上 Header，因为 Go 默认重定向不带 Header
+            req.Header.Set("User-Agent", UserAgent)
+            req.Header.Set("Referer", "https://y.qq.com/")
+            return nil
+        },
+    }
 	qmApi := &QQMusicAPI{
 		cfg:          cfg,
 		client:       qm.client,
@@ -891,11 +906,14 @@ func (qm *QQMusicProcessor) getFinalURL(raw string) (string, error) {
 	}
 	req.Header.Set("User-Agent", UserAgent)
     req.Header.Set("Referer", "https://y.qq.com/")
+    req.Header.Set("Host", "y.qq.com")
     req.Header.Set("Connection", "close")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+    req.Header.Set("Connection", "close")
+    req.Header.Set("Cookie", "")
 
-	resp, err := qm.client.Do(req)
+    resp, err := qm.client.Do(req)
 	if err != nil {
 		return "", err
 	}
