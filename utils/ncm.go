@@ -289,10 +289,14 @@ func hasMeaningfulContent(lyric string) bool {
 }
 
 func ParseNCMLyric(lyricsData *types.SongLyricData) string {
-	if hasMeaningfulContent(lyricsData.Tlyric.Lyric) {
-		return lyricsData.Tlyric.Lyric
-	}
-	return lyricsData.Lrc.Lyric
+    rawLyric := lyricsData.Lrc.Lyric
+    rawTrans := lyricsData.Tlyric.Lyric
+
+    // 如果没有翻译，直接返回原词
+    if rawTrans == "" {
+        return rawLyric
+    }
+    return MergeLyrics(rawLyric, rawTrans)
 }
 
 // ParseNCMYear 解析年代

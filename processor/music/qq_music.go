@@ -1,26 +1,25 @@
 package music
 
 import (
-	"crypto/tls"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
-	"strconv"
-	"strings"
-	"sync"
-	"time"
+    "crypto/tls"
+    "encoding/json"
+    "errors"
+    "fmt"
+    "io"
+    "net/http"
+    "net/url"
+    "os"
+    "os/exec"
+    "path/filepath"
+    "strconv"
+    "strings"
+    "sync"
+    "time"
 
-	"github.com/nichuanfang/gymdl/config"
-	"github.com/nichuanfang/gymdl/core"
-	"github.com/nichuanfang/gymdl/processor"
-	"github.com/nichuanfang/gymdl/utils"
+    "github.com/nichuanfang/gymdl/config"
+    "github.com/nichuanfang/gymdl/core"
+    "github.com/nichuanfang/gymdl/processor"
+    "github.com/nichuanfang/gymdl/utils"
 )
 
 /* ---------------------- 结构体与构造方法 ---------------------- */
@@ -512,71 +511,7 @@ func (qmApi *QQMusicAPI) queryLyric(mid string) (string, error) {
 		return rawLyric, nil
 	}
 
-	return mergeLyrics(rawLyric, rawTrans), nil
-}
-
-// mergeLyrics 合并原词与翻译
-func mergeLyrics(lyric, trans string) string {
-	if trans == "" {
-		return lyric // 如果没有翻译，直接返回原词
-	}
-
-	// 1. 解析翻译歌词，存入 map [时间戳]内容
-	// 匹配格式如 [00:13.28] 或 [13277,5586]
-	transMap := make(map[string]string)
-	lines := strings.Split(trans, "\n")
-
-	// 时间戳正则表达式：匹配 [00:00.00] 或 [1234,567]
-	re := regexp.MustCompile(`^\[(\d+[:.,]\d+.*)\](.*)`)
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "[ti:") || strings.HasPrefix(line, "[ar:") {
-			continue // 跳过元数据
-		}
-		matches := re.FindStringSubmatch(line)
-		if len(matches) > 2 {
-			timestamp := normalizeTime(matches[1]) // 标准化时间戳
-			transMap[timestamp] = matches[2]
-		}
-	}
-
-	// 2. 遍历原歌词，并在对应行后插入翻译
-	var result []string
-	lyricLines := strings.Split(lyric, "\n")
-	for _, line := range lyricLines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		result = append(result, line) // 添加原词行
-
-		// 提取原词时间戳并比对
-		matches := re.FindStringSubmatch(line)
-		if len(matches) > 2 {
-			ts := normalizeTime(matches[1])
-			if tText, ok := transMap[ts]; ok {
-				// 构造一行翻译：保持相同的时间戳前缀，方便播放器对齐
-				result = append(result, fmt.Sprintf("[%s]%s", matches[1], tText))
-			}
-		}
-	}
-
-	return strings.Join(result, "\n")
-}
-
-// normalizeTime 兼容处理：将 [00:02.45] 转换成毫秒级别或统一格式
-// 这里简化处理：QQ音乐的 trans 往往和 lyric 的起始时间点一致
-func normalizeTime(ts string) string {
-	// 针对 [00:02.45] 这种格式，我们取前 5-7 位核心部分
-	// 复杂的逻辑可能需要将 00:02.45 转为 2450ms 进行模糊匹配
-	// 这里简单返回前缀以供匹配
-	if strings.Contains(ts, ",") {
-		return strings.Split(ts, ",")[0]
-	}
-	// 将 00:02.45 这种转为类似毫秒的逻辑（示例）
-	return ts
+	return utils.MergeLyrics(rawLyric, rawTrans), nil
 }
 
 // getSongUrl 获取歌曲下载链接
