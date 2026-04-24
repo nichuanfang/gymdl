@@ -30,16 +30,16 @@ func installDependency(c *config.Config, client *http.Client) {
 // updateDependency 更新依赖项
 func updateDependency(c *config.Config, client *http.Client) {
 	group := sync.WaitGroup{}
-	group.Add(1)
+	group.Add(2)
 	go func() {
 		defer group.Done()
 		updatePipDependency()
 	}()
     // 由于网站不可访问 暂时关闭um更新
-	// go func() {
-	// 	defer group.Done()
-	// 	updateUm(client)
-	// }()
+	go func() {
+		defer group.Done()
+		updateUm(client)
+	}()
 	group.Wait()
 }
 

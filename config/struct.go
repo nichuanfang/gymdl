@@ -96,6 +96,6 @@ type ProxyConfig struct {
 }
 
 type YTDLPConfig struct {
-	PassCookies      bool `yaml:"pass_cookies"`       //是否传递cookie  目前yt-dlp对传递cookie的支持不稳定 推荐设置为false
-	YoutubeMusicMode bool `yaml:"youtube_music_mode"` //是否将youtube视频链接当作YoutubeMusic来处理
+	PassCookies      bool `yaml:"pass_cookies"`       // 是否传递cookie  目前yt-dlp对传递cookie的支持不稳定 推荐设置为false
+	YoutubeMusicMode bool `yaml:"youtube_music_mode"` // 是否将youtube视频链接当作YoutubeMusic来处理
 }

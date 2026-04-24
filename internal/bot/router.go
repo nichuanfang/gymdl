@@ -7,12 +7,15 @@ import (
 func (app *BotApp) registerHandlers() {
 	app.bot.Use(app.LoggingMiddleware)
 	app.bot.Use(app.AuthMiddleware)
-
+    
 	// 欢迎语
 	app.bot.Handle("/start", StartCommand)
 
 	// 帮助信息
 	app.bot.Handle("/help", HelpCommand)
+    
+    // qq音乐登录
+    app.bot.Handle("/qq_login",app.QQLoginCommand)
 
 	// 指令注册器
 	app.bot.Handle("/setCommands", SetCommands)
