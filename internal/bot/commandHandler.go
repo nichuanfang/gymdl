@@ -80,12 +80,12 @@ func NewQQMusicWrapper(config *config.QQMusicApiConfig) *QQMusicWrapper {
 
     var login_type string
     switch config.LoginType {
+    case 0:
+        login_type = "qq"
     case 1:
         login_type = "wx"
-    case 2:
-        login_type = "qq"
     default:
-        login_type = "wx"
+        login_type = "mobile"
     }
 
     return &QQMusicWrapper{
@@ -205,17 +205,29 @@ func (wrapper *QQMusicWrapper) pollLoginStatus(msg *tb.Message, identifier strin
             case "DONE":
                 app.bot.EditCaption(msg, "🎉 登录成功！")
                 cred := credential.(map[string]interface{})
+                expiredAtUnix := int64(cred["expired_at"].(float64))
+                expiredTime := time.Unix(expiredAtUnix, 0).Format("2006-01-02 15:04:05")
                 authText := fmt.Sprintf(
                     "请复制以下凭证并妥善保存：\n\n"+
                         "🆔 *Music ID*\n`%.0f`\n\n"+
+                        "👤 *OpenID*\n`%s`\n\n"+
+                        "🌐 *UnionID*\n`%s`\n\n"+
+                        "🎫 *Login Type*\n`%.0f`\n\n"+
                         "🔑 *Music Key*\n`%s`\n\n"+
                         "🔄 *Refresh Key*\n`%s`\n\n"+
                         "⏳ *Refresh Token*\n`%s`\n\n"+
+                        "🚀 *Access Token*\n`%s`\n\n"+
+                        "📅 *Expired At*\n`%s`\n\n"+
                         "⚠️ *注意：凭证信息请勿泄露给他人。*",
                     cred["musicid"].(float64),
+                    cred["openid"].(string),
+                    cred["unionid"].(string),
+                    cred["login_type"].(float64),
                     cred["musickey"].(string),
                     cred["refresh_key"].(string),
                     cred["refresh_token"].(string),
+                    cred["access_token"].(string),
+                   expiredTime,
                 )
 
                 // 3. 推送给用户

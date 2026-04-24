@@ -71,11 +71,11 @@ type AIConfig struct {
 type QQMusicApiConfig struct {
 	Enable       bool   `yaml:"enable"`        // 是否启用
 	Endpoint     string `yaml:"endpoint"`      // qm-api服务地址
-	LoginType    int    `yaml:"login_type"`    // qm-api登录方式: 0未登录 1微信 2QQ
+	LoginType    int    `yaml:"login_type"`    // qm-api登录方式: 0QQ 1微信 2手机号
 	RefreshKey   string `yaml:"refresh_key"`   // 用于刷新已失效的musickey musickey1小时会过期
-	RefreshToken string `yaml:"refresh_token"` //用于刷新已失效的musickey musickey1小时会过期
-	MusicId      string `yaml:"music_id"`      //用于刷新已失效的musickey
-	MusicKey     string `yaml:"music_key"`     //用于刷新已失效的musickey
+	RefreshToken string `yaml:"refresh_token"` // 用于刷新已失效的musickey musickey1小时会过期
+	MusicId      string `yaml:"music_id"`      // 用于刷新已失效的musickey
+	MusicKey     string `yaml:"music_key"`     // 用于刷新已失效的musickey
 	EnableSign   bool   `yaml:"enable_sign"`   // 是否启用加密接口 加密接口会多一个解密操作 但是更安全
 }
 
