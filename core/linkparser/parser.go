@@ -2,7 +2,8 @@ package linkparser
 
 import (
 	"net/url"
-	"regexp"
+    "reflect"
+    "regexp"
 	"strings"
 	"unicode"
 
@@ -31,6 +32,13 @@ var genericURLRegex = regexp.MustCompile(`https?://[^\s<>"'()]*[\w/#?=&-]`)
 
 // 配置
 var cfg *config.Config
+
+// 全局转换表 MusicMode会用到
+var musicModeMappers = map[reflect.Type]processor.Processor{
+    reflect.TypeOf(&video.YoutubeProcessor{}):  &music.YoutubeMusicProcessor{},
+    reflect.TypeOf(&video.BiliBiliProcessor{}): &music.BilibiliMusicProcessor{},
+    // 更多平台...
+}
 
 /* ---------------------- 解析器初始化 ---------------------- */
 
@@ -100,18 +108,26 @@ func cleanURLTrailingChars(s string) string {
 }
 
 func quickMatch(host string, u *url.URL) (processor.Processor, bool) {
-	if p, ok := matcherMap[host]; ok {
-		for _, re := range p.patterns {
-			if re.MatchString(u.String()) {
-				// 如果开启了 YoutubeMusicMode，并且当前匹配的是普通 YouTube 视频处理器
-				if cfg.YTDLPConfig.YoutubeMusicMode {
-					if _, isYoutubeVideo := p.handler.(*video.YoutubeProcessor); isYoutubeVideo {
-						return &music.YoutubeMusicProcessor{}, true
-					}
-				}
-				return p.handler, true
-			}
-		}
-	}
-	return nil, false
+    p, ok := matcherMap[host]
+    if !ok {
+        return nil, false
+    }
+
+    for _, re := range p.patterns {
+        if re.MatchString(u.String()) {
+            // 基础处理器
+            handler := p.handler
+
+            // 如果开启了 MusicMode，尝试转换处理器
+            if cfg.AdditionalConfig.MusicMode {
+                t := reflect.TypeOf(handler)
+                if musicHandler, exists := musicModeMappers[t]; exists {
+                    return musicHandler, true
+                }
+            }
+
+            return handler, true
+        }
+    }
+    return nil, false
 }

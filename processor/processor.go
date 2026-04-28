@@ -36,6 +36,7 @@ const (
 	LinkSoundcloud   LinkType = "Soundcloud"
 	LinkSpotify      LinkType = "Spotify"
 	LinkYoutubeMusic LinkType = "YoutubeMusic"
+    LinkBiliBiliMusic LinkType = "BiliBiliMusic"
 	LinkForwardMusic LinkType = "ForwardMusic"
 
 	/* -------------------------视频平台枚举 ---------------------- */

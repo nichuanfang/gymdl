@@ -132,12 +132,7 @@ additional_config:
   enable_monitor: false  # 是否启用目录监听 开启后监听下载目录使用um cli自动解密
   monitor_dirs:
     - ""  # 监听的目录,下载器监控
-  enable_youtube_cookie: false #是否启用yt-dlp的cookie指令(目前yt-dlp的cookie指令有问题)
-
-# yt-dlp下载配置
-ytdlp:
-  pass_cookies: false #是否传递cookie  目前yt-dlp对传递cookie的支持不稳定 推荐设置为false
-  youtube_music_mode: false #是否将youtube视频链接当作YoutubeMusic来处理 根据个人喜欢设置 
+  music_mode: true  # 是否启用音乐模式 视频平台链接优先转为音频
 
 # 代理配置
 proxy:

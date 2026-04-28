@@ -10,7 +10,6 @@ type Config struct {
 	AI               *AIConfig          `yaml:"ai"`                // AI配置
 	QQMusicApiConfig *QQMusicApiConfig  `yaml:"qq_music_api"`      // qq-music-api服务配置
 	AdditionalConfig *AdditionalConfig  `yaml:"additional_config"` // 附属配置
-	YTDLPConfig      *YTDLPConfig       `yaml:"ytdlp"`             //ytdlp配置
 	ProxyConfig      *ProxyConfig       `yaml:"proxy"`             // 代理配置
 }
 
@@ -83,6 +82,7 @@ type AdditionalConfig struct {
 	EnableCron       bool     `yaml:"enable_cron"`    // 是否启用定时任务
 	EnableDirMonitor bool     `yaml:"enable_monitor"` // 是否启用目录监听
 	MonitorDirs      []string `yaml:"monitor_dirs"`   // 需要监听的目录  监听网易云/QQ下载目录=>调用um工具解锁=>整理=>telegram入库通知
+    MusicMode bool `yaml:"music_mode"` // 是否启用音乐模式 视频平台链接优先转为音频
 }
 
 type ProxyConfig struct {
@@ -93,9 +93,4 @@ type ProxyConfig struct {
 	User   string `yaml:"user"`   // 代理用户名
 	Pass   string `yaml:"pass"`   // 代理密码
 	Auth   bool   `yaml:"auth"`   // 是否需要认证
-}
-
-type YTDLPConfig struct {
-	PassCookies      bool `yaml:"pass_cookies"`       // 是否传递cookie  目前yt-dlp对传递cookie的支持不稳定 推荐设置为false
-	YoutubeMusicMode bool `yaml:"youtube_music_mode"` // 是否将youtube视频链接当作YoutubeMusic来处理
 }

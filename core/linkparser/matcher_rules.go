@@ -114,5 +114,24 @@ var linkTypeMatchers = []linkTypeMatcher{
 		},
 		handler: &video.DouyinProcessor{},
 	},
+    /* ---------------------- Bilibili ---------------------- */
+    {
+        domains: []string{"www.bilibili.com", "bilibili.com", "b23.tv", "m.bilibili.com"},
+        patterns: []*regexp.Regexp{
+            // 网页端标准视频链接 (BV/av)
+            regexp.MustCompile(`^https?://(?:www\.)?bilibili\.com/video/(?:BV|av)[A-Za-z0-9]+(?:[/?#].*)?$`),
+
+            // B站短链接 (b23.tv)
+            regexp.MustCompile(`^https?://b23\.tv/[A-Za-z0-9]+(?:\?.*)?$`),
+
+            // 手机端分享链接
+            regexp.MustCompile(`^https?://m\.bilibili\.com/video/(?:BV|av)[A-Za-z0-9]+(?:[/?#].*)?$`),
+
+            // 稍后再看或特定播放列表中的视频
+            regexp.MustCompile(`^https?://(?:www\.)?bilibili\.com/list/(?:watchlater|ml\d+)(?:.*)?\b(?:BV|av)[A-Za-z0-9]+(?:[/?#].*)?$`),
+        },
+        // 假设你在 video package 下定义了 BilibiliProcessor
+        handler: &video.BiliBiliProcessor{},
+    },
 	/* ---------------------- 待补充 ---------------------- */
 }
