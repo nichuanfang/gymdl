@@ -81,6 +81,9 @@ var QQTempDir = filepath.Join(BaseTempDir, "QQ")
 // Youtube音乐临时文件夹
 var YoutubeTempDir = filepath.Join(BaseTempDir, "Youtube")
 
+// BiliBili音乐临时文件夹
+var BiliBiliTempDir = filepath.Join(BaseTempDir, "BiliBili")
+
 // SoundCloud临时文件夹
 var SoundcloudTempDir = filepath.Join(BaseTempDir, "Soundcloud")
 

@@ -28,7 +28,7 @@ type BilibiliMusicProcessor struct {
 func (p *BilibiliMusicProcessor) Init(cfg *config.Config) {
 	p.cfg = cfg
 	p.songs = make([]*SongInfo, 0)
-	p.tempDir = processor.BuildOutputDir(YoutubeTempDir)
+	p.tempDir = processor.BuildOutputDir(BiliBiliTempDir)
 }
 
 /* ---------------------- 基础接口实现 ---------------------- */
