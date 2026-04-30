@@ -6,7 +6,7 @@ toolchain go1.24.3
 
 require (
 	github.com/PuerkitoBio/goquery v1.10.3
-	github.com/XiaoMengXinX/Music163Api-Go v0.1.29
+	github.com/XiaoMengXinX/Music163Api-Go v0.1.30
 	github.com/XiaoMengXinX/SimpleDownloader v0.0.0-20221110191044-7a2606dfcf7c
 	github.com/disintegration/imaging v1.6.2
 	github.com/fsnotify/fsnotify v1.9.0

@@ -64,6 +64,8 @@ github.com/PuerkitoBio/goquery v1.10.3 h1:pFYcNSqHxBD06Fpj/KsbStFRsgRATgnf3LeXiU
 github.com/PuerkitoBio/goquery v1.10.3/go.mod h1:tMUX0zDMHXYlAQk6p35XxQMqMweEKB7iK7iLNd4RH4Y=
 github.com/XiaoMengXinX/Music163Api-Go v0.1.29 h1:c7ekfgo4qgEJ3Wjm9rMhGm7ggN8XqbD1idQka4unJ+Q=
 github.com/XiaoMengXinX/Music163Api-Go v0.1.29/go.mod h1:kLU/CkLxKnEJFCge0URvQ0lHt6ImoG1/2aVeNbgV2RQ=
+github.com/XiaoMengXinX/Music163Api-Go v0.1.30 h1:MqRItDFtX1J0JTlFtwN2RwjsYMA7/g/+cTjcOJXy19s=
+github.com/XiaoMengXinX/Music163Api-Go v0.1.30/go.mod h1:kLU/CkLxKnEJFCge0URvQ0lHt6ImoG1/2aVeNbgV2RQ=
 github.com/XiaoMengXinX/SimpleDownloader v0.0.0-20221110191044-7a2606dfcf7c h1:n94y1K+aKHkz0OdvdIIod880fl+gwz6Api1lDC6Wap8=
 github.com/XiaoMengXinX/SimpleDownloader v0.0.0-20221110191044-7a2606dfcf7c/go.mod h1:Fh8cPEMvudeU3D+sBG4FAoC4iOH8aGI7Z39oaN6/2iA=
 github.com/alecthomas/template v0.0.0-20160405071501-a0175ee3bccc/go.mod h1:LOuyumcjzFXgccqObfd/Ljyb9UuFJ6TxHnclSeseNhc=
