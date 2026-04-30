@@ -77,7 +77,9 @@ func (p *YoutubeMusicProcessor) DownloadMusic(url string, callback func(string))
 	cmd := p.DownloadCommand(url)
 	callback("命令构建完成，开始下载...")
 	if cmd == nil {
-		return errors.New("download command build failed")
+        errMsg := "[YoutubeMusic] ❌ 无法构建下载命令：可能是由于 format 解析为空或配置错误"
+        utils.ErrorWithFormat(errMsg)
+		return errors.New(errMsg)
 	}
 	utils.DebugWithFormat("[YoutubeMusic] 执行命令: %s", strings.Join(cmd.Args, " "))
 
@@ -166,15 +168,29 @@ func (p *YoutubeMusicProcessor) getAvailableFormats(url string, cookiePath strin
 // 生成下载命令
 func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
 	cookiePath := filepath.Join(p.cfg.CookieCloud.CookieFilePath, p.cfg.CookieCloud.CookieFile)
+
+    // 检查 Cookie 文件是否存在，这也是构建失败的常见原因
+    if _, err := os.Stat(cookiePath); os.IsNotExist(err) {
+        utils.ErrorWithFormat("[YoutubeMusic] ❌ Cookie 文件不存在: %s", cookiePath)
+        return nil
+    }
+    
 	start := time.Now()
 	// 获取可用格式
 
 	formats, err := p.getAvailableFormats(url, cookiePath)
+
+    if err != nil {
+        utils.ErrorWithFormat("[YoutubeMusic] ❌ 解析可用格式时发生系统错误: %v", err)
+        return nil
+    }
+
+    if formats == nil || len(formats) == 0 {
+        utils.ErrorWithFormat("[YoutubeMusic] ⚠️ 无法解析任何有效的 Audio Format (141/774/251/140), 请检查 URL 或 Cookie")
+        return nil
+    }
+    
 	utils.InfoWithFormat("[YoutubeMusic] ✅ 成功解析链接（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
-	if err != nil {
-		// 这里可按你的 utils 警告逻辑
-		return nil
-	}
 
 	// 根据优先级选择
 	var formatID string
@@ -182,22 +198,27 @@ func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
 	switch {
 	case formats["141"]:
 		formatID = "141" // 高质量 AAC
+        utils.DebugWithFormat("[YoutubeMusic] 命中格式策略: 141 (High Quality AAC)")
 	case formats["774"]:
 		formatID = "774" // 高质量 opus
+        utils.DebugWithFormat("[YoutubeMusic] 命中格式策略: 774 (Opus -> AAC Transcoding)")
 		postArgs = []string{
 			"--audio-format", "aac",
 			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -afterburner 1",
 		}
 	case formats["251"]:
 		formatID = "251" // 中等质量 opus
+        utils.DebugWithFormat("[YoutubeMusic] 命中格式策略: 251 (Opus -> AAC Transcoding)")
 		postArgs = []string{
 			"--audio-format", "aac",
 			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -afterburner 1",
 		}
 	case formats["140"]:
+        utils.DebugWithFormat("[YoutubeMusic] 命中格式策略: 141 (General Quality AAC)")
 		formatID = "140" // 中等质量 AAC
 	default:
 		formatID = "bestaudio" // 默认用最佳音质 转aac
+        utils.DebugWithFormat("[YoutubeMusic] 命中格式策略: bestaudio")
 		postArgs = []string{
 			"--audio-format", "aac",
 			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -afterburner 1",
