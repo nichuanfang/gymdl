@@ -499,31 +499,46 @@ func (ncm *NetEaseProcessor) detectExt(url string) string {
 
 // safeFileName 合法的文件名
 func (ncm *NetEaseProcessor) safeFileName(info *SongInfo) string {
-	replacer := strings.NewReplacer("/", " ", "?", " ", "*", " ", ":", " ",
-		"|", " ", "\\", " ", "<", " ", ">", " ", "\"", " ")
-	return replacer.Replace(fmt.Sprintf("%s - %s.%s",
-		strings.ReplaceAll(info.SongArtists, "/", ","),
-		info.SongName,
-		info.FileExt))
+    replacer := strings.NewReplacer("/", " ", "?", " ", "*", " ", ":", " ",
+        "|", " ", "\\", " ", "<", " ", ">", " ", "\"", " ")
+
+    // 先把歌手和歌名拼起来
+    baseName := fmt.Sprintf("%s - %s", strings.ReplaceAll(info.SongArtists, "/", ","), info.SongName)
+    // 限制主文件名最多 120 个字符
+    baseName = truncateString(baseName, 120)
+
+    return replacer.Replace(fmt.Sprintf("%s.%s", baseName, info.FileExt))
 }
 
 // safeCoverFileName 合法的封面文件名
 func (ncm *NetEaseProcessor) safeCoverFileName(info *SongInfo) string {
-	replacer := strings.NewReplacer("/", " ", "?", " ", "*", " ", ":", " ",
-		"|", " ", "\\", " ", "<", " ", ">", " ", "\"", " ")
-	return replacer.Replace(fmt.Sprintf("%s - %s.%s",
-		strings.ReplaceAll(info.SongArtists, "/", ","),
-		info.SongName+"_cover", "jpg"))
+    replacer := strings.NewReplacer("/", " ", "?", " ", "*", " ", ":", " ",
+        "|", " ", "\\", " ", "<", " ", ">", " ", "\"", " ")
+
+    baseName := fmt.Sprintf("%s - %s_cover", strings.ReplaceAll(info.SongArtists, "/", ","), info.SongName)
+    baseName = truncateString(baseName, 120)
+
+    return replacer.Replace(fmt.Sprintf("%s.jpg", baseName))
 }
 
 // safeTempFileName 合法临时文件路径
 func (ncm *NetEaseProcessor) safeTempFileName(info *SongInfo) string {
-	replacer := strings.NewReplacer("/", " ", "?", " ", "*", " ", ":", " ",
-		"|", " ", "\\", " ", "<", " ", ">", " ", "\"", " ")
-	return replacer.Replace(fmt.Sprintf("%s - %s.%s",
-		strings.ReplaceAll(info.SongArtists, "/", ","),
-		fmt.Sprintf("%s_temp", info.SongName),
-		info.FileExt))
+    replacer := strings.NewReplacer("/", " ", "?", " ", "*", " ", ":", " ",
+        "|", " ", "\\", " ", "<", " ", ">", " ", "\"", " ")
+
+    baseName := fmt.Sprintf("%s - %s_temp", strings.ReplaceAll(info.SongArtists, "/", ","), info.SongName)
+    baseName = truncateString(baseName, 120)
+
+    return replacer.Replace(fmt.Sprintf("%s.%s", baseName, info.FileExt))
+}
+
+// truncateString 确保字符串不超过指定长度（按运行时的 rune/字符 计算）
+func truncateString(s string, maxLen int) string {
+    runes := []rune(s)
+    if len(runes) > maxLen {
+        return string(runes[:maxLen])
+    }
+    return s
 }
 
 // 整理到本地
