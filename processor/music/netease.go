@@ -28,10 +28,10 @@ import (
 /* ---------------------- 结构体与构造方法 ---------------------- */
 
 type NetEaseProcessor struct {
-	cfg     *config.Config //配置文件
-	songs   []*SongInfo    //歌曲元信息列表
-	tempDir string         //临时目录
-	musicU  string         //会员cookie
+	cfg     *config.Config // 配置文件
+	songs   []*SongInfo    // 歌曲元信息列表
+	tempDir string         // 临时目录
+	musicU  string         // 会员cookie
 }
 
 // Init  初始化
@@ -197,7 +197,7 @@ func (ncm *NetEaseProcessor) downloadPlaylist(musicID int, start time.Time, call
 	utils.InfoWithFormat("[NCM] 开始下载歌单: %s (%d首)", detail.Playlist.Name, detail.Playlist.TrackCount)
 	callback(fmt.Sprintf("开始下载歌单: %s (%d首)", detail.Playlist.Name, detail.Playlist.TrackCount))
 
-	//创建下载目录
+	// 创建下载目录
 	if err = processor.CreateOutputDir(ncm.tempDir); err != nil {
 		return err
 	}
@@ -581,19 +581,25 @@ func (ncm *NetEaseProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.WebD
 		return errors.New("WebDAV 未初始化")
 	}
 
-	for _, f := range files {
-		if !utils.FilterMusicFile(f, ncm.EncryptedExts(), ncm.DecryptedExts()) {
-			utils.DebugWithFormat("[AppleMusic] 跳过非音乐文件: %s", f.Name())
-			continue
-		}
-
-		filePath := filepath.Join(ncm.tempDir, f.Name())
-		if err := webdav.Upload(filePath); err != nil {
-			utils.WarnWithFormat("[AppleMusic] ☁️ 上传失败 %s: %v", f.Name(), err)
-			continue
-		}
-		utils.InfoWithFormat("[AppleMusic] ☁️ 已上传: %s", f.Name())
-	}
+    songMap := make(map[string]*SongInfo)
+    for _, song := range ncm.songs {
+        songMap[ncm.safeFileName(song)] = song
+    }
+    for _, f := range files {
+        songInfo, exists := songMap[f.Name()]
+        if !exists {
+            // 如果是不匹配的文件（比如过滤掉的封面，或者多余的临时文件），直接跳过
+            utils.DebugWithFormat("[NCM] 跳过无需处理的文件: %s", f.Name())
+            continue
+        }
+        musicFilePath := filepath.Join(ncm.tempDir, f.Name())
+        remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
+        if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
+            utils.WarnWithFormat("[NCM] ☁️ 上传失败 %s: %v", f.Name(), err)
+            continue
+        }
+        utils.InfoWithFormat("[NCM] ☁️ 已上传: %s", f.Name())
+    }
 	// 清除临时目录
 	err := processor.RemoveTempDir(ncm.tempDir)
 	if err != nil {

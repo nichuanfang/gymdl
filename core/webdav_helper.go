@@ -68,29 +68,9 @@ func (w *WebDAV) CheckConnection() bool {
 
 // -------------------- 文件操作 --------------------
 
-// Upload 上传文件到根目录
+// Upload 上传文件到配置的默认目录
 func (w *WebDAV) Upload(localPath string) error {
-	if localPath == "" {
-		return fmt.Errorf("localPath cannot be empty")
-	}
-
-	file, err := os.Open(localPath)
-	if err != nil {
-		return fmt.Errorf("failed to open local file: %v", err)
-	}
-	defer file.Close()
-
-	// 获取本地文件名
-	fileName := filepath.Base(localPath)
-	// 构造远程路径（根目录下）
-	remoteFullPath := "/" + fileName
-	logger.Info("💡start uploading file to webdav...")
-	if err := w.Client.WriteStream(remoteFullPath, file, 0644); err != nil {
-		logger.Warn(fmt.Sprintf("WebDAV upload failed for %s: %v", remoteFullPath, err))
-		return err
-	}
-	logger.Info(fmt.Sprintf("💡 WebDAV uploaded file successfully: %s", remoteFullPath))
-	return nil
+	return w.UploadTo(localPath, "/")
 }
 
 // UploadTo 上传到指定目录
@@ -99,7 +79,7 @@ func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
 		return fmt.Errorf("localPath cannot be empty")
 	}
 	if remoteDir == "" {
-		remoteDir = "/" // 默认根目录
+		remoteDir = "/"
 	}
 
 	file, err := os.Open(localPath)
@@ -110,20 +90,21 @@ func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
 
 	fileName := filepath.Base(localPath)
 
-	// 规范化 remoteDir，确保以 / 开头，不以 / 结尾
 	remoteDir = filepath.ToSlash(remoteDir)
 	if !strings.HasPrefix(remoteDir, "/") {
 		remoteDir = "/" + remoteDir
 	}
 	remoteDir = strings.TrimRight(remoteDir, "/")
+    
+    destDir := strings.TrimRight(w.Config.WebDAVDir, "/") + remoteDir
+    
+	remoteFullPath := destDir + "/" + fileName
 
-	remoteFullPath := remoteDir + "/" + fileName
-
-	// 确保远程目录存在（如果有 ensureRemoteDir 方法）
-	if err := w.ensureRemoteDir(remoteDir); err != nil {
+	if err := w.ensureRemoteDir(destDir); err != nil {
 		return fmt.Errorf("failed to ensure remote dir: %v", err)
 	}
-	logger.Info("💡start uploading file to webdav...")
+
+	logger.Info("💡 start uploading file to webdav...")
 	if err := w.Client.WriteStream(remoteFullPath, file, 0644); err != nil {
 		logger.Warn(fmt.Sprintf("WebDAV upload failed for %s: %v", remoteFullPath, err))
 		return err

@@ -331,20 +331,25 @@ func (p *YoutubeMusicProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.W
 		_ = processor.RemoveTempDir(p.tempDir)
 		return errors.New("WebDAV 未初始化")
 	}
-
-	for _, f := range files {
-		if !utils.FilterMusicFile(f, p.EncryptedExts(), p.DecryptedExts()) {
-			utils.DebugWithFormat("[YoutubeMusic] 跳过非音乐文件: %s", f.Name())
-			continue
-		}
-
-		filePath := filepath.Join(p.tempDir, f.Name())
-		if err := webdav.Upload(filePath); err != nil {
-			utils.WarnWithFormat("[YoutubeMusic] ☁️ 上传失败 %s: %v", f.Name(), err)
-			continue
-		}
-		utils.InfoWithFormat("[YoutubeMusic] ☁️ 已上传: %s", f.Name())
-	}
+    songMap := make(map[string]*SongInfo)
+    for _, song := range p.songs {
+        songMap[utils.MakeSafeFileName(song.SongName) + "." +strings.ToLower(song.FileExt)] = song
+    }
+    for _, f := range files {
+        songInfo, exists := songMap[f.Name()]
+        if !exists {
+            // 如果是不匹配的文件（比如过滤掉的封面，或者多余的临时文件），直接跳过
+            utils.DebugWithFormat("[YoutubeMusic] 跳过无需处理的文件: %s", f.Name())
+            continue
+        }
+        musicFilePath := filepath.Join(p.tempDir, f.Name())
+        remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
+        if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
+            utils.WarnWithFormat("[YoutubeMusic] ☁️ 上传失败 %s: %v", f.Name(), err)
+            continue
+        }
+        utils.InfoWithFormat("[YoutubeMusic] ☁️ 已上传: %s", f.Name())
+    }
 	// 清除临时目录
 	err := processor.RemoveTempDir(p.tempDir)
 	if err != nil {

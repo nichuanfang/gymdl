@@ -943,18 +943,24 @@ func (qm *QQMusicProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.WebDA
 		_ = processor.RemoveTempDir(qm.tempDir)
 		return errors.New("WebDAV 未初始化")
 	}
-
+    songMap := make(map[string]*SongInfo)
+    for _, song := range qm.songs {
+        songMap[qm.safeFileName(song.SongName, song.SongArtists, song.FileExt)] = song
+    }
 	for _, f := range files {
-		if !utils.FilterMusicFile(f, qm.EncryptedExts(), qm.DecryptedExts()) {
-			utils.DebugWithFormat("[QQMusic] 跳过非音乐文件: %s", f.Name())
-			continue
-		}
-		filePath := filepath.Join(qm.tempDir, f.Name())
-		if err := webdav.Upload(filePath); err != nil {
-			utils.WarnWithFormat("[QQMusic] ☁️ 上传失败 %s: %v", f.Name(), err)
-			continue
-		}
-		utils.InfoWithFormat("[QQMusic] ☁️ 已上传: %s", f.Name())
+        songInfo, exists := songMap[f.Name()]
+        if !exists {
+            // 如果是不匹配的文件（比如过滤掉的封面，或者多余的临时文件），直接跳过
+            utils.DebugWithFormat("[QQMusic] 跳过无需处理的文件: %s", f.Name())
+            continue
+        }
+        musicFilePath := filepath.Join(qm.tempDir, f.Name())
+        remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
+        if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
+            utils.WarnWithFormat("[QQMusic] ☁️ 上传失败 %s: %v", f.Name(), err)
+            continue
+        }
+        utils.InfoWithFormat("[QQMusic] ☁️ 已上传: %s", f.Name())
 	}
 	return processor.RemoveTempDir(qm.tempDir)
 }
