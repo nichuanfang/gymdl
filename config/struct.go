@@ -8,6 +8,7 @@ type Config struct {
 	Log              *LogConfig         `yaml:"log"`               // 日志配置
 	Telegram         *TelegramConfig    `yaml:"telegram"`          // telegram配置
 	AI               *AIConfig          `yaml:"ai"`                // AI配置
+    N8NConfig        *N8NConfig         `yaml:"n8n_config"` // n8n配置
 	QQMusicApiConfig *QQMusicApiConfig  `yaml:"qq_music_api"`      // qq-music-api服务配置
 	AdditionalConfig *AdditionalConfig  `yaml:"additional_config"` // 附属配置
 	ProxyConfig      *ProxyConfig       `yaml:"proxy"`             // 代理配置
@@ -65,6 +66,19 @@ type AIConfig struct {
 	Model        string `yaml:"model"`         // 使用的模型
 	ApiKey       string `yaml:"api_key"`       // apiKey
 	SystemPrompt string `yaml:"system_prompt"` // 默认系统提示词
+    PlaylistAssist bool `yaml:"playlist_assist"`  // 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
+}
+
+// PlaylistInfo 定义单个歌单及其描述
+type PlaylistInfo struct {
+    Name string `yaml:"name"` // 歌单名称
+    Desc string `yaml:"desc"` // 歌单描述
+}
+
+type N8NConfig struct {
+    N8NBaseUrl string `yaml:"n8n_base_url"` // 自建n8n的地址
+    TidyPlaylistEndpoint  string `yaml:"tidy_playlist_endpoint"` // 歌单整理端点
+    TidyPlaylist []PlaylistInfo `yaml:"tidy_playlist"` // 歌单名列表
 }
 
 type QQMusicApiConfig struct {

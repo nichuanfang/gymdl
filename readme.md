@@ -30,13 +30,13 @@ CookieCloud 自动同步登录、WebDAV 上传、下载器监控、Telegram Bot 
 | 重构模块                                                 | ✅      |
 | 下载器监控                                                | ✅      |
 | QQ音乐下载                                               | ✅      |
-| 网易云音乐下载                                               | ✅      |
-| AppleMusic下载                                               | ✅      |
-| YoutubeMusic下载                                            | ✅ |
-| Soundcloud下载                                              | ✅ |
-| Spotify下载                                                 | 🚧 开发中 |
-| 视频下载                                                    | 🚧 开发中 |
-| 多个通知渠道                                                | ⚠️ 规划中 |
+| 网易云音乐下载                                              | ✅      |
+| AppleMusic下载                                         | ✅      |
+| YoutubeMusic下载                                       | ✅      |
+| Soundcloud下载                                         | ✅      |
+| Spotify下载                                            | 🚧 开发中 |
+| 视频下载                                                 | 🚧 开发中 |
+| 多个通知渠道                                               | ⚠️ 规划中 |
 | AI 助手                                                | ⚠️ 规划中 |
 | Web UI                                               | ⚠️ 规划中 |
 
@@ -125,6 +125,17 @@ ai:
   model: ""  # 使用的 AI 模型名称
   api_key: ""  # AI 服务的 API Key
   system_prompt: ""  # 默认系统提示词
+  playlist_assist: false  # 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
+
+# N8N配置  
+n8n_config:
+  n8n_base_url:  # 自建n8n的地址
+  tidy_playlist_endpoint:  # 歌单整理端点
+  tidy_playlist:  #歌单,名称必须与navidrome中保持一致
+    - name: 中文
+      desc: 歌曲的主要演唱语言为中文(含普通话、粤语、闽南语等)
+    - name: 英文
+      desc: 歌曲的主要演唱语言为英文(若仅有少量英文采样且本质为纯音乐，请勿勾选此项)
 
 # 附加配置
 additional_config:
@@ -133,7 +144,7 @@ additional_config:
   monitor_dirs:
     - ""  # 监听的目录,下载器监控
   music_mode: true  # 是否启用音乐模式 视频平台链接优先转为音频
-
+  
 # 代理配置
 proxy:
   enable: false  # 是否启用代理

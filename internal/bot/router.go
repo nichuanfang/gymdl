@@ -17,6 +17,9 @@ func (app *BotApp) registerHandlers() {
     // qq音乐登录
     app.bot.Handle("/qq_login",app.QQLoginCommand)
 
+    // 歌单整理
+    app.bot.Handle("/assign_playlist",app.AssignPlaylistCommand)
+    
 	// 指令注册器
 	app.bot.Handle("/setCommands", SetCommands)
 

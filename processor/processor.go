@@ -16,9 +16,9 @@ import (
 // 顶级接口定义
 
 type Processor interface {
-	//构造方法
+	// 构造方法
 	Init(cfg *config.Config)
-	//处理器名称
+	// 处理器名称
 	Name() LinkType
 }
 

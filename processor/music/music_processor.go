@@ -195,6 +195,28 @@ func ReadTags(path string) (*SongInfo, error) {
 	return songInfo, nil
 }
 
+// ReadCoreTags 仅读取专辑名和歌手名
+func ReadCoreTags(path string) (*SongInfo, error) {
+    tags, err := taglib.ReadTags(path)
+    if err != nil {
+        return nil, err
+    }
+
+    metadata := &SongInfo{}
+
+    // 提取歌手名
+    if a, ok := tags[taglib.Artist]; ok && len(a) > 0 {
+        metadata.SongArtists = a[0]
+    }
+
+    // 提取专辑名
+    if al, ok := tags[taglib.Album]; ok && len(al) > 0 {
+        metadata.SongAlbum = al[0]
+    }
+
+    return metadata, nil
+}
+
 // FillDefaultTags 标签写入默认值
 func FillDefaultTags(path string, info *SongInfo) {
 	updates := make(map[string][]string)

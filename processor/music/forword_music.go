@@ -6,8 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+    "strings"
 
-	"github.com/nichuanfang/gymdl/config"
+    "github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/utils"
@@ -144,14 +145,25 @@ func (fp *ForwardProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.WebDA
 		_ = processor.RemoveTempDir(fp.tempDir)
 		return errors.New("WebDAV 未初始化")
 	}
-
+    songMap := make(map[string]*SongInfo)
+    for _, song := range fp.songs {
+        songMap[utils.MakeSafeFileName(song.SongName) + "."+ strings.ToLower(song.FileExt)] = song
+    }
 	for _, f := range files {
-		filePath := filepath.Join(fp.tempDir, f.Name())
-		if err := webdav.Upload(filePath); err != nil {
-			utils.WarnWithFormat("[Forward] ☁️ 上传失败 %s: %v", f.Name(), err)
-			continue
-		}
-		utils.InfoWithFormat("[Forward] ☁️ 已上传: %s", f.Name())
+        songInfo, exists := songMap[f.Name()]
+        if !exists {
+            // 如果是不匹配的文件（比如过滤掉的封面，或者多余的临时文件），直接跳过
+            utils.DebugWithFormat("[Forward] 跳过无需处理的文件: %s", f.Name())
+            continue
+        }
+        musicFilePath := filepath.Join(fp.tempDir, f.Name())
+        remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
+        if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
+            utils.WarnWithFormat("[Forward] ☁️ 上传失败 %s: %v", f.Name(), err)
+            continue
+        }
+        utils.InfoWithFormat("[Forward] ☁️ 已上传: %s", f.Name())
+        
 	}
 	// 清除临时目录
 	err := processor.RemoveTempDir(fp.tempDir)
