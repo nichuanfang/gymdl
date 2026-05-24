@@ -131,7 +131,11 @@ ai:
 n8n_config:
   n8n_base_url:  # 自建n8n的地址
   tidy_playlist_endpoint:  # 歌单整理端点
-  tidy_playlist: # 歌单名列表,多个歌单用半角逗号","分隔
+  tidy_playlist:  #歌单,名称必须与navidrome中保持一致
+    - name: 中文
+      desc: 歌曲的主要演唱语言为中文(含普通话、粤语、闽南语等)
+    - name: 英文
+      desc: 歌曲的主要演唱语言为英文(若仅有少量英文采样且本质为纯音乐，请勿勾选此项)
 
 # 附加配置
 additional_config:

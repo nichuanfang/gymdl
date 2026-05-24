@@ -69,10 +69,16 @@ type AIConfig struct {
     PlaylistAssist bool `yaml:"playlist_assist"`  // 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
 }
 
+// PlaylistInfo 定义单个歌单及其描述
+type PlaylistInfo struct {
+    Name string `yaml:"name"` // 歌单名称
+    Desc string `yaml:"desc"` // 歌单描述
+}
+
 type N8NConfig struct {
     N8NBaseUrl string `yaml:"n8n_base_url"` // 自建n8n的地址
     TidyPlaylistEndpoint  string `yaml:"tidy_playlist_endpoint"` // 歌单整理端点
-    TidyPlaylist string `yaml:"tidy_playlist"` // 歌单名列表,多个歌单用半角逗号","分隔
+    TidyPlaylist []PlaylistInfo `yaml:"tidy_playlist"` // 歌单名列表
 }
 
 type QQMusicApiConfig struct {
