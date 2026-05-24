@@ -2,13 +2,16 @@ package music
 
 import (
 	"bufio"
-	"errors"
+    "encoding/json"
+    "errors"
 	"fmt"
-	"os"
+    "io"
+    "os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
+    "sync"
+    "time"
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
@@ -42,153 +45,233 @@ func (p *BilibiliMusicProcessor) Songs() []*SongInfo {
 }
 
 /* ------------------------ 下载逻辑 ------------------------ */
-func (p *BilibiliMusicProcessor) DownloadMusic(url string, callback func(string)) error {
-	start := time.Now()
+func (p *BilibiliMusicProcessor) DownloadMusic(
+    url string,
+    callback func(string),
+) error {
 
-	utils.InfoWithFormat("[BiliBiliMusic] 🎵 开始下载: %s", url)
+    start := time.Now()
 
-	cmd := p.DownloadCommand(url)
-	callback("命令构建完成，开始下载...")
-	if cmd == nil {
-		return errors.New("download command build failed")
-	}
-	utils.DebugWithFormat("[BiliBiliMusic] 执行命令: %s", strings.Join(cmd.Args, " "))
+    utils.InfoWithFormat("[BiliBiliMusic] 🎵 开始下载: %s", url)
 
-	// 创建临时目录
-	if err := processor.CreateOutputDir(p.tempDir); err != nil {
-		utils.ErrorWithFormat("[BiliBiliMusic] ❌ 创建临时目录失败: %v", err)
-		return err
-	}
+    cmd := p.DownloadCommand(url)
+    if cmd == nil {
+        return errors.New("无法构建 yt-dlp 命令")
+    }
 
-	// 执行下载
-	output, err := cmd.CombinedOutput()
-	logOut := strings.TrimSpace(string(output))
-	if err != nil {
-		_ = processor.RemoveTempDir(p.tempDir)
-		utils.ErrorWithFormat("[BiliBiliMusic] ❌ 下载失败: %v\n输出:\n%s", err, logOut)
-		return fmt.Errorf("yt-dlp 下载失败: %w", err)
-	}
+    callback("命令构建完成，开始下载...")
 
-	// 输出调试信息，仅当有日志内容时
-	if logOut != "" {
-		utils.DebugWithFormat("[BiliBiliMusic] 下载输出:\n%s", logOut)
-	}
+    utils.DebugWithFormat(
+        "[BiliBiliMusic] 执行命令: %s",
+        strings.Join(cmd.Args, " "),
+    )
 
-	utils.InfoWithFormat("[BiliBiliMusic] ✅ 下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
-	callback(fmt.Sprintf("下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond)))
-	return nil
+    if err := processor.CreateOutputDir(p.tempDir); err != nil {
+        return err
+    }
+
+    stdout, err := cmd.StdoutPipe()
+    if err != nil {
+        return err
+    }
+
+    stderr, err := cmd.StderrPipe()
+    if err != nil {
+        return err
+    }
+
+    if err := cmd.Start(); err != nil {
+        return err
+    }
+
+    var wg sync.WaitGroup
+    wg.Add(2)
+
+    go func() {
+        defer wg.Done()
+        p.streamPipe(stdout, "stdout")
+    }()
+
+    go func() {
+        defer wg.Done()
+        p.streamPipe(stderr, "stderr")
+    }()
+
+    err = cmd.Wait()
+    wg.Wait()
+
+    if err != nil {
+        _ = processor.RemoveTempDir(p.tempDir)
+
+        utils.ErrorWithFormat(
+            "[BiliBiliMusic] ❌ 下载失败: %v",
+            err,
+        )
+
+        return fmt.Errorf("yt-dlp 下载失败: %w", err)
+    }
+
+    utils.InfoWithFormat(
+        "[BiliBiliMusic] ✅ 下载完成（耗时 %v）",
+        time.Since(start).Truncate(time.Millisecond),
+    )
+
+    callback(
+        fmt.Sprintf(
+            "下载完成（耗时 %v）",
+            time.Since(start).Truncate(time.Millisecond),
+        ),
+    )
+
+    return nil
 }
 
-// getAvailableFormats 获取可用格式（优化版：流式解析 + 映射表）
-func (p *BilibiliMusicProcessor) getAvailableFormats(url string, cookiePath string) (map[string]bool, error) {
-	args := []string{
-		"--no-playlist",
-		"--skip-download",
-		"--no-check-certificates",
-		"--no-warnings",
-		"--no-progress",
-	}
+func (p *BilibiliMusicProcessor) streamPipe(r io.ReadCloser, prefix string) {
+    defer r.Close()
 
-    args = append(args, "--cookies", cookiePath)
+    reader := bufio.NewReaderSize(r, 64*1024)
 
-	args = append(args, "-F", url)
+    for {
+        line, err := reader.ReadString('\n')
 
-	cmd := exec.Command("yt-dlp", args...)
+        if len(line) > 0 {
+            line = strings.TrimSpace(line)
+            if line != "" {
+                utils.DebugWithFormat("[%s] %s", prefix, line)
+            }
+        }
 
-	// 用流式解析替代一次性读取整个输出
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	formats := make(map[string]bool)
-
-	// 目标格式映射表
-	targetExt := map[string]string{
-		"30280": "m4a",
-        "30250": "m4a",
-        "30232": "m4a",
-		"30216": "m4a",
-	}
-
-	scanner := bufio.NewScanner(stdoutPipe)
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) >= 2 {
-			if ext, ok := targetExt[fields[0]]; ok && strings.Contains(fields[1], ext) {
-				formats[fields[0]] = true
-			}
-		}
-	}
-
-	if err = scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	if err = cmd.Wait(); err != nil {
-		return nil, err
-	}
-
-	return formats, nil
+        if err != nil {
+            return
+        }
+    }
 }
 
-// 生成下载命令
-func (p *BilibiliMusicProcessor) DownloadCommand(url string) *exec.Cmd {
-	cookiePath := filepath.Join(p.cfg.CookieCloud.CookieFilePath, p.cfg.CookieCloud.CookieFile)
-	start := time.Now()
-	// 获取可用格式
+/* ---------------------- format 解析 ---------------------- */
 
-	formats, err := p.getAvailableFormats(url, cookiePath)
-	utils.InfoWithFormat("[BiliBiliMusic] ✅ 成功解析链接（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
-	if err != nil {
-		// 这里可按你的 utils 警告逻辑
-		return nil
-	}
+func (p *BilibiliMusicProcessor) getAvailableFormats(
+    url string,
+    cookiePath string,
+) (map[string]bool, error) {
 
-	// 根据优先级选择
-	var formatID string
-	var postArgs []string
-	switch {
-	case formats["30280"]:
-		formatID = "30280" // 高码率
+    args := []string{
+        "--no-playlist",
+        "--skip-download",
+        "--no-warnings",
+        "--no-progress",
+        "--no-call-home",
+        "--cookies", cookiePath,
+        "-J",
+        url,
+    }
+
+    cmd := exec.Command("yt-dlp", args...)
+
+    output, err := cmd.Output()
+    if err != nil {
+        return nil, err
+    }
+
+    var info ytInfo
+    if err := json.Unmarshal(output, &info); err != nil {
+        return nil, err
+    }
+
+    formats := make(map[string]bool)
+
+    for _, f := range info.Formats {
+        switch f.FormatID {
+        case "30280", "30250", "30232", "30216":
+            formats[f.FormatID] = true
+        }
+    }
+
+    return formats, nil
+}
+
+/* ---------------------- 命令生成 ---------------------- */
+
+func (p *BilibiliMusicProcessor) DownloadCommand(
+    url string,
+) *exec.Cmd {
+
+    cookiePath := filepath.Join(
+        p.cfg.CookieCloud.CookieFilePath,
+        p.cfg.CookieCloud.CookieFile,
+    )
+
+    if _, err := os.Stat(cookiePath); os.IsNotExist(err) {
+        utils.ErrorWithFormat("[BiliBiliMusic] ❌ Cookie 文件不存在: %s", cookiePath)
+        return nil
+    }
+
+    start := time.Now()
+
+    formats, err := p.getAvailableFormats(url, cookiePath)
+    if err != nil {
+        utils.ErrorWithFormat("[BiliBiliMusic] ❌ 获取格式失败: %v", err)
+        return nil
+    }
+
+    if len(formats) == 0 {
+        utils.ErrorWithFormat("[BiliBiliMusic] ❌ 无可用格式")
+        return nil
+    }
+
+    utils.InfoWithFormat(
+        "[BiliBiliMusic] ✅ 成功解析链接（耗时 %v）",
+        time.Since(start).Truncate(time.Millisecond),
+    )
+
+    var formatID string
+    var postArgs []string
+
+    switch {
+    case formats["30280"]:
+        formatID = "30280"
+
     case formats["30250"]:
-        formatID = "30250" // 192k 码率
+        formatID = "30250"
+
     case formats["30232"]:
-        formatID = "30232" // 128k 码率
+        formatID = "30232"
+
     case formats["30216"]:
-        formatID = "30216" // 64k 码率
-	default:
-		formatID = "bestaudio" // 默认用最佳音质 转aac
-		postArgs = []string{
-			"--audio-format", "aac",
-			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -afterburner 1",
-		}
-	}
+        formatID = "30216"
 
-	// 构造 yt-dlp 命令
-	args := []string{
-		"-x",
-		"--no-playlist",
-		"--embed-metadata",
-		"--embed-thumbnail",
-		"--no-check-certificates",
-		"--no-warnings",
-		"--no-progress",
-	}
+    default:
+        formatID = "bestaudio"
+        postArgs = []string{
+            "--audio-format", "aac",
+            "--postprocessor-args",
+            "-c:a aac -b:a 256k",
+        }
+    }
 
-    args = append(args, "--cookies", cookiePath, "--extractor-args", "youtube:player_client=web_music")
-	args = append(args, "-o", filepath.Join(p.tempDir, "%(title)s.%(ext)s"))
-    // B 站非常看重 Referer
-    args = append(args, "--add-header", "Referer:https://www.bilibili.com")
-	args = append(args, postArgs...)
-	args = append([]string{"-f", formatID}, args...)
-	args = append(args, url)
+    args := []string{
+        "-x",
+        "--no-playlist",
+        "--embed-metadata",
+        "--embed-thumbnail",
+        "--cookies", cookiePath,
 
-	return exec.Command("yt-dlp", args...)
+        // 性能优化
+        "--concurrent-fragments", "8",
+        "--extractor-retries", "3",
+        "--fragment-retries", "3",
+        "--retry-sleep", "1",
+
+        "--no-warnings",
+        "--no-progress",
+
+        "-f", formatID,
+        "-o", filepath.Join(p.tempDir, "%(title)s.%(ext)s"),
+    }
+
+    args = append(args, postArgs...)
+    args = append(args, url)
+
+    return exec.Command("yt-dlp", args...)
 }
 
 func (p *BilibiliMusicProcessor) BeforeTidy() error {

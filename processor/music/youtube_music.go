@@ -2,13 +2,16 @@ package music
 
 import (
 	"bufio"
-	"errors"
+    "encoding/json"
+    "errors"
 	"fmt"
-	"os"
+    "io"
+    "os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
+    "sync"
+    "time"
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
@@ -16,282 +19,324 @@ import (
 	"github.com/nichuanfang/gymdl/utils"
 )
 
-/* ---------------------- 结构体与构造方法 ---------------------- */
+/* ------------------------ 结构体与构造方法  ------------------------ */
 
 type YoutubeMusicProcessor struct {
-	cfg     *config.Config
-	tempDir string
-	songs   []*SongInfo
+    cfg     *config.Config
+    tempDir string
+    songs   []*SongInfo
 }
 
-type Config struct {
-	AdditionalConfig struct {
-		EnableYoutubeCookie bool
-	}
-	CookieCloud struct {
-		CookieFilePath string
-		CookieFile     string
-	}
-}
-
-// Format JSON 解析结构
 type ytFormat struct {
-	FormatID string `json:"format_id"`
-	Ext      string `json:"ext"`
+    FormatID string `json:"format_id"`
+    Ext      string `json:"ext"`
 }
 
 type ytInfo struct {
-	Formats []ytFormat `json:"formats"`
+    Formats []ytFormat `json:"formats"`
 }
 
-// Init  初始化
 func (p *YoutubeMusicProcessor) Init(cfg *config.Config) {
 	p.cfg = cfg
 	p.songs = make([]*SongInfo, 0)
 	p.tempDir = processor.BuildOutputDir(YoutubeTempDir)
 }
 
-// AudioFormat 结构用来解析 yt-dlp -j 输出
-type AudioFormat struct {
-	FormatID string `json:"format_id"`
-	Ext      string `json:"ext"`
-	Acodec   string `json:"acodec"`
-}
-
-/* ---------------------- 基础接口实现 ---------------------- */
-
 func (p *YoutubeMusicProcessor) Name() processor.LinkType {
-	return processor.LinkYoutubeMusic
+    return processor.LinkYoutubeMusic
 }
 
 func (p *YoutubeMusicProcessor) Songs() []*SongInfo {
-	return p.songs
+    return p.songs
 }
 
 /* ------------------------ 下载逻辑 ------------------------ */
-func (p *YoutubeMusicProcessor) DownloadMusic(url string, callback func(string)) error {
-	start := time.Now()
+func (p *YoutubeMusicProcessor) DownloadMusic(
+    url string,
+    callback func(string),
+) error {
 
-	utils.InfoWithFormat("[YoutubeMusic] 🎵 开始下载: %s", url)
+    start := time.Now()
 
-	cmd := p.DownloadCommand(url)
-	callback("命令构建完成，开始下载...")
-	if cmd == nil {
-        errMsg := "[YoutubeMusic] ❌ 无法构建下载命令：可能是由于 format 解析为空或配置错误"
-        utils.ErrorWithFormat(errMsg)
-		return errors.New(errMsg)
-	}
-	utils.DebugWithFormat("[YoutubeMusic] 执行命令: %s", strings.Join(cmd.Args, " "))
+    utils.InfoWithFormat("[YoutubeMusic] 🎵 开始下载: %s", url)
 
-	// 创建临时目录
-	if err := processor.CreateOutputDir(p.tempDir); err != nil {
-		utils.ErrorWithFormat("[YoutubeMusic] ❌ 创建临时目录失败: %v", err)
-		return err
-	}
+    cmd := p.DownloadCommand(url)
+    if cmd == nil {
+        return errors.New("无法构建 yt-dlp 命令")
+    }
 
-	// 执行下载
-	output, err := cmd.CombinedOutput()
-	logOut := strings.TrimSpace(string(output))
-	if err != nil {
-		_ = processor.RemoveTempDir(p.tempDir)
-		utils.ErrorWithFormat("[YoutubeMusic] ❌ 下载失败: %v\n输出:\n%s", err, logOut)
-		return fmt.Errorf("yt-dlp 下载失败: %w", err)
-	}
+    callback("命令构建完成，开始下载...")
 
-	// 输出调试信息，仅当有日志内容时
-	if logOut != "" {
-		utils.DebugWithFormat("[YoutubeMusic] 下载输出:\n%s", logOut)
-	}
+    utils.DebugWithFormat(
+        "[YoutubeMusic] 执行命令: %s",
+        strings.Join(cmd.Args, " "),
+    )
 
-	utils.InfoWithFormat("[YoutubeMusic] ✅ 下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
-	callback(fmt.Sprintf("下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond)))
-	return nil
+    if err := processor.CreateOutputDir(p.tempDir); err != nil {
+        return err
+    }
+
+    stdout, err := cmd.StdoutPipe()
+    if err != nil {
+        return err
+    }
+
+    stderr, err := cmd.StderrPipe()
+    if err != nil {
+        return err
+    }
+
+    if err := cmd.Start(); err != nil {
+        return err
+    }
+
+    var wg sync.WaitGroup
+    wg.Add(2)
+
+    go func() {
+        defer wg.Done()
+        p.streamPipe(stdout, "stdout")
+    }()
+
+    go func() {
+        defer wg.Done()
+        p.streamPipe(stderr, "stderr")
+    }()
+
+    err = cmd.Wait()
+    wg.Wait()
+
+    if err != nil {
+        _ = processor.RemoveTempDir(p.tempDir)
+
+        utils.ErrorWithFormat(
+            "[YoutubeMusic] ❌ 下载失败: %v",
+            err,
+        )
+
+        return fmt.Errorf("yt-dlp 下载失败: %w", err)
+    }
+
+    utils.InfoWithFormat(
+        "[YoutubeMusic] ✅ 下载完成（耗时 %v）",
+        time.Since(start).Truncate(time.Millisecond),
+    )
+
+    callback(
+        fmt.Sprintf(
+            "下载完成（耗时 %v）",
+            time.Since(start).Truncate(time.Millisecond),
+        ),
+    )
+
+    return nil
 }
 
-// getAvailableFormats 获取可用格式（优化版：流式解析 + 映射表）
-func (p *YoutubeMusicProcessor) getAvailableFormats(url string, cookiePath string) (map[string]bool, error) {
-	args := []string{
-		"--no-playlist",
-		"--skip-download",
-		"--no-check-certificates",
-		"--no-warnings",
-		"--no-progress",
-	}
+func (p *YoutubeMusicProcessor) streamPipe(r io.ReadCloser, prefix string) {
+    defer r.Close()
 
-    args = append(args, "--cookies", cookiePath, "--extractor-args", "youtube:player_client=web_music")
+    reader := bufio.NewReaderSize(r, 64*1024)
 
-	args = append(args, "-F", url)
+    for {
+        line, err := reader.ReadString('\n')
 
-	cmd := exec.Command("yt-dlp", args...)
+        if len(line) > 0 {
+            line = strings.TrimSpace(line)
+            if line != "" {
+                utils.DebugWithFormat("[%s] %s", prefix, line)
+            }
+        }
 
-	// 用流式解析替代一次性读取整个输出
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	formats := make(map[string]bool)
-
-	// 目标格式映射表
-	targetExt := map[string]string{
-		"141": "m4a",
-		"774": "webm",
-		"251": "webm",
-		"140": "m4a",
-	}
-
-	scanner := bufio.NewScanner(stdoutPipe)
-	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) >= 2 {
-			if ext, ok := targetExt[fields[0]]; ok && strings.Contains(fields[1], ext) {
-				formats[fields[0]] = true
-			}
-		}
-	}
-
-	if err = scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	if err = cmd.Wait(); err != nil {
-		return nil, err
-	}
-
-	return formats, nil
+        if err != nil {
+            return
+        }
+    }
 }
 
-// 生成下载命令
-func (p *YoutubeMusicProcessor) DownloadCommand(url string) *exec.Cmd {
-	cookiePath := filepath.Join(p.cfg.CookieCloud.CookieFilePath, p.cfg.CookieCloud.CookieFile)
+/* ---------------------- format 解析 ---------------------- */
 
-    // 检查 Cookie 文件是否存在，这也是构建失败的常见原因
+func (p *YoutubeMusicProcessor) getAvailableFormats(
+    url string,
+    cookiePath string,
+) (map[string]bool, error) {
+
+    args := []string{
+        "--no-playlist",
+        "--skip-download",
+        "--no-warnings",
+        "--no-progress",
+        "--no-call-home",
+        "--cookies", cookiePath,
+        "-J",
+        url,
+    }
+
+    cmd := exec.Command("yt-dlp", args...)
+
+    output, err := cmd.Output()
+    if err != nil {
+        return nil, err
+    }
+
+    var info ytInfo
+    if err := json.Unmarshal(output, &info); err != nil {
+        return nil, err
+    }
+
+    formats := make(map[string]bool)
+
+    for _, f := range info.Formats {
+        switch f.FormatID {
+        case "141", "140", "774", "251":
+            formats[f.FormatID] = true
+        }
+    }
+
+    return formats, nil
+}
+
+/* ---------------------- 命令生成 ---------------------- */
+
+func (p *YoutubeMusicProcessor) DownloadCommand(
+    url string,
+) *exec.Cmd {
+
+    cookiePath := filepath.Join(
+        p.cfg.CookieCloud.CookieFilePath,
+        p.cfg.CookieCloud.CookieFile,
+    )
+
     if _, err := os.Stat(cookiePath); os.IsNotExist(err) {
         utils.ErrorWithFormat("[YoutubeMusic] ❌ Cookie 文件不存在: %s", cookiePath)
         return nil
     }
-    
-	start := time.Now()
-	// 获取可用格式
 
-	formats, err := p.getAvailableFormats(url, cookiePath)
+    start := time.Now()
 
+    formats, err := p.getAvailableFormats(url, cookiePath)
     if err != nil {
-        utils.ErrorWithFormat("[YoutubeMusic] ❌ 解析可用格式时发生系统错误: %v", err)
+        utils.ErrorWithFormat("[YoutubeMusic] ❌ 获取格式失败: %v", err)
         return nil
     }
 
-    if formats == nil || len(formats) == 0 {
-        utils.ErrorWithFormat("[YoutubeMusic] ⚠️ 无法解析任何有效的 Audio Format (141/774/251/140), 请检查 URL 或 Cookie")
+    if len(formats) == 0 {
+        utils.ErrorWithFormat("[YoutubeMusic] ❌ 无可用格式")
         return nil
     }
-    
-	utils.InfoWithFormat("[YoutubeMusic] ✅ 成功解析链接（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
 
-	// 根据优先级选择
-	var formatID string
-	var postArgs []string
-	switch {
-	case formats["141"]:
-		formatID = "141" // 高质量 AAC
-        utils.DebugWithFormat("[YoutubeMusic] 命中格式策略: 141 (High Quality AAC)")
-	case formats["774"]:
-		formatID = "774" // 高质量 opus
-        utils.DebugWithFormat("[YoutubeMusic] 命中格式策略: 774 (Opus -> AAC Transcoding)")
-		postArgs = []string{
-			"--audio-format", "aac",
-			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -afterburner 1",
-		}
-	case formats["251"]:
-		formatID = "251" // 中等质量 opus
-        utils.DebugWithFormat("[YoutubeMusic] 命中格式策略: 251 (Opus -> AAC Transcoding)")
-		postArgs = []string{
-			"--audio-format", "aac",
-			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -afterburner 1",
-		}
-	case formats["140"]:
-        utils.DebugWithFormat("[YoutubeMusic] 命中格式策略: 141 (General Quality AAC)")
-		formatID = "140" // 中等质量 AAC
-	default:
-		formatID = "bestaudio" // 默认用最佳音质 转aac
-        utils.DebugWithFormat("[YoutubeMusic] 命中格式策略: bestaudio")
-		postArgs = []string{
-			"--audio-format", "aac",
-			"--postprocessor-args", "-c:a libfdk_aac -vbr 5 -afterburner 1",
-		}
-	}
+    utils.InfoWithFormat(
+        "[YoutubeMusic] ✅ 成功解析链接（耗时 %v）",
+        time.Since(start).Truncate(time.Millisecond),
+    )
 
-	// 构造 yt-dlp 命令
-	args := []string{
-		"-x",
-		"--no-playlist",
-		"--embed-metadata",
-		"--embed-thumbnail",
-		"--no-check-certificates",
-		"--no-warnings",
-		"--no-progress",
-	}
+    var formatID string
+    var postArgs []string
 
-    args = append(args, "--cookies", cookiePath, "--extractor-args", "youtube:player_client=web_music")
-	args = append(args, "-o", filepath.Join(p.tempDir, "%(title)s.%(ext)s"))
-	args = append(args, postArgs...)
-	args = append([]string{"-f", formatID}, args...)
-	args = append(args, url)
+    switch {
+    case formats["141"]:
+        formatID = "141"
 
-	return exec.Command("yt-dlp", args...)
-}
+    case formats["140"]:
+        formatID = "140"
 
-func (p *YoutubeMusicProcessor) BeforeTidy() error {
-	songs, err := ReadMusicDir(p.tempDir, processor.DetermineTidyType(p.cfg), p)
-	if err != nil {
-		return err
-	}
-	// 更新元信息列表
-	p.songs = songs
-	return nil
-}
+    case formats["774"]:
+        formatID = "774"
+        postArgs = []string{
+            "--audio-format", "aac",
+            "--postprocessor-args",
+            "-c:a aac -b:a 256k",
+        }
 
-func (p *YoutubeMusicProcessor) NeedRemoveDRM() bool {
-	return false
-}
+    case formats["251"]:
+        formatID = "251"
+        postArgs = []string{
+            "--audio-format", "aac",
+            "--postprocessor-args",
+            "-c:a aac -b:a 256k",
+        }
 
-func (p *YoutubeMusicProcessor) DRMRemove() error {
-	return nil
-}
+    default:
+        formatID = "bestaudio"
+        postArgs = []string{
+            "--audio-format", "aac",
+            "--postprocessor-args",
+            "-c:a aac -b:a 256k",
+        }
+    }
 
-func (p *YoutubeMusicProcessor) TidyMusic() error {
-	files, err := os.ReadDir(p.tempDir)
-	if err != nil {
-		return fmt.Errorf("读取临时目录失败: %w", err)
-	}
-	if len(files) == 0 {
-		utils.WarnWithFormat("[YoutubeMusic] ⚠️ 未找到待整理的音乐文件")
-		return errors.New("未找到待整理的音乐文件")
-	}
+    args := []string{
+        "-x",
+        "--no-playlist",
+        "--embed-metadata",
+        "--embed-thumbnail",
+        "--cookies", cookiePath,
 
-	switch p.cfg.Tidy.Mode {
-	case 1:
-		return p.tidyToLocal(files)
-	case 2:
-		return p.tidyToWebDAV(files, core.GlobalWebDAV)
-	default:
-		return fmt.Errorf("未知整理模式: %d", p.cfg.Tidy.Mode)
-	}
-}
+        // 性能优化
+        "--concurrent-fragments", "8",
+        "--extractor-retries", "3",
+        "--fragment-retries", "3",
+        "--retry-sleep", "1",
 
-func (p *YoutubeMusicProcessor) EncryptedExts() []string {
-	return make([]string, 0)
-}
+        "--no-warnings",
+        "--no-progress",
 
-func (p *YoutubeMusicProcessor) DecryptedExts() []string {
-	return []string{".aac", ".m4a", ".flac", ".mp3", ".ogg"}
+        "-f", formatID,
+        "-o", filepath.Join(p.tempDir, "%(title)s.%(ext)s"),
+    }
+
+    args = append(args, postArgs...)
+    args = append(args, url)
+
+    return exec.Command("yt-dlp", args...)
 }
 
 /* ------------------------ 拓展方法 ------------------------ */
+func (p *YoutubeMusicProcessor) BeforeTidy() error {
+    songs, err := ReadMusicDir(p.tempDir, processor.DetermineTidyType(p.cfg), p)
+    if err != nil {
+        return err
+    }
+    // 更新元信息列表
+    p.songs = songs
+    return nil
+}
+
+func (p *YoutubeMusicProcessor) NeedRemoveDRM() bool {
+    return false
+}
+
+func (p *YoutubeMusicProcessor) DRMRemove() error {
+    return nil
+}
+
+func (p *YoutubeMusicProcessor) TidyMusic() error {
+    files, err := os.ReadDir(p.tempDir)
+    if err != nil {
+        return fmt.Errorf("读取临时目录失败: %w", err)
+    }
+    if len(files) == 0 {
+        utils.WarnWithFormat("[YoutubeMusic] ⚠️ 未找到待整理的音乐文件")
+        return errors.New("未找到待整理的音乐文件")
+    }
+
+    switch p.cfg.Tidy.Mode {
+    case 1:
+        return p.tidyToLocal(files)
+    case 2:
+        return p.tidyToWebDAV(files, core.GlobalWebDAV)
+    default:
+        return fmt.Errorf("未知整理模式: %d", p.cfg.Tidy.Mode)
+    }
+}
+
+func (p *YoutubeMusicProcessor) EncryptedExts() []string {
+    return make([]string, 0)
+}
+
+func (p *YoutubeMusicProcessor) DecryptedExts() []string {
+    return []string{".aac", ".m4a", ".flac", ".mp3", ".ogg"}
+}
+
 // 整理到本地
 func (p *YoutubeMusicProcessor) tidyToLocal(files []os.DirEntry) error {
 	dstDir := p.cfg.Tidy.DistDir
