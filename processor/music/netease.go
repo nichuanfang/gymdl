@@ -466,10 +466,10 @@ func (ncm *NetEaseProcessor) buildSongInfo(cfg *config.Config, detail *types.Son
 		ncmLyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
 	}
 	year := utils.ParseNCMYear(detail)
-
+    
 	return &SongInfo{
-		SongName:    s.Name,
-		SongArtists: utils.ParseArtist(s),
+		SongName:    utils.ToSimpleChinese(s.Name),
+		SongArtists: utils.ToSimpleChinese(utils.ParseArtist(s)),
 		SongAlbum:   s.Al.Name,
 		FileExt:     ncm.detectExt(u.Url),
 		MusicSize:   int64(u.Size),
@@ -555,7 +555,7 @@ func (ncm *NetEaseProcessor) tidyToLocal(files []os.DirEntry) error {
 
 	for _, f := range files {
 		if !utils.FilterMusicFile(f, ncm.EncryptedExts(), ncm.DecryptedExts()) {
-			utils.DebugWithFormat("[AppleMusic] 跳过非音乐文件: %s", f.Name())
+			utils.DebugWithFormat("[NCM] 跳过非音乐文件: %s", f.Name())
 			continue
 		}
 		src := filepath.Join(ncm.tempDir, f.Name())
@@ -564,7 +564,7 @@ func (ncm *NetEaseProcessor) tidyToLocal(files []os.DirEntry) error {
 		if err != nil {
 			return err
 		}
-		utils.InfoWithFormat("[AppleMusic] 📦 已整理: %s", dst)
+		utils.InfoWithFormat("[NCM] 📦 已整理: %s", dst)
 	}
 	// 清除临时目录
 	err := processor.RemoveTempDir(ncm.tempDir)
