@@ -392,7 +392,11 @@ func (qmApi *QQMusicAPI) querySong(songId string) (QQSong, error) {
 	if songRes == nil {
 		return QQSong{}, nil
 	}
-	return songRes.Data[0], nil
+    songInfo := songRes.Data[0]
+    // 简繁转换
+    songInfo.Title = utils.ToSimpleChinese(songInfo.Title)
+    songInfo.Singer[0].Name = utils.ToSimpleChinese(songInfo.Singer[0].Name)
+	return songInfo, nil
 }
 
 // downloadSong 单曲下载

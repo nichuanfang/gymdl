@@ -106,9 +106,9 @@ func tidy(path string, cfg *config.Config) (*music.SongInfo, error) {
 	if path == "" {
 		return nil, errors.New("文件路径为空")
 	}
-	//读取元数据
+	// 读取元数据
 	songInfo, err := music.ReadTags(path)
-	//嵌入默认标签
+	// 嵌入默认标签
 	music.FillDefaultTags(path, songInfo)
 	if err != nil {
 		return nil, err
