@@ -1,22 +1,22 @@
 package music
 
 import (
-	"bufio"
+    "bufio"
     "encoding/json"
     "errors"
-	"fmt"
+    "fmt"
     "io"
     "os"
-	"os/exec"
-	"path/filepath"
-	"strings"
+    "os/exec"
+    "path/filepath"
+    "strings"
     "sync"
     "time"
 
-	"github.com/nichuanfang/gymdl/config"
-	"github.com/nichuanfang/gymdl/core"
-	"github.com/nichuanfang/gymdl/processor"
-	"github.com/nichuanfang/gymdl/utils"
+    "github.com/nichuanfang/gymdl/config"
+    "github.com/nichuanfang/gymdl/core"
+    "github.com/nichuanfang/gymdl/processor"
+    "github.com/nichuanfang/gymdl/utils"
 )
 
 /* ------------------------ 结构体与构造方法  ------------------------ */
@@ -37,9 +37,9 @@ type ytInfo struct {
 }
 
 func (p *YoutubeMusicProcessor) Init(cfg *config.Config) {
-	p.cfg = cfg
-	p.songs = make([]*SongInfo, 0)
-	p.tempDir = processor.BuildOutputDir(YoutubeTempDir)
+    p.cfg = cfg
+    p.songs = make([]*SongInfo, 0)
+    p.tempDir = processor.BuildOutputDir(YoutubeTempDir)
 }
 
 func (p *YoutubeMusicProcessor) Name() processor.LinkType {
@@ -233,11 +233,9 @@ func (p *YoutubeMusicProcessor) DownloadCommand(
     var postArgs []string
 
     switch {
+    
     case formats["141"]:
         formatID = "141"
-
-    case formats["140"]:
-        formatID = "140"
 
     case formats["774"]:
         formatID = "774"
@@ -254,6 +252,9 @@ func (p *YoutubeMusicProcessor) DownloadCommand(
             "--postprocessor-args",
             "-c:a aac -b:a 256k",
         }
+
+    case formats["140"]:
+        formatID = "140"
 
     default:
         formatID = "bestaudio"
@@ -339,46 +340,46 @@ func (p *YoutubeMusicProcessor) DecryptedExts() []string {
 
 // 整理到本地
 func (p *YoutubeMusicProcessor) tidyToLocal(files []os.DirEntry) error {
-	dstDir := p.cfg.Tidy.DistDir
-	if dstDir == "" {
-		_ = processor.RemoveTempDir(p.tempDir)
-		return errors.New("未配置输出目录")
-	}
-	if err := os.MkdirAll(dstDir, 0755); err != nil {
-		_ = processor.RemoveTempDir(p.tempDir)
-		return fmt.Errorf("创建输出目录失败: %w", err)
-	}
+    dstDir := p.cfg.Tidy.DistDir
+    if dstDir == "" {
+        _ = processor.RemoveTempDir(p.tempDir)
+        return errors.New("未配置输出目录")
+    }
+    if err := os.MkdirAll(dstDir, 0755); err != nil {
+        _ = processor.RemoveTempDir(p.tempDir)
+        return fmt.Errorf("创建输出目录失败: %w", err)
+    }
 
-	for _, f := range files {
-		if !utils.FilterMusicFile(f, p.EncryptedExts(), p.DecryptedExts()) {
-			utils.DebugWithFormat("[YoutubeMusic] 跳过非音乐文件: %s", f.Name())
-			continue
-		}
-		src := filepath.Join(p.tempDir, f.Name())
-		dst := filepath.Join(dstDir, utils.SanitizeFileName(f.Name()))
-		err := processor.ToLocal(src, dst)
-		if err != nil {
-			return err
-		}
-		utils.InfoWithFormat("[YoutubeMusic] 📦 已整理: %s", dst)
-	}
-	// 清除临时目录
-	err := processor.RemoveTempDir(p.tempDir)
-	if err != nil {
-		return err
-	}
-	return nil
+    for _, f := range files {
+        if !utils.FilterMusicFile(f, p.EncryptedExts(), p.DecryptedExts()) {
+            utils.DebugWithFormat("[YoutubeMusic] 跳过非音乐文件: %s", f.Name())
+            continue
+        }
+        src := filepath.Join(p.tempDir, f.Name())
+        dst := filepath.Join(dstDir, utils.SanitizeFileName(f.Name()))
+        err := processor.ToLocal(src, dst)
+        if err != nil {
+            return err
+        }
+        utils.InfoWithFormat("[YoutubeMusic] 📦 已整理: %s", dst)
+    }
+    // 清除临时目录
+    err := processor.RemoveTempDir(p.tempDir)
+    if err != nil {
+        return err
+    }
+    return nil
 }
 
 // 整理到webdav
 func (p *YoutubeMusicProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.WebDAV) error {
-	if webdav == nil {
-		_ = processor.RemoveTempDir(p.tempDir)
-		return errors.New("WebDAV 未初始化")
-	}
+    if webdav == nil {
+        _ = processor.RemoveTempDir(p.tempDir)
+        return errors.New("WebDAV 未初始化")
+    }
     songMap := make(map[string]*SongInfo)
     for _, song := range p.songs {
-        songMap[utils.MakeSafeFileName(song.SongName) + "." +strings.ToLower(song.FileExt)] = song
+        songMap[utils.MakeSafeFileName(song.SongName)+"."+strings.ToLower(song.FileExt)] = song
     }
     for _, f := range files {
         songInfo, exists := songMap[f.Name()]
@@ -395,10 +396,10 @@ func (p *YoutubeMusicProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.W
         }
         utils.InfoWithFormat("[YoutubeMusic] ☁️ 已上传: %s", f.Name())
     }
-	// 清除临时目录
-	err := processor.RemoveTempDir(p.tempDir)
-	if err != nil {
-		return err
-	}
-	return nil
+    // 清除临时目录
+    err := processor.RemoveTempDir(p.tempDir)
+    if err != nil {
+        return err
+    }
+    return nil
 }
