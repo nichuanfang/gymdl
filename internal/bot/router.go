@@ -24,9 +24,12 @@ func (app *BotApp) registerHandlers() {
 	app.bot.Handle("/setCommands", SetCommands)
 
 	// 普通文本
-	app.bot.Handle(tb.OnText, HandleText)
+	app.bot.Handle(tb.OnText, app.HandleText)
     
     // 处理音频
-    app.bot.Handle(tb.OnAudio,HandleAudio)
+    app.bot.Handle(tb.OnAudio,app.HandleAudio)
+    
+    // 处理Callback
+    app.bot.Handle(tb.OnCallback,app.HandleCallBack)
 
 }

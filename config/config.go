@@ -160,6 +160,7 @@ func (c *Config) setDefaults() {
     if c.N8NConfig == nil {
         c.N8NConfig = &N8NConfig{
             N8NBaseUrl:           "",
+            AuthToken: "",
             TidyPlaylistEndpoint: "",
             TidyPlaylist: make([]PlaylistInfo, 0),
         }

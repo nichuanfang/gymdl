@@ -17,7 +17,7 @@ import (
 )
 
 // HandleText 精简版交互逻辑
-func HandleText(c tb.Context) error {
+func (app *BotApp)HandleText(c tb.Context) error {
 	text := c.Text()
 	user := c.Sender()
 	b := c.Bot()
@@ -71,7 +71,7 @@ func HandleText(c tb.Context) error {
 }
 
 // HandleAudio 处理音频
-func HandleAudio(c tb.Context) error {
+func (app *BotApp)HandleAudio(c tb.Context) error {
 	file := &c.Message().Audio.File
 
 	text := c.Text()
