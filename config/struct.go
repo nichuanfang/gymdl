@@ -77,6 +77,7 @@ type PlaylistInfo struct {
 
 type N8NConfig struct {
     N8NBaseUrl string `yaml:"n8n_base_url"` // 自建n8n的地址
+    AuthToken string `yaml:"auth_token"` // 端点认证密钥
     TidyPlaylistEndpoint  string `yaml:"tidy_playlist_endpoint"` // 歌单整理端点
     TidyPlaylist []PlaylistInfo `yaml:"tidy_playlist"` // 歌单名列表
 }

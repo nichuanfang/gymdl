@@ -322,6 +322,11 @@ func (app *BotApp) AssignPlaylistCommand(c tb.Context) error {
         _, _ = c.Bot().Edit(sentMsg, "❌ 创建请求失败: "+err.Error())
         return err
     }
+    // 添加 Header 认证
+    if app.cfg.N8NConfig.AuthToken != "" {
+        // 推荐使用 Authorization: Bearer <token> 格式，或者自定义 Header
+        req.Header.Set("Authorization", "Bearer "+app.cfg.N8NConfig.AuthToken)
+    }
     req.Header.Set("Content-Type", "application/json")
 
     // 7. 同步发起请求
