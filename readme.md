@@ -130,8 +130,9 @@ ai:
 # N8N配置  
 n8n_config:
   n8n_base_url:  # 自建n8n的地址
+  auth_token: # 端点认证密钥
   tidy_playlist_endpoint:  # 歌单整理端点
-  tidy_playlist:  #歌单,名称必须与navidrome中保持一致
+  tidy_playlist: #歌单,名称必须与navidrome中保持一致
     - name: 中文
       desc: 歌曲的主要演唱语言为中文(含普通话、粤语、闽南语等)
     - name: 英文
@@ -144,7 +145,7 @@ additional_config:
   monitor_dirs:
     - ""  # 监听的目录,下载器监控
   music_mode: true  # 是否启用音乐模式 视频平台链接优先转为音频
-  
+
 # 代理配置
 proxy:
   enable: false  # 是否启用代理
