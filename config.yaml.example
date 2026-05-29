@@ -61,6 +61,7 @@ ai:
 n8n_config:
   n8n_base_url:  # 自建n8n的地址
   auth_token: # 端点认证密钥
+  ai_playlist_endpoint:  # AI智能歌单
   tidy_playlist_endpoint:  # 歌单整理端点
   tidy_playlist: #歌单,名称必须与navidrome中保持一致
     - name: 中文
