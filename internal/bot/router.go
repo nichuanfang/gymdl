@@ -19,6 +19,9 @@ func (app *BotApp) registerHandlers() {
 
     // 歌单整理
     app.bot.Handle("/assign_playlist",app.AssignPlaylistCommand)
+
+    // AI智能歌单
+    app.bot.Handle("/ai_playlist",app.AIPlaylistCommand)
     
 	// 指令注册器
 	app.bot.Handle("/setCommands", SetCommands)
