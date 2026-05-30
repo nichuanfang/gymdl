@@ -260,6 +260,7 @@ func SetCommands(c tb.Context) error {
 		// {Text: "qq_login", Description: "QQ 音乐登录 🎧"},
 		{Text: "assign_playlist", Description: "分配歌单🎵"},
         {Text: "ai_playlist", Description: "智能歌单✨"},
+        {Text: "empty_trash", Description: "清空回收站🗑️"},
 	}
 
 	if err := c.Bot().SetCommands(commands); err != nil {
@@ -278,100 +279,42 @@ func SetCommands(c tb.Context) error {
 
 /* ------------------------ /assign_playlist ------------------------ */
 func (app *BotApp) AssignPlaylistCommand(c tb.Context) error {
-    if len(app.cfg.N8NConfig.N8NBaseUrl) == 0 {
-        _ = c.Send("请先配置 n8n_config.n8n_base_url")
-        return nil
+    extra := map[string]interface{}{
+        "playlist_assist": app.cfg.AI.Enable && app.cfg.AI.PlaylistAssist,
+        "tidy_playlist":   app.cfg.N8NConfig.TidyPlaylist,
     }
-    
-    // 1. 先发一条初始消息，并拿到消息对象（用于 n8n 后续 Edit）
-    sentMsg, err := c.Bot().Send(c.Chat(), "🚀 任务已提交，后台处理中...")
-    if err != nil {
-        return err
-    }
-
-    // 2. 拼接完整的 Webhook URL
-    baseUrl, _ := strings.CutSuffix(app.cfg.N8NConfig.N8NBaseUrl, "/")
-    endpoint, _ := strings.CutPrefix(app.cfg.N8NConfig.TidyPlaylistEndpoint, "/")
-    targetUrl := baseUrl + "/" + endpoint
-    
-    // 3. 是否开启歌单分类ai增强
-    playlistAssist := false
-    if app.cfg.AI.Enable { 
-        playlistAssist = app.cfg.AI.PlaylistAssist
-    }
-    // 4. 发送给 n8n 的数据
-    payload := map[string]interface{}{
-        "chat_id":    c.Chat().ID,
-        "message_id": sentMsg.ID, 
-        "username":   c.Sender().Username,
-        "text":       c.Text(),
-        "timestamp":  time.Now().Unix(),
-        "playlist_assist": playlistAssist, // 是否开启歌单分类ai增强
-        "tidy_playlist": app.cfg.N8NConfig.TidyPlaylist   , // 你的歌单列表 
-    }
-
-    // 5. 将数据序列化为 JSON 字节数组
-    jsonData, err := json.Marshal(payload)
-    if err != nil {
-        _, _ = c.Bot().Edit(sentMsg, "❌ 数据解析失败: "+err.Error())
-        return err
-    }
-
-    // 6. 创建 POST 请求
-    req, err := http.NewRequest("POST", targetUrl, bytes.NewBuffer(jsonData))
-    if err != nil {
-        _, _ = c.Bot().Edit(sentMsg, "❌ 创建请求失败: "+err.Error())
-        return err
-    }
-    // 添加 Header 认证
-    if app.cfg.N8NConfig.AuthToken != "" {
-        // 推荐使用 Authorization: Bearer <token> 格式，或者自定义 Header
-        req.Header.Set("Authorization", "Bearer "+app.cfg.N8NConfig.AuthToken)
-    }
-    req.Header.Set("Content-Type", "application/json")
-
-    // 7. 同步发起请求
-    // 因为 n8n 已经设置为立即响应，这里的 client.Do 会瞬间完成，不会卡住机器人
-    client := &http.Client{
-        Timeout: 5 * time.Second, // 5秒超时足够了，因为 n8n 不需要等待工作流执行完
-    }
-    resp, err := client.Do(req)
-    if err != nil {
-        _, _ = c.Bot().Edit(sentMsg, "❌ 调用 n8n 失败: "+err.Error())
-        return err
-    }
-    defer resp.Body.Close()
-
-    // 8. 校验 n8n 的接收状态
-    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-        // 💡 保持原样即可，不需要再发新消息，因为用户已经看到“🚀 任务已提交...”了
-        // 接下来就静静等待 n8n 真正执行完工作流后来 Edit 这条消息
-    } else {
-        _, _ = c.Bot().Edit(sentMsg, fmt.Sprintf("❌ n8n 接收失败，状态码: %d", resp.StatusCode))
-    }
-
-    return nil
+    return app.sendN8NTask(c, app.cfg.N8NConfig.TidyPlaylistEndpoint, extra)
 }
 
 /* ------------------------ /ai_playlist ------------------------ */
 func (app *BotApp) AIPlaylistCommand(c tb.Context) error {
+    return app.sendN8NTask(c, app.cfg.N8NConfig.AIPlaylistEndpoint, nil)
+}
+
+/* ------------------------ /empty_trash ------------------------ */
+func (app *BotApp) EmptyTrashCommand(c tb.Context) error {
+    return app.sendN8NTask(c, app.cfg.N8NConfig.EmptyTrashEndpoint, nil)
+}
+
+/* ------------------------ 辅助方法 ------------------------ */
+
+// sendN8NTask 是一个通用的辅助函数，用于将任务转发给 n8n
+func (app *BotApp) sendN8NTask(c tb.Context, endpoint string, extraPayload map[string]interface{}) error {
     if len(app.cfg.N8NConfig.N8NBaseUrl) == 0 {
-        _ = c.Send("请先配置 n8n_config.n8n_base_url")
-        return nil
+        return c.Send("请先配置 n8n_config.n8n_base_url")
     }
 
-    // 1. 先发一条初始消息，并拿到消息对象（用于 n8n 后续 Edit）
+    // 1. 发送初始状态消息
     sentMsg, err := c.Bot().Send(c.Chat(), "🚀 任务已提交，后台处理中...")
     if err != nil {
         return err
     }
 
-    // 2. 拼接完整的 Webhook URL
+    // 2. 拼接 URL
     baseUrl, _ := strings.CutSuffix(app.cfg.N8NConfig.N8NBaseUrl, "/")
-    endpoint, _ := strings.CutPrefix(app.cfg.N8NConfig.AIPlaylistEndpoint, "/")
-    targetUrl := baseUrl + "/" + endpoint
+    targetUrl := baseUrl + "/" + strings.TrimPrefix(endpoint, "/")
 
-    // 4. 发送给 n8n 的数据
+    // 3. 构造基础 Payload
     payload := map[string]interface{}{
         "chat_id":    c.Chat().ID,
         "message_id": sentMsg.ID,
@@ -379,32 +322,25 @@ func (app *BotApp) AIPlaylistCommand(c tb.Context) error {
         "text":       c.Text(),
         "timestamp":  time.Now().Unix(),
     }
-
-    // 5. 将数据序列化为 JSON 字节数组
-    jsonData, err := json.Marshal(payload)
-    if err != nil {
-        _, _ = c.Bot().Edit(sentMsg, "❌ 数据解析失败: "+err.Error())
-        return err
+    // 合并额外的 Payload
+    for k, v := range extraPayload {
+        payload[k] = v
     }
 
-    // 6. 创建 POST 请求
+    // 4. 发送请求
+    jsonData, _ := json.Marshal(payload)
     req, err := http.NewRequest("POST", targetUrl, bytes.NewBuffer(jsonData))
     if err != nil {
         _, _ = c.Bot().Edit(sentMsg, "❌ 创建请求失败: "+err.Error())
         return err
     }
-    // 添加 Header 认证
+
     if app.cfg.N8NConfig.AuthToken != "" {
-        // 推荐使用 Authorization: Bearer <token> 格式，或者自定义 Header
         req.Header.Set("Authorization", "Bearer "+app.cfg.N8NConfig.AuthToken)
     }
     req.Header.Set("Content-Type", "application/json")
 
-    // 7. 同步发起请求
-    // 因为 n8n 已经设置为立即响应，这里的 client.Do 会瞬间完成，不会卡住机器人
-    client := &http.Client{
-        Timeout: 5 * time.Second, // 5秒超时足够了，因为 n8n 不需要等待工作流执行完
-    }
+    client := &http.Client{Timeout: 5 * time.Second}
     resp, err := client.Do(req)
     if err != nil {
         _, _ = c.Bot().Edit(sentMsg, "❌ 调用 n8n 失败: "+err.Error())
@@ -412,13 +348,8 @@ func (app *BotApp) AIPlaylistCommand(c tb.Context) error {
     }
     defer resp.Body.Close()
 
-    // 8. 校验 n8n 的接收状态
-    if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-        // 💡 保持原样即可，不需要再发新消息，因为用户已经看到“🚀 任务已提交...”了
-        // 接下来就静静等待 n8n 真正执行完工作流后来 Edit 这条消息
-    } else {
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
         _, _ = c.Bot().Edit(sentMsg, fmt.Sprintf("❌ n8n 接收失败，状态码: %d", resp.StatusCode))
     }
-
     return nil
 }
