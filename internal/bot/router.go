@@ -22,6 +22,9 @@ func (app *BotApp) registerHandlers() {
 
     // AI智能歌单
     app.bot.Handle("/ai_playlist",app.AIPlaylistCommand)
+
+    // 清空回收站
+    app.bot.Handle("/empty_trash",app.EmptyTrashCommand)
     
 	// 指令注册器
 	app.bot.Handle("/setCommands", SetCommands)
