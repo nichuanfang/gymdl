@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"time"
+    "reflect"
+    "time"
 
 	"github.com/nichuanfang/gymdl/internal/bot/dispatch"
-	"github.com/nichuanfang/gymdl/utils"
+    "github.com/nichuanfang/gymdl/processor"
+    "github.com/nichuanfang/gymdl/utils"
 
 	"github.com/nichuanfang/gymdl/core/linkparser"
 	"github.com/nichuanfang/gymdl/processor/music"
@@ -45,8 +47,10 @@ func (app *BotApp)HandleText(c tb.Context) error {
 		Start:   time.Now(),
 		Cfg:     app.cfg,
 	}
+    t := reflect.TypeOf(executor).Elem()
+    uniqueExecutor := reflect.New(t).Interface().(processor.Processor)
 	var err error
-	switch expr := executor.(type) {
+	switch expr := uniqueExecutor.(type) {
 	case music.Processor:
 		// 初始化音乐处理器
 		expr.Init(app.cfg)

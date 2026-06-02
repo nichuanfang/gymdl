@@ -52,10 +52,14 @@ const (
 // BuildOutputDir 构建输出目录
 // 规则: baseTempDir + 时间戳（例如：temp/20251030153045）
 func BuildOutputDir(baseTempDir string) string {
-	// 1. 获取当前时间戳（格式：YYYYMMDDHHMMSS）
-	timestamp := time.Now().Format("20060102150405")
-	// 2. 构建输出目录路径
-	return filepath.Join(baseTempDir, timestamp)
+    // 1. 获取当前时间戳（格式：YYYYMMDDHHMMSS）
+    timestamp := time.Now().Format("20060102150405")
+
+    // 2. 获取当前的微秒/纳秒后缀（取后 6 位）
+    suffix := fmt.Sprintf("%06d", time.Now().Nanosecond()/1000)
+
+    // 3. 构建输出目录路径
+    return filepath.Join(baseTempDir, timestamp+"_"+suffix)
 }
 
 // CreateOutputDir 创建临时目录
