@@ -475,7 +475,7 @@ func (ncm *NetEaseProcessor) buildSongInfo(cfg *config.Config, detail *types.Son
 		MusicSize:   int64(u.Size),
 		Bitrate:     strconv.Itoa((8 * u.Size / (s.Dt / 1000)) / 1000),
 		Duration:    s.Dt / 1000,
-		Url:         u.Url,
+		Url:         fmt.Sprintf("https://music.163.com/song?id=%d", u.Id),
 		PicUrl:      s.Al.PicUrl,
 		Tidy:        tidy,
 		Lyric:       ncmLyric,

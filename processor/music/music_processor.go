@@ -286,6 +286,7 @@ func WriteTagsWithCoverFile(song *SongInfo, filePath string, coverFilePath strin
 		taglib.AlbumArtist: {song.SongArtists},
 		taglib.Date:        {strconv.Itoa(song.Year)},
 		taglib.Lyrics:      {song.Lyric},
+        taglib.Comment: {song.Url},
 	}
 	var err error
 	// 写入文本标签（opts传taglib.Clear则清除原标签，传0则不清除）
