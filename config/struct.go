@@ -87,6 +87,7 @@ type N8NConfig struct {
 type QQMusicApiConfig struct {
 	Enable       bool   `yaml:"enable"`        // 是否启用
 	Endpoint     string `yaml:"endpoint"`      // qm-api服务地址
+    ProxyUrl     string `yaml:"proxy_url"` // 代理地址
     VipLevel     string    `yaml:"vip_level"` // qq会员级别,可选vip或者svip,影响音质 
 	LoginType    int    `yaml:"login_type"`    // qm-api登录方式: 0QQ 1微信 2手机号
 	RefreshKey   string `yaml:"refresh_key"`   // 用于刷新已失效的musickey musickey1小时会过期

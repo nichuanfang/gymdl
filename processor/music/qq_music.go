@@ -152,6 +152,15 @@ func (qm *QQMusicProcessor) Init(cfg *config.Config) {
 		ResponseHeaderTimeout: 10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
+    if cfg.QQMusicApiConfig.ProxyUrl != "" {
+        proxyURL, err := url.Parse(cfg.QQMusicApiConfig.ProxyUrl)
+        if err == nil {
+            tr.Proxy = http.ProxyURL(proxyURL)
+        } else {
+            // 打印错误日志，但不中断程序，可选择回退到直连
+            fmt.Printf("警告: 代理地址 [%s] 解析失败: %v，将使用直连模式\n", cfg.QQMusicApiConfig.ProxyUrl, err)
+        }
+    }
 	qm.client = &http.Client{
 		Transport: tr,
 		Timeout:   15 * time.Second,
