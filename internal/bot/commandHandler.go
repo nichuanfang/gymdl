@@ -75,9 +75,6 @@ func NewQQMusicWrapper(config *config.QQMusicApiConfig) *QQMusicWrapper {
 	// 注入业务特定的 Header
 	c.SetHeader("Referer", "https://y.qq.com/")
 	c.SetHeader("User-Agent", "Mozilla/5.0...")
-	if config.EnableSign {
-		c.SetHeader("X-Enable-Sign", "true")
-	}
 
 	var login_type string
 	switch config.LoginType {
@@ -153,7 +150,7 @@ func (app *BotApp) QQLoginCommand(c tb.Context) error {
 
 // 获取二维码
 func (wrapper *QQMusicWrapper) fetchQRCode() (string, string, error) {
-	data, err := wrapper.client.Request(http.MethodGet, "/login/get_qrcode", map[string]string{"login_type": wrapper.loginType}, nil)
+	data, err := wrapper.client.Request(http.MethodGet, "/login/qrcode/"+wrapper.loginType, nil, nil)
 	if err != nil {
 		return "", "", err
 	}
@@ -164,23 +161,23 @@ func (wrapper *QQMusicWrapper) fetchQRCode() (string, string, error) {
 		return "", "", err
 	}
 
-	return res.Data["b64_data"].(string), res.Data["identifier"].(string), nil
+	return res.Data["data"].(string), res.Data["identifier"].(string), nil
 }
 
 // 检查二维码登录状态
-func (wrapper *QQMusicWrapper) checkQRCode(identifier string) (string, interface{}, error) {
-	data, err := wrapper.client.Request(http.MethodGet, "/login/check_qrcode", map[string]string{"qr_type": wrapper.loginType, "identifier": identifier}, nil)
+func (wrapper *QQMusicWrapper) checkQRCode(identifier string) (float64, interface{}, error) {
+	data, err := wrapper.client.Request(http.MethodGet, fmt.Sprintf("/login/qrcode/%s/status",wrapper.loginType), map[string]string{ "identifier": identifier}, nil)
 	if err != nil {
-		return "", nil, err
+		return -1, nil, err
 	}
 
 	// 解析业务特定的 JSON
 	var res utils.BaseResponse[map[string]interface{}]
 	if err := json.Unmarshal(data, &res); err != nil {
-		return "", nil, err
+		return -1, nil, err
 	}
 
-	return res.Data["event"].(string), res.Data["credential"], nil
+	return res.Data["event"].(float64), res.Data["credential"], nil
 }
 
 // 异步轮询
@@ -199,15 +196,14 @@ func (wrapper *QQMusicWrapper) pollLoginStatus(msg *tb.Message, identifier strin
 			}
 
 			switch status {
-			case "SCAN":
+			case 1:  // SCAN
 				continue
-			case "CONF":
-				app.bot.EditCaption(msg, "✅已扫码,请在手机上确认")
-			case "DONE":
-				app.bot.EditCaption(msg, "🎉 登录成功！")
+			case 2: // CONF
+                _, _ = app.bot.EditCaption(msg, "✅已扫码,请在手机上确认")
+			case 0:  // DONE
+                _, _ = app.bot.EditCaption(msg, "🎉 登录成功！")
 				cred := credential.(map[string]interface{})
 				expiredAtUnix := int64(cred["expired_at"].(float64))
-				expiredTime := time.Unix(expiredAtUnix, 0).Format("2006-01-02 15:04:05")
 				authText := fmt.Sprintf(
 					"请复制以下凭证并妥善保存：\n\n"+
 						"🆔 *Music ID*\n`%.0f`\n\n"+
@@ -218,29 +214,29 @@ func (wrapper *QQMusicWrapper) pollLoginStatus(msg *tb.Message, identifier strin
 						"🔄 *Refresh Key*\n`%s`\n\n"+
 						"⏳ *Refresh Token*\n`%s`\n\n"+
 						"🚀 *Access Token*\n`%s`\n\n"+
-						"📅 *Expired At*\n`%s`\n\n"+
+						"📅 *Expired At*\n`%d`\n\n"+
 						"⚠️ *注意：凭证信息请勿泄露给他人。*",
 					cred["musicid"].(float64),
 					cred["openid"].(string),
 					cred["unionid"].(string),
-					cred["login_type"].(float64),
+					cred["loginType"].(float64),
 					cred["musickey"].(string),
 					cred["refresh_key"].(string),
 					cred["refresh_token"].(string),
 					cred["access_token"].(string),
-					expiredTime,
+                    expiredAtUnix,
 				)
 
 				// 3. 推送给用户
-				app.bot.Send(msg.Chat, authText, &tb.SendOptions{ParseMode: tb.ModeMarkdown})
+                _, _ = app.bot.Send(msg.Chat, authText, &tb.SendOptions{ParseMode: tb.ModeMarkdown})
 				return
-			case "TIMEOUT":
-				app.bot.EditCaption(msg, "❌ 二维码已过期，请重新发起登录")
+			case 3: // TIMEOUT
+                _, _ = app.bot.EditCaption(msg, "❌ 二维码已过期，请重新发起登录")
 				// 建议：此处可以删除过期图片
-				app.bot.Delete(msg)
+                _ = app.bot.Delete(msg)
 				return
-			case "REFUSE":
-				app.bot.EditCaption(msg, "🚫 您拒绝了登录申请")
+			case 4: // REFUSE 
+                _, _ = app.bot.EditCaption(msg, "🚫 您拒绝了登录申请")
 				return
 			}
 

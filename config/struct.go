@@ -90,9 +90,12 @@ type QQMusicApiConfig struct {
 	LoginType    int    `yaml:"login_type"`    // qm-api登录方式: 0QQ 1微信 2手机号
 	RefreshKey   string `yaml:"refresh_key"`   // 用于刷新已失效的musickey musickey1小时会过期
 	RefreshToken string `yaml:"refresh_token"` // 用于刷新已失效的musickey musickey1小时会过期
+    AccessToken  string `yaml:"access_token"` // 用于刷新已失效的musickey
 	MusicId      string `yaml:"music_id"`      // 用于刷新已失效的musickey
+    OpenID       string `yaml:"open_id"` // 用于刷新已失效的musickey
+    UnionID      string `yaml:"union_id"` // 用于刷新已失效的musickey
 	MusicKey     string `yaml:"music_key"`     // 用于刷新已失效的musickey
-	EnableSign   bool   `yaml:"enable_sign"`   // 是否启用加密接口 加密接口会多一个解密操作 但是更安全
+    ExpiredAt    int    `yaml:"expired_at"` // 过期时间
 }
 
 type AdditionalConfig struct {
