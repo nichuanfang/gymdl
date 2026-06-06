@@ -207,6 +207,7 @@ func (wrapper *QQMusicWrapper) pollLoginStatus(msg *tb.Message, identifier strin
 				authText := fmt.Sprintf(
 					"请复制以下凭证并妥善保存：\n\n"+
 						"🆔 *Music ID*\n`%.0f`\n\n"+
+                        "🏷️ *Str Music ID*\n`%s`\n\n"+
 						"👤 *OpenID*\n`%s`\n\n"+
 						"🌐 *UnionID*\n`%s`\n\n"+
 						"🎫 *Login Type*\n`%.0f`\n\n"+
@@ -217,6 +218,7 @@ func (wrapper *QQMusicWrapper) pollLoginStatus(msg *tb.Message, identifier strin
 						"📅 *Expired At*\n`%d`\n\n"+
 						"⚠️ *注意：凭证信息请勿泄露给他人。*",
 					cred["musicid"].(float64),
+                    cred["str_musicid"].(string),
 					cred["openid"].(string),
 					cred["unionid"].(string),
 					cred["loginType"].(float64),

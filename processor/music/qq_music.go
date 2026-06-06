@@ -44,25 +44,50 @@ type QQApiResponse[T any] struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
+type QQSongDetail struct {
+    Genre []struct {
+        Value string `json:"value"`
+    } `json:"genre"`
+    Lan []struct {
+        Value string `json:"value"`
+    } `json:"lan"`
+    TrackInfo QQSong `json:"track_info"`
+}
+
 type QQSong struct {
-	Mid    string `json:"mid"`
-	Name   string `json:"name"`
-	Title  string `json:"title"`
-	Singer []struct {
-		Name string `json:"name"`
-	} `json:"singer"`
-	Album struct {
-		Name string `json:"name"`
-		Mid  string `json:"mid"`
-	} `json:"album"`
-	Interval   int              `json:"interval"`
-	IsOnly     int              `json:"isonly"`
-	Language   int              `json:"language"`
-	Genre      int              `json:"genre"`
-	IndexCD    int              `json:"index_cd"`
-	IndexAlbum int              `json:"index_album"`
-	TimePublic string           `json:"time_public"`
-	File       utils.QQFileInfo `json:"file"`
+    Id int `json:"id"`
+    Mid string `json:"mid"`
+    Name string `json:"name"`
+    Type int `json:"type"`
+    Title string `json:"title"`
+    Singer []struct {
+        Name string `json:"name"`
+    } `json:"singer"`
+    Album struct {
+        Name string `json:"name"`
+        Mid  string `json:"mid"`
+        // 歌曲封面需要
+        Pmid string `json:"pmid"`
+    } `json:"album"`
+    Interval   int              `json:"interval"`
+    Language   int              `json:"language"`
+    Genre      int              `json:"genre"`
+    IndexCD    int              `json:"index_cd"`
+    IndexAlbum int              `json:"index_album"`
+    TimePublic string           `json:"time_public"`
+    File       utils.QQFileInfo `json:"file"`
+}
+
+type QQURL struct {
+    Expiration int    `json:"expiration"`
+    Midurlinfo []struct{
+        Songmid   string `json:"songmid"`
+        Filename string `json:"filename"`
+        Purl      string `json:"purl"`
+        Vkey      string `json:"vkey"`
+        Ekey      string `json:"ekey"`
+        Result int `json:"result"`
+    } `json:"midurlinfo"`
 }
 
 type QQPlaylist struct {
@@ -81,11 +106,17 @@ type QQMusicAPI struct {
 	musicKey     string // api请求必须
 }
 
+// 会话续期
 type MusickeyData struct {
+    Musicid      int    `json:"musicid"`
+    Musickey     string `json:"musickey"`
+    StrMusicid   string    `json:"str_musicid"`
+    OpenID       string `json:"openid"`
+    UnionID      string `json:"unionid"`
+    LoginType    int    `json:"login_type"`
 	RefreshKey   string `json:"refresh_key"`
 	RefreshToken string `json:"refresh_token"`
-	Musicid      int    `json:"musicid"`
-	Musickey     string `json:"musickey"`
+    AccessToken  string `json:"access_token"`
 	ExpiredAt    int64  `json:"expired_at"`
 }
 
@@ -266,7 +297,7 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 	utils.DebugWithFormat("[QQMusic] 歌曲信息: Title=%s, Singer=%s, Album=%s", songData.Title, songData.Singer[0].Name, songData.Album.Name)
 
 	mid := songData.Mid
-	fileMetadata, err := utils.ParseQQFileMetadate(songData.File, songData.Interval)
+	fileMetadata, err := utils.ParseQQFileMetadate(&songData.File, songData.Interval,qmApi.cfg.QQMusicApiConfig.VipLevel)
 	if err != nil {
 		utils.ErrorWithFormat("[QQMusic] ❌ 解析文件元数据失败: %v", err)
 		_ = processor.RemoveTempDir(qm.tempDir)
@@ -274,7 +305,7 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 	}
 	utils.DebugWithFormat("[QQMusic] 文件元数据: %+v", fileMetadata)
 
-	songUrl, err := qmApi.getSongUrl(mid, fileMetadata.Quality)
+	songUrl, err := qmApi.getSongUrl(mid, fileMetadata.FileType)
 	if err != nil {
 		utils.ErrorWithFormat("[QQMusic] ❌ 获取下载链接失败: %v", err)
 		_ = processor.RemoveTempDir(qm.tempDir)
@@ -295,23 +326,16 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		utils.DebugWithFormat("[QQMusic] 🔍 请求封面URL: %s", songData.Album.Mid)
-		coverUrl, coverErr = qmApi.queryCoverUrl(songData.Album.Mid)
-		if coverErr != nil {
-			utils.WarnWithFormat("[QQMusic] ⚠️ 获取封面失败: %v", coverErr)
-		} else {
-			utils.DebugWithFormat("[QQMusic] ✅ 获取封面URL成功: %s", coverUrl)
-		}
+		coverUrl = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg",songData.Album.Pmid)
+        // 下载封面
+        tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, songData.Singer[0].Name))
+        utils.DebugWithFormat("[QQMusic] ⬇️ 下载封面: %s", tempCoverPath)
+        coverErr =  utils.DownloadFile(qmApi.client, coverUrl, tempCoverPath)
 	}()
 	go func() {
 		defer wg.Done()
 		utils.DebugWithFormat("[QQMusic] 🔍 请求歌词: %s", mid)
 		lyric, lyricErr = qmApi.queryLyric(mid)
-		if lyricErr != nil {
-			utils.WarnWithFormat("[QQMusic] ⚠️ 获取歌词失败: %v", lyricErr)
-		} else {
-			utils.DebugWithFormat("[QQMusic] ✅ 获取歌词成功，长度=%d", len(lyric))
-		}
 	}()
 
 	// 下载音乐文件（主任务）
@@ -329,15 +353,6 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 	}
 	if lyricErr != nil {
 		return lyricErr
-	}
-
-	// 下载封面
-	tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, songData.Singer[0].Name))
-	utils.DebugWithFormat("[QQMusic] ⬇️ 下载封面: %s", tempCoverPath)
-	if err := utils.DownloadFile(qmApi.client, coverUrl, tempCoverPath); err != nil {
-		utils.WarnWithFormat("[QQMusic] ⚠️ 下载封面失败: %v", err)
-	} else {
-		utils.DebugWithFormat("[QQMusic] ✅ 封面下载成功")
 	}
 
 	qmApi.updateSongInfo(qm, songData, fileMetadata, lyric)
@@ -382,17 +397,14 @@ func (qmApi *QQMusicAPI) downloadSonglist(qm *QQMusicProcessor, songlistId strin
 
 // querySong 查询歌曲信息
 func (qmApi *QQMusicAPI) querySong(songId string) (QQSong, error) {
-	params := map[string]string{
-		"value": songId,
-	}
-	songRes, err := doGetRequestWithRetry[[]QQSong](qmApi, "/song/query_song", params, 3)
+    songRes, err := doGetRequestWithRetry[QQSongDetail](qmApi, fmt.Sprintf("/song/%s/detail",songId), nil, 3)
 	if err != nil {
 		return QQSong{}, err
 	}
 	if songRes == nil {
 		return QQSong{}, nil
 	}
-    songInfo := songRes.Data[0]
+    songInfo := songRes.Data.TrackInfo
     // 简繁转换
     songInfo.Title = utils.ToSimpleChinese(songInfo.Title)
     songInfo.Singer[0].Name = utils.ToSimpleChinese(songInfo.Singer[0].Name)
@@ -404,12 +416,12 @@ func (qmApi *QQMusicAPI) downloadPlaylistSong(qm *QQMusicProcessor, songData QQS
 	start := time.Now()
 
 	mid := songData.Mid
-	fileMetadata, err := utils.ParseQQFileMetadate(songData.File, songData.Interval)
+	fileMetadata, err := utils.ParseQQFileMetadate(&songData.File, songData.Interval,qmApi.cfg.QQMusicApiConfig.VipLevel)
 	if err != nil {
 		return err
 	}
 
-	songUrl, err := qmApi.getSongUrl(mid, fileMetadata.Quality)
+	songUrl, err := qmApi.getSongUrl(mid, fileMetadata.FileType)
 	if err != nil {
 		return err
 	}
@@ -418,39 +430,37 @@ func (qmApi *QQMusicAPI) downloadPlaylistSong(qm *QQMusicProcessor, songData QQS
 	tempPath := filepath.Join(qm.tempDir, sanitizeFileName)
 
 	// 并发下载封面和歌词
-	var coverUrl string
 	var lyric string
 	var wg sync.WaitGroup
-	var coverErr, lyricErr error
+	var coverErr,lyricErr error
 
 	wg.Add(2)
 	go func() {
-		defer wg.Done()
-		coverUrl, coverErr = qmApi.queryCoverUrl(songData.Album.Mid)
-	}()
-	go func() {
+        // 获取歌词
 		defer wg.Done()
 		lyric, lyricErr = qmApi.queryLyric(mid)
 	}()
 
+    go func() {
+        // 下载封面
+        defer wg.Done()
+        var coverUrl = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg",songData.Album.Pmid)
+        tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, songData.Singer[0].Name))
+        coverErr = utils.DownloadFile(qmApi.client, coverUrl, tempCoverPath)
+    }()
+
 	// 下载音乐文件（主任务）
-	if err := utils.DownloadFile(qmApi.client, songUrl, tempPath); err != nil {
+	if err = utils.DownloadFile(qmApi.client, songUrl, tempPath); err != nil {
 		return err
 	}
 
 	wg.Wait()
-	if coverErr != nil {
-		return coverErr
-	}
 	if lyricErr != nil {
 		return lyricErr
 	}
-
-	// 下载封面
-	tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, songData.Singer[0].Name))
-	if err := utils.DownloadFile(qmApi.client, coverUrl, tempCoverPath); err != nil {
-		return err
-	}
+    if coverErr != nil {
+        return coverErr
+    }
 
 	qmApi.updateSongInfo(qm, songData, fileMetadata, lyric)
 
@@ -462,12 +472,12 @@ func (qmApi *QQMusicAPI) downloadPlaylistSong(qm *QQMusicProcessor, songData QQS
 // querySong 查询歌单信息
 func (qmApi *QQMusicAPI) querySonglist(songlistId string) (QQPlaylist, error) {
 	params := map[string]string{
-		"songlist_id": songlistId, // 歌单id
 		"num":         "20",       // 最多20首
 		"page":        "1",        // 页码
 		"onlysong":    "true",     // 是否仅返回歌曲信息
+        "userinfo": "false",  // 是否返回用户信息.
 	}
-	playlistRes, err := doGetRequestWithRetry[QQPlaylist](qmApi, "/songlist/get_detail", params, 3)
+	playlistRes, err := doGetRequestWithRetry[QQPlaylist](qmApi, fmt.Sprintf("/songlist/%s/detail",songlistId), params, 3)
 	if err != nil {
 		return QQPlaylist{}, err
 	}
@@ -495,43 +505,47 @@ func (qmApi *QQMusicAPI) queryCoverUrl(albumMid string) (string, error) {
 // queryLyric 修正后的调用逻辑
 func (qmApi *QQMusicAPI) queryLyric(mid string) (string, error) {
 	params := map[string]string{
-		"value": mid,
 		"trans": "true",
 	}
 
 	// 注意这里接收到的 lyricRes 类型是 map[string]string
-	lyricRes, err := doGetRequestWithRetry[map[string]string](qmApi, "/lyric/get_lyric", params, 3)
+	lyricRes, err := doGetRequestWithRetry[map[string]interface{}](qmApi, fmt.Sprintf("/song/%s/lyric",mid), params, 3)
 	if err != nil {
 		return "", err
 	}
-	if lyricRes == nil {
+	if lyricRes == nil || lyricRes.Code!=0 {
 		return "", nil
 	}
-	rawLyric := lyricRes.Data["lyric"]
-	rawTrans := lyricRes.Data["trans"]
+	rawLyric := lyricRes.Data["lyric"].(string)
+	rawTrans := lyricRes.Data["trans"].(string)
 
 	// 如果没有翻译，直接返回原词
 	if rawTrans == "" {
-		return rawLyric, nil
+		return "", nil
 	}
 
 	return utils.MergeLyrics(rawLyric, rawTrans), nil
 }
 
 // getSongUrl 获取歌曲下载链接
-func (qmApi *QQMusicAPI) getSongUrl(songMid string, fileType string) (string, error) {
+func (qmApi *QQMusicAPI) getSongUrl(songMid string, fileType int) (string, error) {
 	params := map[string]string{
-		"mid":       songMid,
-		"file_type": fileType,
+		"file_type": strconv.Itoa(fileType),
 	}
-	songUrlsRes, err := doGetRequestWithRetry[map[string]string](qmApi, "/song/get_song_urls", params, 3)
+	songUrlsRes, err := doGetRequestWithRetry[QQURL](qmApi, fmt.Sprintf("/song/%s/url",songMid), params, 3)
 	if err != nil {
 		return "", err
 	}
-	if songUrlsRes == nil || songUrlsRes.Data[songMid] == "" {
+	if songUrlsRes == nil || songUrlsRes.Data.Midurlinfo[0].Purl == "" {
 		return "", errors.New("无法获取歌曲下载链接")
 	}
-	return songUrlsRes.Data[songMid], nil
+    // 构建下载链接
+    urlBuilder := utils.NewURLBuilder(qmApi.cfg.QQMusicApiConfig.Endpoint + "/song/get_cdn_dispatch")
+    songUrl, err := urlBuilder.GetURL(songUrlsRes.Data.Midurlinfo[0].Purl)
+    if err != nil {
+        return "", err
+    }
+    return songUrl, nil
 }
 
 // doGetRequest 执行请求
@@ -564,7 +578,7 @@ func doGetRequest[T any](qm *QQMusicAPI, endpoint string, params map[string]stri
 		return nil, err
 	}
 
-	if result.Code != http.StatusOK {
+	if result.Code != 0{
 		utils.ErrorWithFormat("[QQMusicAPI] ❌ 请求返回错误: Code=%d, Msg=%s", result.Code, result.Message)
 		return nil, errors.New(result.Message)
 	}
@@ -693,7 +707,7 @@ func (qmApi *QQMusicAPI) isExpired(data *MusickeyData) bool {
 
 // refreshAndSave 刷新并保存到文件
 func (qmApi *QQMusicAPI) refreshAndSave(data *MusickeyData) (int, string, error) {
-	request, err := http.NewRequest(http.MethodGet, qmApi.cfg.QQMusicApiConfig.Endpoint+"/login/api_refresh_cookies", nil)
+	request, err := http.NewRequest(http.MethodGet, qmApi.cfg.QQMusicApiConfig.Endpoint+"/login/refresh_credential", nil)
 	if err != nil {
 		return 0, "", err
 	}
@@ -712,6 +726,7 @@ func (qmApi *QQMusicAPI) refreshAndSave(data *MusickeyData) (int, string, error)
 	if err = json.NewDecoder(resp.Body).Decode(&newData); err != nil {
 		return 0, "", err
 	}
+    newData.Data.LoginType = qmApi.cfg.QQMusicApiConfig.LoginType
 	bytes, _ := json.MarshalIndent(newData.Data, "", "  ")
 	err = os.WriteFile(qmApi.musicKeyPath, bytes, 0644)
 	if err != nil {
@@ -729,59 +744,33 @@ func (qmApi *QQMusicAPI) refreshMusicKeyHeaders(cfg *config.Config, data *Musick
 	}
 	if data.Musickey != "" {
 		// 设置Cookie
-		switch cfg.QQMusicApiConfig.LoginType {
-		case 1:
-			// wx
-			headers["Cookie"] = fmt.Sprintf("login_type=1;musicid=%d;musickey=%s;refresh_key=%s;refresh_token=%s",
-				data.Musicid,
-				data.Musickey,
-				data.RefreshKey,
-				data.RefreshToken,
-			)
-		case 2:
-			// qq
-			headers["Cookie"] = fmt.Sprintf("login_type=2;musicid=%d;musickey=%s;refresh_key=%s;refresh_token=%s",
-				data.Musicid,
-				data.Musickey,
-				data.RefreshKey,
-				data.RefreshToken,
-			)
-		}
+        headers["Cookie"] = fmt.Sprintf(
+            "login_type=%d;musicid=%d;musickey=%s;str_musicid=%s;refresh_key=%s;refresh_token=%s;openid=%s;unionid=%s;access_token=%s;expired_at=%d",
+            data.LoginType,
+            data.Musicid,
+            data.Musickey,
+            data.StrMusicid,
+            data.RefreshKey,
+            data.RefreshToken,
+            data.OpenID,
+            data.UnionID,
+            data.AccessToken,
+            data.ExpiredAt,
+        )
 	} else {
-		// 读取cookiecloud同步的cookies文件
-		cookiePath := filepath.Join(cfg.CookieCloud.CookieFilePath, cfg.CookieCloud.CookieFile)
-		qqCookies := utils.GetCookiesByDomain(cookiePath, ".qq.com")
-		qqmusicKey := qqCookies["qqmusic_key"]
-		if qqmusicKey == "" {
-			qqmusicKey = cfg.QQMusicApiConfig.MusicKey
-		}
 		// 设置Cookie
-		switch cfg.QQMusicApiConfig.LoginType {
-		case 1:
-			// wx
-			wxuin := qqCookies["wxuin"]
-			if wxuin == "" {
-				wxuin = cfg.QQMusicApiConfig.MusicId
-			}
-			headers["Cookie"] = fmt.Sprintf("login_type=1;musicid=%s;musickey=%s;refresh_key=%s;refresh_token=%s",
-				wxuin,
-				qqmusicKey,
-				cfg.QQMusicApiConfig.RefreshKey,
-				cfg.QQMusicApiConfig.RefreshToken,
-			)
-		case 2:
-			// qq
-			uin := qqCookies["uin"]
-			if uin != "" {
-				uin = cfg.QQMusicApiConfig.MusicId
-			}
-			headers["Cookie"] = fmt.Sprintf("login_type=2;musicid=%s;musickey=%s;refresh_key=%s;refresh_token=%s",
-				uin,
-				qqmusicKey,
-				cfg.QQMusicApiConfig.RefreshKey,
-				cfg.QQMusicApiConfig.RefreshToken,
-			)
-		}
+        headers["Cookie"] = fmt.Sprintf("login_type=%d;musicid=%s;musickey=%s;str_musicid=%s;refresh_key=%s;refresh_token=%s;openid=%s;unionid=%s;access_token=%s;expired_at=%d",
+            cfg.QQMusicApiConfig.LoginType,
+            cfg.QQMusicApiConfig.MusicId,
+            cfg.QQMusicApiConfig.MusicKey,
+            cfg.QQMusicApiConfig.StrMusicId,
+            cfg.QQMusicApiConfig.RefreshKey,
+            cfg.QQMusicApiConfig.RefreshToken,
+            cfg.QQMusicApiConfig.OpenID,
+            cfg.QQMusicApiConfig.UnionID,
+            cfg.QQMusicApiConfig.AccessToken,
+            cfg.QQMusicApiConfig.ExpiredAt,
+        )
 	}
 	return headers
 }
