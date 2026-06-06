@@ -34,10 +34,11 @@ CookieCloud 自动同步登录、WebDAV 上传、下载器监控、Telegram Bot 
 | AppleMusic下载                                         | ✅      |
 | YoutubeMusic下载                                       | ✅      |
 | Soundcloud下载                                         | ✅      |
+| AI 助手                                                | ✅      |
+| 集成n8n                                                | ✅      |
 | Spotify下载                                            | 🚧 开发中 |
 | 视频下载                                                 | 🚧 开发中 |
 | 多个通知渠道                                               | ⚠️ 规划中 |
-| AI 助手                                                | ⚠️ 规划中 |
 | Web UI                                               | ⚠️ 规划中 |
 
 ---
