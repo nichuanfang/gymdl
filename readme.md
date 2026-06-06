@@ -109,14 +109,19 @@ telegram:
 
 # qq音乐api配置
 qq_music_api:
-  enable: false #是否启用
+  enable: false #是否启用 
   endpoint: "" #服务地址 
+  vip_level: vip #qq会员级别,可选vip或者svip,影响音质
   login_type: 0 #登录方式: 0未登录 1微信 2QQ
-  refresh_key: "" #用于刷新已失效的musickey  musickey1小时会过期
-  refresh_token: "" #用于刷新已失效的musickey musickey1小时会过期
-  music_id: "" #用于刷新已失效的musickey musickey1小时会过期
-  music_key: "" #用于刷新已失效的musickey musickey1小时会过期
-  enable_sign: false #是否启用加密接口 加密接口会多一个解密操作 但是更安全
+  refresh_key:  #用于刷新已失效的musickey musickey1小时会过期
+  refresh_token:  #用于刷新已失效的musickey musickey1小时会过期
+  access_token:   #用于刷新已失效的musickey musickey1小时会过期
+  music_id:  #用于刷新已失效的musickey musickey1小时会过期
+  str_music_id:  #用于刷新已失效的musickey
+  open_id:  #用于刷新已失效的musickey musickey1小时会过期
+  union_id:  #用于刷新已失效的musickey musickey1小时会过期
+  music_key:  #用于刷新已失效的musickey musickey1小时会过期
+  expired_at:  #用于刷新已失效的musickey musickey1小时会过期
 
 # AI 配置
 ai:
