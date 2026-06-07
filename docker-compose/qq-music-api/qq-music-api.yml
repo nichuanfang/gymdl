@@ -1,0 +1,21 @@
+# qq音乐下载服务  
+services:
+  qq-music-api:
+    image: ghcr.io/nichuanfang/gymdl-qm:latest
+    container_name: qm
+    environment:
+      - TZ='Asia/Shanghai'
+      - QQMUSIC_SERVER_HOST=0.0.0.0
+    volumes:
+      - ./data:/app/web/data
+      - ./accounts.toml:/app/web/accounts.toml:ro
+      - ./config.toml:/app/web/config.toml:ro
+    expose:
+      - 8000
+    networks:
+      - mynet
+    restart: always
+
+networks:
+  mynet:
+    external: true
