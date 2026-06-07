@@ -111,7 +111,7 @@ telegram:
 # qq音乐api配置
 qq_music_api:
   enable: false #是否启用 
-  endpoint: "" #服务地址 
+  endpoint: "" #服务地址 如果需要proxy_url代理 必须填公网地址 否则无法访问
   proxy_url:  #代理地址 国外服务器需要配置以绕过地区限制
   vip_level: vip #qq会员级别,可选vip或者svip,影响音质
   login_type: 0 #登录方式: 0未登录 1微信 2QQ

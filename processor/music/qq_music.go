@@ -530,7 +530,7 @@ func (qmApi *QQMusicAPI) queryLyric(mid string) (string, error) {
 
 	// 如果没有翻译，直接返回原词
 	if rawTrans == "" {
-		return "", nil
+		return rawLyric, nil
 	}
 
 	return utils.MergeLyrics(rawLyric, rawTrans), nil
