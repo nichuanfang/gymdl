@@ -70,7 +70,6 @@ jobs:
             echo "No release tag found, skipping."
             exit 0
           fi
-
           UNRELEASED=$(git log ${LATEST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
 
           if [ -z "$UNRELEASED" ]; then
