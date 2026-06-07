@@ -837,11 +837,9 @@ func (qm *QQMusicProcessor) getFinalURL(raw string) (string, error) {
 	}
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Referer", "https://y.qq.com/")
-	req.Header.Set("Host", "y.qq.com")
 	req.Header.Set("Connection", "close")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
-	req.Header.Set("Connection", "close")
 	req.Header.Set("Cookie", "")
 
 	resp, err := qm.client.Do(req)
