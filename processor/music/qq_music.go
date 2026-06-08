@@ -952,7 +952,7 @@ func (qm *QQMusicProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.WebDA
         remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
         if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
             utils.WarnWithFormat("[QQMusic] ☁️ 上传失败 %s: %v", f.Name(), err)
-            continue
+            return err
         }
         utils.InfoWithFormat("[QQMusic] ☁️ 已上传: %s", f.Name())
 	}

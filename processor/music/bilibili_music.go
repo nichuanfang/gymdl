@@ -376,7 +376,7 @@ func (p *BilibiliMusicProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.
 		remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
 		if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
 			utils.WarnWithFormat("[BiliBiliMusic] ☁️ 上传失败 %s: %v", f.Name(), err)
-			continue
+            return err
 		}
 		utils.InfoWithFormat("[BiliBiliMusic] ☁️ 已上传: %s", f.Name())
 	}

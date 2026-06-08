@@ -392,7 +392,7 @@ func (p *YoutubeMusicProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.W
         remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
         if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
             utils.WarnWithFormat("[YoutubeMusic] ☁️ 上传失败 %s: %v", f.Name(), err)
-            continue
+            return err
         }
         utils.InfoWithFormat("[YoutubeMusic] ☁️ 已上传: %s", f.Name())
     }
