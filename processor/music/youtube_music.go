@@ -239,11 +239,11 @@ func (p *YoutubeMusicProcessor) DownloadCommand(
 
     case formats["774"]:
         formatID = "774"
-        postArgs = []string{
-            "--audio-format", "aac",
-            "--postprocessor-args",
-            "-c:a aac -b:a 256k",
-        }
+        // postArgs = []string{
+        //     "--audio-format", "aac",
+        //     "--postprocessor-args",
+        //     "-c:a aac -b:a 256k",
+        // }
 
     case formats["251"]:
         formatID = "251"
