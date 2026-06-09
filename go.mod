@@ -17,7 +17,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/sirupsen/logrus v1.9.0
-	github.com/studio-b12/gowebdav v0.11.0
+	github.com/studio-b12/gowebdav v0.12.0
 	go.senan.xyz/taglib v0.10.4
 	go.uber.org/zap v1.27.0
 	golang.org/x/net v0.46.0

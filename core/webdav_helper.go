@@ -75,7 +75,7 @@ func (w *WebDAV) Upload(localPath string) error {
     return w.UploadTo(localPath, "/")
 }
 
-// UploadTo 上传到指定目录
+// UploadTo 上传到指定目录，失败时最多重试 3 次，每次间隔 1 秒
 func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
     if localPath == "" {
         return fmt.Errorf("localPath cannot be empty")
@@ -123,14 +123,26 @@ func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
         return fmt.Errorf("failed to ensure remote dir %s: %v", fullRemoteDir, err)
     }
 
+    const maxRetries = 3
     logger.Info("💡 start uploading file to webdav...")
-    if err = w.Client.WriteStream(remoteFullPath, file, 0644); err != nil {
-        logger.Warn(fmt.Sprintf("WebDAV upload failed for %s: %v", remoteFullPath, err))
-        return err
+    for attempt := 1; attempt <= maxRetries; attempt++ {
+        // 每次重试都需要重新 Seek 到文件开头，确保流从头读取
+        if _, err = file.Seek(0, 0); err != nil {
+            return fmt.Errorf("failed to seek file: %v", err)
+        }
+
+        if err = w.Client.WriteStream(remoteFullPath, file, 0644); err == nil {
+            logger.Info(fmt.Sprintf("💡 WebDAV uploaded file successfully: %s", remoteFullPath))
+            return nil
+        }
+
+        logger.Warn(fmt.Sprintf("⚠️ WebDAV upload attempt %d/%d failed for %s: %v", attempt, maxRetries, remoteFullPath, err))
+        if attempt < maxRetries {
+            time.Sleep(time.Second)
+        }
     }
 
-    logger.Info(fmt.Sprintf("💡 WebDAV uploaded file successfully: %s", remoteFullPath))
-    return nil
+    return fmt.Errorf("WebDAV upload failed after %d attempts: %v", maxRetries, err)
 }
 
 // -------------------- 其他方法同步更新 --------------------
@@ -224,6 +236,10 @@ func (w *WebDAV) ensureRemoteDir(dir string) error {
     }
 
     if err := w.Client.MkdirAll(cleanDir, 0755); err != nil {
+        if strings.Contains(err.Error(), "404") {
+            logger.Debug(fmt.Sprintf("WebDAV mkdir got 404, ignoring: %s", cleanDir))
+            return nil
+        }
         logger.Warn(fmt.Sprintf("⚠️ WebDAV failed to create remote directory %s: %v", cleanDir, err))
         return err
     }
