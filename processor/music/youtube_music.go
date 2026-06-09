@@ -247,11 +247,11 @@ func (p *YoutubeMusicProcessor) DownloadCommand(
 
     case formats["251"]:
         formatID = "251"
-        postArgs = []string{
-            "--audio-format", "aac",
-            "--postprocessor-args",
-            "-c:a aac -b:a 256k",
-        }
+        // postArgs = []string{
+        //     "--audio-format", "aac",
+        //     "--postprocessor-args",
+        //     "-c:a aac -b:a 256k",
+        // }
 
     case formats["140"]:
         formatID = "140"
@@ -335,7 +335,7 @@ func (p *YoutubeMusicProcessor) EncryptedExts() []string {
 }
 
 func (p *YoutubeMusicProcessor) DecryptedExts() []string {
-    return []string{".aac", ".m4a", ".flac", ".mp3", ".ogg"}
+    return []string{".aac", ".m4a", ".flac", ".mp3", ".ogg",".opus"}
 }
 
 // 整理到本地
