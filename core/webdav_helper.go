@@ -47,6 +47,27 @@ func InitWebDAV(cfg *config.WebDAVConfig) {
     }
 }
 
+// -------------------- 连接检测 --------------------
+
+func (w *WebDAV) CheckConnection() bool {
+    w.checkMutex.Lock()
+    defer w.checkMutex.Unlock()
+
+    if time.Since(w.lastCheck) < time.Minute {
+        return w.lastCheckResult
+    }
+
+    err := w.Client.Connect()
+    w.lastCheck = time.Now()
+    w.lastCheckResult = err == nil
+
+    if err != nil {
+        logger.Warn(fmt.Sprintf("⚠️ WebDAV connection check failed: %v", err))
+    }
+
+    return w.lastCheckResult
+}
+
 // -------------------- 文件操作 --------------------
 
 // Upload 上传文件到配置的默认目录
