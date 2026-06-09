@@ -83,12 +83,6 @@ func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
         remoteDir = "/"
     }
 
-    file, err := os.Open(localPath)
-    if err != nil {
-        return fmt.Errorf("failed to open local file: %v", err)
-    }
-    defer file.Close()
-
     fileName := filepath.Base(localPath)
 
     // 路径处理：统一使用正斜杠，去掉首尾斜杠后再拼接
@@ -118,32 +112,40 @@ func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
         w.Config.WebDAVDir, remoteDir, fullRemoteDir, remoteFullPath))
 
     const maxRetries = 3
+    var lastErr error
     logger.Info("💡 start uploading file to webdav...")
+
     for attempt := 1; attempt <= maxRetries; attempt++ {
-        if err = w.ensureRemoteDir(fullRemoteDir); err != nil {
+        if err := w.ensureRemoteDir(fullRemoteDir); err != nil {
             logger.Warn(fmt.Sprintf("attempt %d/%d: ensure dir failed: %v", attempt, maxRetries, err))
+            lastErr = err
             if attempt < maxRetries {
                 time.Sleep(time.Duration(attempt) * time.Second)
             }
             continue
         }
 
-        if _, err = file.Seek(0, 0); err != nil {
-            return fmt.Errorf("failed to seek file: %v", err)
+        file, err := os.Open(localPath)
+        if err != nil {
+            return fmt.Errorf("failed to open local file: %v", err)
         }
 
-        if err = w.Client.WriteStream(remoteFullPath, file, 0644); err == nil {
+        err = w.Client.WriteStream(remoteFullPath, file, 0644)
+        _ = file.Close()
+
+        if err == nil {
             logger.Info(fmt.Sprintf("💡 WebDAV uploaded file successfully: %s", remoteFullPath))
             return nil
         }
 
+        lastErr = err
         logger.Warn(fmt.Sprintf("⚠️ attempt %d/%d failed for %s: %v", attempt, maxRetries, remoteFullPath, err))
         if attempt < maxRetries {
             time.Sleep(time.Duration(attempt) * time.Second)
         }
     }
 
-    return fmt.Errorf("WebDAV upload failed after %d attempts: %v", maxRetries, err)
+    return fmt.Errorf("WebDAV upload failed after %d attempts: %v", maxRetries, lastErr)
 }
 
 // -------------------- 其他方法 --------------------
