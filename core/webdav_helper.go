@@ -176,11 +176,33 @@ func (w *WebDAV) makeRemotePath(path string) string {
 }
 
 func (w *WebDAV) ensureRemoteDir(dir string) error {
-	if err := w.Client.MkdirAll(dir, 0755); err != nil {
-		logger.Warn(fmt.Sprintf("⚠️ WebDAV failed to create remote directory %s: %v", dir, err))
-		return err
-	}
-	return nil
+    // 先 Stat，目录已存在直接返回
+    if _, err := w.Client.Stat(dir); err == nil {
+        return nil
+    }
+
+    // 逐级 Mkdir，忽略已存在（gowebdav 内部已把 405 转成成功）
+    parts := strings.Split(strings.Trim(dir, "/"), "/")
+    current := "/"
+    for _, part := range parts {
+        if part == "" {
+            continue
+        }
+        current += part + "/"
+        if err := w.Client.Mkdir(current, 0755); err != nil {
+            // Mkdir 内部：201 → nil，405→201→nil
+            // 只有其他错误才是真正失败
+            // 再 Stat 兜底确认一次
+            if _, statErr := w.Client.Stat(current); statErr != nil {
+                logger.Warn(fmt.Sprintf(
+                    "⚠️ WebDAV failed to create remote directory %s: %v",
+                    current, err,
+                ))
+                return fmt.Errorf("MkdirAll %s/: %w", dir, err)
+            }
+        }
+    }
+    return nil
 }
 
 // -------------------- 可选参数 --------------------
