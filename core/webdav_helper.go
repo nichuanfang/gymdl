@@ -2,7 +2,6 @@ package core
 
 import (
     "fmt"
-    "net/url"
     "os"
     "path"
     "path/filepath"
@@ -75,7 +74,7 @@ func (w *WebDAV) Upload(localPath string) error {
     return w.UploadTo(localPath, "/")
 }
 
-// UploadTo 上传到指定目录，失败时最多重试 3 次，每次间隔 1 秒
+// UploadTo 上传到指定目录
 func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
     if localPath == "" {
         return fmt.Errorf("localPath cannot be empty")
@@ -92,7 +91,8 @@ func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
 
     fileName := filepath.Base(localPath)
 
-    // 路径处理 + 编码
+    // 路径处理：统一使用正斜杠，去掉首尾斜杠后再拼接
+    // 不做 url.PathEscape，gowebdav 底层会统一转义
     remoteDir = filepath.ToSlash(remoteDir)
     remoteDir = strings.Trim(remoteDir, "/")
 
@@ -105,18 +105,16 @@ func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
     if remoteDir != "" {
         for _, seg := range strings.Split(remoteDir, "/") {
             if seg != "" {
-                segments = append(segments, url.PathEscape(seg))
+                segments = append(segments, seg)
             }
         }
     }
 
     fullRemoteDir := "/" + strings.Join(segments, "/")
-    encodedFileName := url.PathEscape(fileName)
-
-    remoteFullPath := path.Join(fullRemoteDir, encodedFileName)
+    remoteFullPath := path.Join(fullRemoteDir, fileName)
 
     // 调试日志
-    logger.Debug(fmt.Sprintf("WebDAV Path Debug → Base: '%s', RemoteDir: '%s', EncodedDir: '%s', FullPath: '%s'",
+    logger.Debug(fmt.Sprintf("WebDAV Path Debug → Base: '%s', RemoteDir: '%s', FullDir: '%s', FullPath: '%s'",
         w.Config.WebDAVDir, remoteDir, fullRemoteDir, remoteFullPath))
 
     const maxRetries = 3
@@ -148,7 +146,7 @@ func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
     return fmt.Errorf("WebDAV upload failed after %d attempts: %v", maxRetries, err)
 }
 
-// -------------------- 其他方法同步更新 --------------------
+// -------------------- 其他方法 --------------------
 
 func (w *WebDAV) Download(remotePath, localPath string) error {
     if remotePath == "" || localPath == "" {
@@ -162,7 +160,7 @@ func (w *WebDAV) Download(remotePath, localPath string) error {
         return fmt.Errorf("failed to read remote file: %v", err)
     }
 
-    if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+    if err = os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
         return fmt.Errorf("failed to create local directories: %v", err)
     }
 
@@ -205,8 +203,9 @@ func (w *WebDAV) List(remoteDir string) ([]string, error) {
     return names, nil
 }
 
-// -------------------- 工具方法（已修复） --------------------
+// -------------------- 工具方法 --------------------
 
+// makeRemotePath 拼接远程路径
 func (w *WebDAV) makeRemotePath(pathStr string) string {
     base := strings.Trim(w.Config.WebDAVDir, "/")
     sub := strings.Trim(pathStr, "/")
@@ -218,7 +217,7 @@ func (w *WebDAV) makeRemotePath(pathStr string) string {
     if sub != "" {
         for _, seg := range strings.Split(sub, "/") {
             if seg != "" {
-                segments = append(segments, url.PathEscape(seg))
+                segments = append(segments, seg) 
             }
         }
     }
@@ -232,7 +231,6 @@ func (w *WebDAV) ensureRemoteDir(dir string) error {
         return nil
     }
 
-    // 清理路径（防止出现 // 或 . 等）
     cleanDir := path.Clean(dir)
     if !strings.HasPrefix(cleanDir, "/") {
         cleanDir = "/" + cleanDir
@@ -246,6 +244,7 @@ func (w *WebDAV) ensureRemoteDir(dir string) error {
 }
 
 // -------------------- 可选参数 --------------------
+
 func WithDir(dir string) func(*config.WebDAVConfig) {
     return func(cfg *config.WebDAVConfig) {
         cfg.WebDAVDir = dir
