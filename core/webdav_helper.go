@@ -176,30 +176,33 @@ func (w *WebDAV) makeRemotePath(path string) string {
 }
 
 func (w *WebDAV) ensureRemoteDir(dir string) error {
-    // 先 Stat，目录已存在直接返回
-    if _, err := w.Client.Stat(dir); err == nil {
+    dir = strings.TrimRight(dir, "/")
+
+    // 目录已存在直接返回
+    if _, err := w.Client.Stat(dir + "/"); err == nil {
         return nil
     }
 
-    // 逐级 Mkdir，忽略已存在（gowebdav 内部已把 405 转成成功）
     parts := strings.Split(strings.Trim(dir, "/"), "/")
-    current := "/"
+    current := ""
     for _, part := range parts {
         if part == "" {
             continue
         }
-        current += part + "/"
+        current += "/" + part
+
         if err := w.Client.Mkdir(current, 0755); err != nil {
-            // Mkdir 内部：201 → nil，405→201→nil
-            // 只有其他错误才是真正失败
-            // 再 Stat 兜底确认一次
-            if _, statErr := w.Client.Stat(current); statErr != nil {
-                logger.Warn(fmt.Sprintf(
-                    "⚠️ WebDAV failed to create remote directory %s: %v",
-                    current, err,
-                ))
-                return fmt.Errorf("MkdirAll %s/: %w", dir, err)
+            // Mkdir 失败，Stat 兜底确认目录是否真实存在
+            if _, statErr := w.Client.Stat(current + "/"); statErr == nil {
+                // 目录已存在，继续下一级
+                continue
             }
+            // Stat 也失败，才是真正的错误
+            logger.Warn(fmt.Sprintf(
+                "⚠️ WebDAV failed to create remote directory %s: %v",
+                current, err,
+            ))
+            return fmt.Errorf("MkdirAll %s/: %w", dir, err)
         }
     }
     return nil
