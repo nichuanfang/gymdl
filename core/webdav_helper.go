@@ -116,15 +116,7 @@ func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
     logger.Info("💡 start uploading file to webdav...")
 
     for attempt := 1; attempt <= maxRetries; attempt++ {
-        if err := w.ensureRemoteDir(fullRemoteDir); err != nil {
-            logger.Warn(fmt.Sprintf("attempt %d/%d: ensure dir failed: %v", attempt, maxRetries, err))
-            lastErr = err
-            if attempt < maxRetries {
-                time.Sleep(time.Duration(attempt) * time.Second)
-            }
-            continue
-        }
-
+        _ = w.ensureRemoteDir(fullRemoteDir)
         file, err := os.Open(localPath)
         if err != nil {
             return fmt.Errorf("failed to open local file: %v", err)
