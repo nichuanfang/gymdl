@@ -42,6 +42,7 @@ type WebDAVConfig struct {
 	WebDAVUser string `yaml:"webdav_user"` // webdav用户名
 	WebDAVPass string `yaml:"webdav_pass"` // webdav密码
 	WebDAVDir  string `yaml:"webdav_dir"`  // wevdav路径
+    WebDAVHost string `toml:"webdav_host"` // 用于覆盖 HTTP 的 Host 头,用于打通frp访问（选填）
 }
 
 type LogConfig struct {

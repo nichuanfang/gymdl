@@ -130,6 +130,7 @@ func (c *Config) setDefaults() {
             WebDAVUser: "",
             WebDAVPass: "",
             WebDAVDir:  "",
+            WebDAVHost: "",
         }
     }
     if c.Log == nil {
