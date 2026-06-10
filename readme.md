@@ -90,7 +90,6 @@ webdav:
   webdav_user: ""  # WebDAV 用户名
   webdav_pass: ""  # WebDAV 密码
   webdav_dir: ""  # WebDAV 目标路径
-  webdav_host: ""  # 用于覆盖 HTTP 的 Host 头,用于打通frp访问（选填）
 
 # 日志配置
 log:
