@@ -90,6 +90,7 @@ webdav:
   webdav_user: ""  # WebDAV 用户名
   webdav_pass: ""  # WebDAV 密码
   webdav_dir: ""  # WebDAV 目标路径
+  webdav_host: "" # webdav主机名 需要容器名+frp访问才需要设置
 
 # 日志配置
 log:

@@ -37,9 +37,11 @@ func InitWebDAV(cfg *config.WebDAVConfig) {
     }
     
     client := gowebdav.NewClient(cfg.WebDAVUrl, cfg.WebDAVUser, cfg.WebDAVPass)
-    client.SetInterceptor(func(method string, rq *http.Request) {
-        rq.Host = "dav.frp.chuanfang.org"
-    })
+    if cfg.WebDavHost!=""{
+        client.SetInterceptor(func(method string, rq *http.Request) {
+            rq.Host = cfg.WebDavHost
+        })
+    }
     if err := client.Connect(); err != nil {
         panic(fmt.Sprintf("⚠️ Failed to connect WebDAV: %v", err))
     }
