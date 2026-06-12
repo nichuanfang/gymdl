@@ -43,6 +43,14 @@ CookieCloud 自动同步登录、WebDAV 上传、下载器监控、Telegram Bot 
 
 ---
 
+## 🕸️ 架构图
+
+### 整体的五层架构
+![architecture.svg](img/architecture.svg)
+
+### n8n架构
+![n8n_automation.svg](img/n8n_automation.svg)
+
 ## ⚙️ 快速开始
 
 ### 1️⃣ 获取项目并编译
