@@ -357,7 +357,7 @@ func (ncm *NetEaseProcessor) downloadFile(url string, fileName string, coverUrl 
 			ForceHttps().
 			ForceMultiThread()
 
-		if err := task.SetFileName(fileName).Download(); err != nil {
+		if err = task.SetFileName(fileName).Download(); err != nil {
 			errCh <- err
 		}
 	}
