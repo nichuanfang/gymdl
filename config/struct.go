@@ -1,14 +1,15 @@
 package config
 
 type Config struct {
-	WebConfig        *WebConfig         `yaml:"web_config"`        // web配置
-	CookieCloud      *CookieCloudConfig `yaml:"cookie_cloud"`      // cookiecloud配置
-	Tidy             *TidyConfig        `yaml:"tidy"`              // 资源整理配置
-	WebDAV           *WebDAVConfig      `yaml:"webdav"`            // webdav配置
+	WebConfig        *WebConfig         `yaml:"web_config"`   // web配置
+	CookieCloud      *CookieCloudConfig `yaml:"cookie_cloud"` // cookiecloud配置
+	Tidy             *TidyConfig        `yaml:"tidy"`         // 资源整理配置
+	WebDAV           *WebDAVConfig      `yaml:"webdav"`       // webdav配置
 	Log              *LogConfig         `yaml:"log"`               // 日志配置
 	Telegram         *TelegramConfig    `yaml:"telegram"`          // telegram配置
+    LrcAPI           *LrcAPIConfig      `yaml:"lrc_api"`        // lrcapi配置
 	AI               *AIConfig          `yaml:"ai"`                // AI配置
-    N8NConfig        *N8NConfig         `yaml:"n8n_config"` // n8n配置
+	N8NConfig        *N8NConfig         `yaml:"n8n_config"`        // n8n配置
 	QQMusicApiConfig *QQMusicApiConfig  `yaml:"qq_music_api"`      // qq-music-api服务配置
 	AdditionalConfig *AdditionalConfig  `yaml:"additional_config"` // 附属配置
 	ProxyConfig      *ProxyConfig       `yaml:"proxy"`             // 代理配置
@@ -42,7 +43,7 @@ type WebDAVConfig struct {
 	WebDAVUser string `yaml:"webdav_user"` // webdav用户名
 	WebDAVPass string `yaml:"webdav_pass"` // webdav密码
 	WebDAVDir  string `yaml:"webdav_dir"`  // wevdav路径
-    WebDavHost string `yaml:"webdav_host"` // webdav主机名 需要容器名+frp访问才需要设置
+	WebDavHost string `yaml:"webdav_host"` // webdav主机名 需要容器名+frp访问才需要设置
 }
 
 type LogConfig struct {
@@ -61,52 +62,60 @@ type TelegramConfig struct {
 	WebhookPort  int      `yaml:"webhook_port"`  // webhook模式监听的端口
 }
 
+type LrcAPIConfig struct {
+    Enable     bool   `yaml:"enable"`      // 是否启用lrcapi歌词服务
+    LrcApiUrl  string `yaml:"lrc_api_url"` // lrcapi服务url
+    LrcApiKey  string `yaml:"api_key"`     // 认证key
+    LrcApiHost string `yaml:"lrc_api_host"`   // lrcapi服务主机名 需要容器名+frp访问才需要设置
+}
+
 type AIConfig struct {
-	Enable       bool   `yaml:"enable"`        // 是否开启AI
-	BaseUrl      string `yaml:"base_url"`      // baseurl
-	Model        string `yaml:"model"`         // 使用的模型
-	ApiKey       string `yaml:"api_key"`       // apiKey
-	SystemPrompt string `yaml:"system_prompt"` // 默认系统提示词
-    PlaylistAssist bool `yaml:"playlist_assist"`  // 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
+	Enable         bool   `yaml:"enable"`          // 是否开启AI
+	BaseUrl        string `yaml:"base_url"`        // baseurl
+	Model          string `yaml:"model"`           // 使用的模型
+	ApiKey         string `yaml:"api_key"`         // apiKey
+	SystemPrompt   string `yaml:"system_prompt"`   // 默认系统提示词
 }
 
 // PlaylistInfo 定义单个歌单及其描述
 type PlaylistInfo struct {
-    Name string `yaml:"name"` // 歌单名称
-    Desc string `yaml:"desc"` // 歌单描述
+	Name string `yaml:"name"` // 歌单名称
+	Desc string `yaml:"desc"` // 歌单描述
 }
 
 type N8NConfig struct {
-    N8NBaseUrl string `yaml:"n8n_base_url"` // 自建n8n的地址
-    AuthToken string `yaml:"auth_token"` // 端点认证密钥
-    EmptyTrashEndpoint string `yaml:"empty_trash_endpoint"` // 清空回收站
-    AIPlaylistEndpoint string `yaml:"ai_playlist_endpoint"` // AI智能歌单
-    TidyPlaylistEndpoint  string `yaml:"tidy_playlist_endpoint"` // 歌单整理端点
-    TidyPlaylist []PlaylistInfo `yaml:"tidy_playlist"` // 歌单名列表
+    Enable         bool   `yaml:"enable"` // 是否启用n8n
+	N8NBaseUrl           string         `yaml:"n8n_base_url"`           // 自建n8n的地址
+	AuthToken            string         `yaml:"auth_token"`             // 端点认证密钥
+	EmptyTrashEndpoint   string         `yaml:"empty_trash_endpoint"`   // 清空回收站
+	AIPlaylistEndpoint   string         `yaml:"ai_playlist_endpoint"`   // AI智能歌单
+	TidyPlaylistEndpoint string         `yaml:"tidy_playlist_endpoint"` // 歌单整理端点
+    PlaylistAssist bool   `yaml:"playlist_assist"` // 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
+	TidyPlaylist         []PlaylistInfo `yaml:"tidy_playlist"`          // 歌单名列表
 }
 
 type QQMusicApiConfig struct {
 	Enable       bool   `yaml:"enable"`        // 是否启用
 	Endpoint     string `yaml:"endpoint"`      // qm-api服务地址  如果需要proxy_url代理 必须填公网地址 否则无法访问
-    ProxyUrl     string `yaml:"proxy_url"` // 代理地址
-    VipLevel     string    `yaml:"vip_level"` // qq会员级别,可选vip或者svip,影响音质 
+	ProxyUrl     string `yaml:"proxy_url"`     // 代理地址
+	VipLevel     string `yaml:"vip_level"`     // qq会员级别,可选vip或者svip,影响音质
 	LoginType    int    `yaml:"login_type"`    // qm-api登录方式: 0QQ 1微信 2手机号
 	RefreshKey   string `yaml:"refresh_key"`   // 用于刷新已失效的musickey musickey1小时会过期
 	RefreshToken string `yaml:"refresh_token"` // 用于刷新已失效的musickey musickey1小时会过期
-    AccessToken  string `yaml:"access_token"` // 用于刷新已失效的musickey
+	AccessToken  string `yaml:"access_token"`  // 用于刷新已失效的musickey
 	MusicId      string `yaml:"music_id"`      // 用于刷新已失效的musickey
-    StrMusicId   string `yaml:"str_music_id"` // 用于刷新已失效的musickey
-    OpenID       string `yaml:"open_id"` // 用于刷新已失效的musickey
-    UnionID      string `yaml:"union_id"` // 用于刷新已失效的musickey
+	StrMusicId   string `yaml:"str_music_id"`  // 用于刷新已失效的musickey
+	OpenID       string `yaml:"open_id"`       // 用于刷新已失效的musickey
+	UnionID      string `yaml:"union_id"`      // 用于刷新已失效的musickey
 	MusicKey     string `yaml:"music_key"`     // 用于刷新已失效的musickey
-    ExpiredAt    int    `yaml:"expired_at"` // 过期时间
+	ExpiredAt    int    `yaml:"expired_at"`    // 过期时间
 }
 
 type AdditionalConfig struct {
 	EnableCron       bool     `yaml:"enable_cron"`    // 是否启用定时任务
 	EnableDirMonitor bool     `yaml:"enable_monitor"` // 是否启用目录监听
 	MonitorDirs      []string `yaml:"monitor_dirs"`   // 需要监听的目录  监听网易云/QQ下载目录=>调用um工具解锁=>整理=>telegram入库通知
-    MusicMode bool `yaml:"music_mode"` // 是否启用音乐模式 视频平台链接优先转为音频
+	MusicMode        bool     `yaml:"music_mode"`     // 是否启用音乐模式 视频平台链接优先转为音频
 }
 
 type ProxyConfig struct {

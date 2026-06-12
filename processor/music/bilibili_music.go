@@ -59,8 +59,6 @@ func (p *BilibiliMusicProcessor) DownloadMusic(
 		return errors.New("无法构建 yt-dlp 命令")
 	}
 
-	callback("命令构建完成，开始下载...")
-
 	utils.DebugWithFormat(
 		"[BiliBiliMusic] 执行命令: %s",
 		strings.Join(cmd.Args, " "),

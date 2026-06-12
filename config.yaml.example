@@ -56,15 +56,23 @@ ai:
   model: ""  # 使用的 AI 模型名称
   api_key: ""  # AI 服务的 API Key
   system_prompt: ""  # 默认系统提示词
-  playlist_assist: false  # 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
+
+# lrcapi 配置
+lrc_api:
+  enable: false  # 是否启用lrcapi歌词服务
+  lrc_api_url: "" # lrcapi服务url
+  api_key: "" # 认证key
+  lrc_api_host: "" # lrcapi服务主机名 需要容器名+frp访问才需要设置
 
 # N8N配置  
 n8n_config:
+  enable: false # 是否启用n8n
   n8n_base_url:  # 自建n8n的地址
   auth_token: # 端点认证密钥
   empty_trash_endpoint:  # 清空回收站
   ai_playlist_endpoint:  # AI智能歌单
   tidy_playlist_endpoint:  # 歌单整理端点
+  playlist_assist: # 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
   tidy_playlist: #歌单,名称必须与navidrome中保持一致
     - name: 中文
       desc: 歌曲的主要演唱语言为中文(含普通话、粤语、闽南语等)

@@ -158,13 +158,23 @@ func (c *Config) setDefaults() {
             Model:   "gpt-3.5-turbo",
         }
     }
+    if c.LrcAPI==nil {
+        c.LrcAPI = &LrcAPIConfig{
+            Enable: false,
+            LrcApiUrl: "",
+            LrcApiKey: "",
+            LrcApiHost: "",
+        }
+    }
     if c.N8NConfig == nil {
         c.N8NConfig = &N8NConfig{
+            Enable: false,
             N8NBaseUrl:           "",
             AuthToken: "",
             EmptyTrashEndpoint: "",
             AIPlaylistEndpoint: "",
             TidyPlaylistEndpoint: "",
+            PlaylistAssist: false,
             TidyPlaylist: make([]PlaylistInfo, 0),
         }
     }
