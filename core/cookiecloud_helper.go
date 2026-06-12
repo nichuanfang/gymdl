@@ -37,11 +37,14 @@ var (
 
 // InitCookieCloud 初始化全局 CookieCloud，只会执行一次
 func InitCookieCloud(cfg *config.CookieCloudConfig) {
-	logger = utils.Logger()
-	GlobalCookieCloud = &CookieCloud{
-		Config: cfg,
-		Client: &http.Client{Timeout: 10 * time.Second},
-	}
+    logger = utils.Logger()
+    GlobalCookieCloud = &CookieCloud{
+        Config: cfg,
+        Client: &http.Client{
+            Timeout:   10 * time.Second,
+            Transport: utils.SharedHTTPClient().Transport,
+        },
+    }
 }
 
 // CheckConnection 检查 CookieCloud 服务是否可用

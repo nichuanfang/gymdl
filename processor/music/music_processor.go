@@ -10,7 +10,8 @@ import (
 	"time"
 
 	browser "github.com/EDDYCJY/fake-useragent"
-	"github.com/nichuanfang/gymdl/processor"
+    "github.com/nichuanfang/gymdl/core"
+    "github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/utils"
 	"go.senan.xyz/taglib"
 )
@@ -247,7 +248,22 @@ func FillDefaultTags(path string, info *SongInfo) {
 
 	// 默认歌词
 	if info.Lyric == "" {
-		info.Lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
+        lrcApi := core.GlobalLrcAPI
+        var lyric string 
+        var err error
+        if lrcApi == nil {
+            lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
+        }else {
+            // album先不传 观察一段时间
+            lyric, err = lrcApi.GetLyrics(info.SongName, info.SongArtists, "")
+            if err != nil {
+                utils.WarnWithFormat("get lyric failed: %w", err)
+                lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
+            }else {
+                utils.InfoWithFormat("song %s get lyric success", info.SongName)
+            }
+        }
+        info.Lyric = lyric
 		updates[taglib.Lyrics] = []string{info.Lyric}
 	}
 

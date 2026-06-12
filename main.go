@@ -54,6 +54,19 @@ func printBanner() {
 	fmt.Println(green + banner + reset)
 }
 
+// 通用服务初始化
+func initService(targetURL string,serviceName string) {
+    result := utils.CheckHealth(utils.HealthCheckOption{
+        URL:    targetURL,
+        Method: http.MethodGet,
+    })
+
+    if !result.OK {
+        utils.Warningf("%s 服务不可用，请检查配置或网络连接", serviceName)
+    }
+    utils.ServiceIsOnf("%s 服务已加载",serviceName)
+}
+
 // 初始化 WebDAV 服务
 func initWebDAV(c *config.WebDAVConfig) {
 	core.InitWebDAV(c)
@@ -63,6 +76,17 @@ func initWebDAV(c *config.WebDAVConfig) {
 		utils.Warning("WebDAV 服务不可用，请检查配置或网络连接")
 	}
 }
+
+// 初始化 LrcApi 服务
+func initLrcApi(c *config.LrcAPIConfig) {
+    core.InitLrcAPI(c)
+    if core.GlobalLrcAPI.CheckConnection() {
+        utils.ServiceIsOn("LrcApi 服务已加载")
+    } else {
+        utils.Warning("LrcApi 服务不可用，请检查配置或网络连接")
+    }
+}
+
 
 // 初始化 CookieCloud 服务
 func initCookieCloud(cfg *config.CookieCloudConfig) {
@@ -88,6 +112,40 @@ func initAI(c *config.AIConfig) {
 	} else {
 		utils.Warning("AI 服务不可用，请检查配置或网络连接")
 	}
+}
+
+// 初始化各服务,执行健康检查
+func initServices(c *config.Config){
+    
+    // cookiecloud
+    if c.AdditionalConfig.EnableCron {
+        initCookieCloud(c.CookieCloud)
+    }
+
+    // ai服务
+    if c.AI.Enable {
+        initAI(c.AI)
+    }
+    
+    // webdav服务
+    if c.Tidy.Mode == 2 {
+        initWebDAV(c.WebDAV)
+    }
+    
+    // lrcapi服务
+    if c.LrcAPI.Enable {
+        initLrcApi(c.LrcAPI)
+    }
+
+    // QQMusicApi服务
+    if c.QQMusicApiConfig.Enable {
+        initService(c.QQMusicApiConfig.Endpoint,"QQMusicApi")
+    }
+    
+    // n8n服务
+    if c.N8NConfig.Enable {
+        initService(c.N8NConfig.N8NBaseUrl,"n8n")
+    }
 }
 
 // 启动定时任务
@@ -198,19 +256,10 @@ func main() {
 	}
 	defer utils.Sync()
 
-	// 初始化各服务
-	if c.AdditionalConfig.EnableCron {
-		initCookieCloud(c.CookieCloud)
-	}
-
-	if c.AI.Enable {
-		initAI(c.AI)
-	}
-
-	if c.Tidy.Mode == 2 {
-		initWebDAV(c.WebDAV)
-	}
-
+	// 初始化各基础服务
+    initServices(c)
+    
+    // 初始化核心进程
 	ctx, cancel := context.WithCancel(context.Background())
 	wg := &sync.WaitGroup{}
 

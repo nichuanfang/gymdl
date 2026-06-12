@@ -3,7 +3,8 @@ package core
 import (
 	"context"
 	"fmt"
-	"strings"
+    "net/http"
+    "strings"
 	"sync"
 	"time"
 
@@ -23,28 +24,32 @@ var (
 
 // InitAI 初始化全局 AI，只会执行一次，并支持自定义 BaseURL
 func InitAI(cfg *config.AIConfig) {
-	if logger == nil {
-		logger = utils.Logger()
-	}
-	if cfg == nil || cfg.ApiKey == "" || cfg.Model == "" {
-		panic("AI config is invalid")
-	}
-	clientCfg := openai.DefaultConfig(cfg.ApiKey)
+    if logger == nil {
+        logger = utils.Logger()
+    }
+    if cfg == nil || cfg.ApiKey == "" || cfg.Model == "" {
+        panic("AI config is invalid")
+    }
+    clientCfg := openai.DefaultConfig(cfg.ApiKey)
 
-	// 如果配置里有自定义 BaseURL，则设置
-	if cfg.BaseUrl != "" {
-		clientCfg.BaseURL = cfg.BaseUrl
-		clientCfg.APIType = openai.APITypeOpenAI
-	}
+    if cfg.BaseUrl != "" {
+        clientCfg.BaseURL = cfg.BaseUrl
+        clientCfg.APIType = openai.APITypeOpenAI
+    }
 
-	if cfg.SystemPrompt == "" {
-		cfg.SystemPrompt = "You are a helpful assistant."
-	}
+    if cfg.SystemPrompt == "" {
+        cfg.SystemPrompt = "You are a helpful assistant."
+    }
 
-	GlobalAI = &AI{
-		Config: cfg,
-		Client: openai.NewClientWithConfig(clientCfg),
-	}
+    // 共享Transport连接池，但不设置Client.Timeout（流式请求由context控制超时）
+    clientCfg.HTTPClient = &http.Client{
+        Transport: utils.SharedHTTPClient().Transport,
+    }
+
+    GlobalAI = &AI{
+        Config: cfg,
+        Client: openai.NewClientWithConfig(clientCfg),
+    }
 }
 
 // -------------------- Context 辅助 --------------------

@@ -278,7 +278,7 @@ func SetCommands(c tb.Context) error {
 /* ------------------------ /assign_playlist ------------------------ */
 func (app *BotApp) AssignPlaylistCommand(c tb.Context) error {
     extra := map[string]interface{}{
-        "playlist_assist": app.cfg.AI.Enable && app.cfg.AI.PlaylistAssist,
+        "playlist_assist":app.cfg.N8NConfig.PlaylistAssist,
         "tidy_playlist":   app.cfg.N8NConfig.TidyPlaylist,
     }
     return app.sendN8NTask(c, app.cfg.N8NConfig.TidyPlaylistEndpoint, extra)
@@ -298,8 +298,8 @@ func (app *BotApp) EmptyTrashCommand(c tb.Context) error {
 
 // sendN8NTask 是一个通用的辅助函数，用于将任务转发给 n8n
 func (app *BotApp) sendN8NTask(c tb.Context, endpoint string, extraPayload map[string]interface{}) error {
-    if len(app.cfg.N8NConfig.N8NBaseUrl) == 0 {
-        return c.Send("请先配置 n8n_config.n8n_base_url")
+    if app.cfg.N8NConfig.Enable&&len(app.cfg.N8NConfig.N8NBaseUrl) == 0 {
+        return c.Send("请先配置启用n8n服务")
     }
 
     // 1. 发送初始状态消息
