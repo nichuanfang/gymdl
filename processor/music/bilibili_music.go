@@ -204,51 +204,6 @@ func (p *BilibiliMusicProcessor) DownloadCommand(
 		utils.ErrorWithFormat("[BiliBiliMusic] ❌ Cookie 文件不存在: %s", cookiePath)
 		return nil
 	}
-
-	start := time.Now()
-
-	formats, err := p.getAvailableFormats(url, cookiePath)
-	if err != nil {
-		utils.ErrorWithFormat("[BiliBiliMusic] ❌ 获取格式失败: %v", err)
-		return nil
-	}
-
-	if len(formats) == 0 {
-		utils.ErrorWithFormat("[BiliBiliMusic] ❌ 无可用格式")
-		return nil
-	}
-
-	utils.InfoWithFormat(
-		"[BiliBiliMusic] ✅ 成功解析链接（耗时 %v）",
-		time.Since(start).Truncate(time.Millisecond),
-	)
-
-	var formatID string
-	var postArgs []string
-
-	switch {
-
-	case formats["30250"]:
-		formatID = "30250"
-        
-	case formats["30280"]:
-		formatID = "30280"
-
-	case formats["30232"]:
-		formatID = "30232"
-
-	case formats["30216"]:
-		formatID = "30216"
-
-	default:
-		formatID = "bestaudio"
-		postArgs = []string{
-			"--audio-format", "aac",
-			"--postprocessor-args",
-			"-c:a aac -b:a 256k",
-		}
-	}
-
 	args := []string{
 		"-x",
 		"--no-playlist",
@@ -265,11 +220,10 @@ func (p *BilibiliMusicProcessor) DownloadCommand(
 		"--no-warnings",
 		"--no-progress",
 
-		"-f", formatID,
+		"-f", "30250/30280/30232/30216/bestaudio",
 		"-o", filepath.Join(p.tempDir, "%(title)s.%(ext)s"),
 	}
 
-	args = append(args, postArgs...)
 	args = append(args, url)
 
 	return exec.Command("yt-dlp", args...)
