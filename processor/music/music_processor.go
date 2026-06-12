@@ -257,10 +257,7 @@ func FillDefaultTags(path string, info *SongInfo) {
             // album先不传 观察一段时间
             lyric, err = lrcApi.GetLyrics(info.SongName, info.SongArtists, "")
             if err != nil {
-                utils.WarnWithFormat("get lyric failed: %w", err)
                 lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
-            }else {
-                utils.InfoWithFormat("song %s get lyric success", info.SongName)
             }
         }
         info.Lyric = lyric
