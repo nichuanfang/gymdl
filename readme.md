@@ -45,11 +45,11 @@ CookieCloud 自动同步登录、WebDAV 上传、下载器监控、Telegram Bot 
 
 ## 🕸️ 架构图
 
-### 整体的五层架构
-![architecture.svg](img/architecture.svg)
+### 五层架构
+<img src="img/architecture.svg" alt="architecture" pointer-events="none" />
 
 ### n8n架构
-![n8n_automation.svg](img/n8n_automation.svg)
+<img src="img/n8n_automation.svg" alt="n8n_automation" pointer-events="none" />
 
 ## ⚙️ 快速开始
 
