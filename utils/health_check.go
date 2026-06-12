@@ -5,6 +5,7 @@ import (
     "io"
     "net"
     "net/http"
+    "strings"
     "time"
 )
 
@@ -74,6 +75,10 @@ func CheckHealth(opt HealthCheckOption) HealthCheckResult {
     }
 
     for k, v := range opt.Headers {
+        if strings.EqualFold(k, "Host") {
+            req.Host = v
+            continue
+        }
         req.Header.Set(k, v)
     }
     client = sharedHTTPClient

@@ -112,8 +112,8 @@ func (l *LrcAPI) GetLyrics(title, artist, album string) (string, error) {
         return "", fmt.Errorf("failed to build request: %w", err)
     }
     req.Header.Set("Authorization", l.Config.LrcApiKey)
-    if l.Config.LrcApiHost!=""{
-        req.Header.Set("Host", l.Config.LrcApiHost)
+    if l.Config.LrcApiHost != "" {
+        req.Host = l.Config.LrcApiHost
     }
     resp, err := utils.SharedHTTPClient().Do(req)
     if err != nil {
