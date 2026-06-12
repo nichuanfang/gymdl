@@ -46,10 +46,10 @@ CookieCloud 自动同步登录、WebDAV 上传、下载器监控、Telegram Bot 
 ## 🕸️ 架构图
 
 ### 五层架构
-<img src="img/architecture.svg" alt="architecture" pointer-events="none" />
+<img src="https://raw.githubusercontent.com/nichuanfang/gymdl/refs/heads/master/img/architecture.svg?token=GHSAT0AAAAAAD7LAGH42JFCX3A5L5WPQRVI2RL5ORQ" alt="architecture" pointer-events="none" />
 
 ### n8n架构
-<img src="img/n8n_automation.svg" alt="n8n_automation" pointer-events="none" />
+<img src="https://raw.githubusercontent.com/nichuanfang/gymdl/refs/heads/master/img/n8n_automation.svg?token=GHSAT0AAAAAAD7LAGH5QCWPVJIPU2QGJ3PW2RL5O3Q" alt="n8n_automation" pointer-events="none" />
 
 ## ⚙️ 快速开始
 
