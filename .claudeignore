@@ -1,0 +1,57 @@
+# 依赖 / vendor
+vendor/
+go.sum
+
+# 编译产物
+bin/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# 覆盖率 / 性能分析
+*.prof
+coverage.txt
+coverage.html
+*.cover
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志 / 临时文件
+*.log
+tmp/
+temp/
+
+# 环境变量 / 密钥
+.env
+.env.*
+*.pem
+*.key
+
+# 构建工具缓存
+.cache/
+node_modules/
+
+# Docker
+*.tar
+
+# 大型数据文件（按需调整）
+*.csv
+*.json.gz
+*.sqlite
+*.db
+
+# 生成的代码（如果你不想让 Claude 读/改自动生成文件，按需启用）
+# *_gen.go
+# *.pb.go
+# mock_*.go
