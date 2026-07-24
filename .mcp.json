@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "web-tool": {
+      "type": "http",
+      "url": "${WEBTOOL_URL}",
+      "headers": {
+        "Authorization": "Bearer ${API_TOKEN}"
+      }
+    }
+  }
+}
