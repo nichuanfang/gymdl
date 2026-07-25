@@ -3,6 +3,7 @@ vendor/
 go.sum
 
 # 编译产物
+data/
 bin/
 dist/
 *.exe
