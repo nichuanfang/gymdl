@@ -56,3 +56,5 @@ node_modules/
 # *_gen.go
 # *.pb.go
 # mock_*.go
+
+config.yaml
