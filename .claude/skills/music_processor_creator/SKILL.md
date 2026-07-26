@@ -1,11 +1,11 @@
 ---
-name: music_handler_creator
-description: "Generate new music platform handlers for the gymdl Go project. Creates a complete Go source file implementing the music.Processor interface, following the exact code conventions in processor/music/. Use this skill when the user asks to 'add a new music platform', 'create a music handler', 'implement a music processor', or 'add support for [platform name]'. This skill asks the user for the platform name and download approach, then generates the file."
+name: music_processor_creator
+description: "Generate new music platform processors for the gymdl Go project. Creates a complete Go source file implementing the music.Processor interface, following the exact code conventions in processor/music/. Use this skill when the user asks to 'add a new music platform', 'create a music processor', 'implement a music processor', or 'add support for [platform name]'. This skill asks the user for the platform name and download approach, then generates the file."
 ---
 
-# Music Handler Creator (音乐处理器构建器)
+# Music Processor Creator (音乐处理器构建器)
 
-Generate a complete Go music handler file `processor/music/<platform>_music.go` that implements the `music.Processor` interface, matching the exact code conventions of the existing handlers (AppleMusic, BilibiliMusic, NetEase, QQMusic, etc.).
+Generate a complete Go music processor file `processor/music/<platform>_music.go` that implements the `music.Processor` interface, matching the exact code conventions of the existing processors (AppleMusic, BilibiliMusic, NetEase, QQMusic, etc.).
 
 ## Workflow
 
