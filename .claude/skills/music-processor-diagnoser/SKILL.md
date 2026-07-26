@@ -1,5 +1,5 @@
 ---
-name: music-processor-analyzer
+name: music-processor-diagnoser
 description: >
   分析 gymdl 项目中音乐下载报错的根源。当用户提供音乐下载链接和报错信息时，
   自动识别对应的音乐处理器（NetEase、QQ音乐、Apple Music、YouTube Music、
