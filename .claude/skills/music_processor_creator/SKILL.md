@@ -1,6 +1,6 @@
 ---
 name: music_processor_creator
-description: "Generate new music platform processors for the gymdl Go project. Creates a complete Go source file implementing the music.Processor interface, following the exact code conventions in processor/music/. Use this skill when the user asks to 'add a new music platform', 'create a music processor', 'implement a music processor', or 'add support for [platform name]'. This skill asks the user for the platform name and download approach, then generates the file."
+description: "Generate new music platform processors for the gymdl Go project. Creates a Go source file implementing the music.Processor interface. Use when the user asks to 'add a new music platform', 'create a music processor', 'implement a music processor', or 'add support for [platform name]'."
 ---
 
 # Music Processor Creator (音乐处理器构建器)
@@ -16,6 +16,16 @@ Generate a complete Go music processor file `processor/music/<platform>_music.go
    - **自定义 API**: "用 API", "调用接口", "从...拉取" → read `references/custom-api-template.md`
    - **原始字节转发**: "转发", "接收音频字节" , "类似 Forward" → read `references/bytes-template.md`
    - **TODO 骨架**: "先建骨架", "模板", "占位", "空实现" → read `references/todo-template.md`
+
+   **提问模板**:
+   ```
+   请选择 {platform} 的下载方式：
+   (1) yt-dlp — 类似 B站/YouTube/SoundCloud
+   (2) 外部 CLI 工具 — 类似 AppleMusic (gamdl)
+   (3) 自定义 API — 类似 网易云/QQ音乐
+   (4) 原始字节转发 — 类似 Forward
+   (5) TODO 骨架 — 仅占位，暂不实现
+   ```
 3. **Generate** the file at `processor/music/<platform>_music.go`
 4. **Output the post-generation checklist** telling the user to register the processor
 
@@ -125,6 +135,8 @@ import (
 - `/* ---------------------- 结构体与构造方法 ---------------------- */`
 - `/* ---------------------- 基础接口实现 ---------------------- */`
 - `/* ------------------------ 下载逻辑 ------------------------ */`
+- `/* ---------------------- 命令生成 ---------------------- */`（仅 yt-dlp 模式）
+- `/* ---------------------- format 解析 ---------------------- */`（仅 yt-dlp 动态探测模式）
 - `/* ------------------------ 拓展方法 ------------------------ */`
 
 ### 方法注释
@@ -258,9 +270,18 @@ func (r *{Platform}Processor) TidyMusic() error {
 
 生成完文件后，告知用户还需要手动执行以下步骤：
 
-1. **添加临时目录常量**：在 `processor/music/music_processor.go` 的常量区域添加 `var {Platform}TempDir = filepath.Join(BaseTempDir, "{Platform}")`
-2. **添加 LinkType 常量**：在 `processor/processor.go` 的音乐平台枚举区域添加 `Link{Platform} LinkType = "{Platform}"`
+1. **添加临时目录常量**：在 `processor/music/music_processor.go` 的常量区域添加：
+   ```go
+   var {Platform}TempDir = filepath.Join(BaseTempDir, "{platform}")
+   ```
+
+2. **添加 LinkType 常量**：在 `processor/processor.go` 的音乐平台枚举区域添加：
+   ```go
+   Link{Platform} LinkType = "{Platform}"
+   ```
+
 3. **添加匹配规则**：在 `core/linkparser/matcher_rules.go` 中为新平台添加 URL 匹配规则
+
 4. **更新解析器**：在 `core/linkparser/parser.go` 中更新 `musicModeMappers`（如需新平台的音乐模式映射）
 
 ## 验证方式

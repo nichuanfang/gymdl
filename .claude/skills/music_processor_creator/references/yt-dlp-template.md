@@ -161,7 +161,7 @@ func ({{RECEIVER}} *{{PROCESSOR}}) streamPipe(r io.ReadCloser, prefix string) {
 
 {{FORMAT_PARSE_SECTION}}
 
-/* ------------------------ 命令生成 ------------------------ */
+/* ---------------------- 命令生成 ---------------------- */
 
 func ({{RECEIVER}} *{{PROCESSOR}}) DownloadCommand(
 	url string,
