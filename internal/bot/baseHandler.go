@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-    "reflect"
-    "time"
+	"time"
 
 	"github.com/nichuanfang/gymdl/internal/bot/dispatch"
-    "github.com/nichuanfang/gymdl/processor"
-    "github.com/nichuanfang/gymdl/utils"
+	"github.com/nichuanfang/gymdl/utils"
 
 	"github.com/nichuanfang/gymdl/core/linkparser"
 	"github.com/nichuanfang/gymdl/processor/music"
@@ -19,7 +17,7 @@ import (
 )
 
 // HandleText 精简版交互逻辑
-func (app *BotApp)HandleText(c tb.Context) error {
+func (app *BotApp) HandleText(c tb.Context) error {
 	text := c.Text()
 	user := c.Sender()
 	b := c.Bot()
@@ -47,10 +45,8 @@ func (app *BotApp)HandleText(c tb.Context) error {
 		Start:   time.Now(),
 		Cfg:     app.cfg,
 	}
-    t := reflect.TypeOf(executor).Elem()
-    uniqueExecutor := reflect.New(t).Interface().(processor.Processor)
 	var err error
-	switch expr := uniqueExecutor.(type) {
+	switch expr := executor.(type) {
 	case music.Processor:
 		// 初始化音乐处理器
 		expr.Init(app.cfg)
@@ -75,7 +71,7 @@ func (app *BotApp)HandleText(c tb.Context) error {
 }
 
 // HandleAudio 处理音频
-func (app *BotApp)HandleAudio(c tb.Context) error {
+func (app *BotApp) HandleAudio(c tb.Context) error {
 	file := &c.Message().Audio.File
 
 	text := c.Text()

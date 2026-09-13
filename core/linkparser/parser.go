@@ -2,8 +2,8 @@ package linkparser
 
 import (
 	"net/url"
-    "reflect"
-    "regexp"
+	"reflect"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -19,7 +19,7 @@ import (
 type linkTypeMatcher struct {
 	domains  []string // 快速判定域名
 	patterns []*regexp.Regexp
-	handler  processor.Processor
+	factory  func() processor.Processor
 }
 
 /* ---------------------- 变量区 ---------------------- */
@@ -34,10 +34,14 @@ var genericURLRegex = regexp.MustCompile(`https?://[^\s<>"'()]*[\w/#?=&-]`)
 var cfg *config.Config
 
 // 全局转换表 MusicMode会用到
-var musicModeMappers = map[reflect.Type]processor.Processor{
-    reflect.TypeOf(&video.YoutubeProcessor{}):  &music.YoutubeMusicProcessor{},
-    reflect.TypeOf(&video.BiliBiliProcessor{}): &music.BilibiliMusicProcessor{},
-    // 更多平台...
+var musicModeMappers = map[reflect.Type]func() processor.Processor{
+	reflect.TypeOf(&video.YoutubeProcessor{}): func() processor.Processor {
+		return &music.YoutubeMusicProcessor{}
+	},
+	reflect.TypeOf(&video.BiliBiliProcessor{}): func() processor.Processor {
+		return &music.BilibiliMusicProcessor{}
+	},
+	// 更多平台...
 }
 
 /* ---------------------- 解析器初始化 ---------------------- */
@@ -78,7 +82,7 @@ func ParseLink(text string) (string, processor.Processor) {
 	for i := range linkTypeMatchers {
 		for _, r := range linkTypeMatchers[i].patterns {
 			if r.MatchString(raw) {
-				return raw, linkTypeMatchers[i].handler
+				return raw, linkTypeMatchers[i].factory()
 			}
 		}
 	}
@@ -108,26 +112,26 @@ func cleanURLTrailingChars(s string) string {
 }
 
 func quickMatch(host string, u *url.URL) (processor.Processor, bool) {
-    p, ok := matcherMap[host]
-    if !ok {
-        return nil, false
-    }
+	p, ok := matcherMap[host]
+	if !ok {
+		return nil, false
+	}
 
-    for _, re := range p.patterns {
-        if re.MatchString(u.String()) {
-            // 基础处理器
-            handler := p.handler
+	for _, re := range p.patterns {
+		if re.MatchString(u.String()) {
+			// 基础处理器
+			handler := p.factory()
 
-            // 如果开启了 MusicMode，尝试转换处理器
-            if cfg.AdditionalConfig.MusicMode {
-                t := reflect.TypeOf(handler)
-                if musicHandler, exists := musicModeMappers[t]; exists {
-                    return musicHandler, true
-                }
-            }
+			// 如果开启了 MusicMode，尝试转换处理器
+			if cfg.AdditionalConfig.MusicMode {
+				t := reflect.TypeOf(handler)
+				if musicFactory, exists := musicModeMappers[t]; exists {
+					return musicFactory(), true
+				}
+			}
 
-            return handler, true
-        }
-    }
-    return nil, false
+			return handler, true
+		}
+	}
+	return nil, false
 }

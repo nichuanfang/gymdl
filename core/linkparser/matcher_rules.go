@@ -3,6 +3,7 @@ package linkparser
 import (
 	"regexp"
 
+	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/processor/music"
 	"github.com/nichuanfang/gymdl/processor/video"
 )
@@ -27,7 +28,9 @@ var linkTypeMatchers = []linkTypeMatcher{
 			// 新版短链
 			regexp.MustCompile(`^https?://163cn\.link/[A-Za-z0-9]+(?:\?.*)?$`),
 		},
-		handler: &music.NetEaseProcessor{},
+		factory: func() processor.Processor {
+			return &music.NetEaseProcessor{}
+		},
 	},
 
 	/* ---------------------- YouTube Music ---------------------- */
@@ -37,7 +40,9 @@ var linkTypeMatchers = []linkTypeMatcher{
 			// YouTube Music 视频
 			regexp.MustCompile(`^https?://music\.youtube\.com/watch\?v=[\w-]+(?:&.*)?$`),
 		},
-		handler: &music.YoutubeMusicProcessor{},
+		factory: func() processor.Processor {
+			return &music.YoutubeMusicProcessor{}
+		},
 	},
 
 	/* ---------------------- Apple Music ---------------------- */
@@ -56,7 +61,9 @@ var linkTypeMatchers = []linkTypeMatcher{
 			// 专辑（album）
 			regexp.MustCompile(`^https?://music\.apple\.com/[a-z]{2}/album/[A-Za-z0-9%._\-]+/\d+(?:\?.*)?$`),
 		},
-		handler: &music.AppleMusicProcessor{},
+		factory: func() processor.Processor {
+			return &music.AppleMusicProcessor{}
+		},
 	},
 
 	/* ---------------------- SoundCloud ---------------------- */
@@ -66,7 +73,9 @@ var linkTypeMatchers = []linkTypeMatcher{
 			// 用户主页 / 曲目 / 播放列表
 			regexp.MustCompile(`^https?://(?:soundcloud\.com|snd\.sc)/[A-Za-z0-9_\-]+/(?:sets/[A-Za-z0-9_\-]+|[A-Za-z0-9_\-]+)(?:\?.*)?$`),
 		},
-		handler: &music.SoundCloudProcessor{},
+		factory: func() processor.Processor {
+			return &music.SoundCloudProcessor{}
+		},
 	},
 
 	/* ---------------------- QQ 音乐 ---------------------- */
@@ -79,7 +88,9 @@ var linkTypeMatchers = []linkTypeMatcher{
 			// 新增：匹配新版分享页（歌单、专辑、歌曲等）
 			regexp.MustCompile(`^https?://(?:i\.y\.qq\.com|m\.y\.qq\.com)/n2/m/share/details/(?:taoge|album|song)\.html(?:[/?#].*)?$`),
 		},
-		handler: &music.QQMusicProcessor{},
+		factory: func() processor.Processor {
+			return &music.QQMusicProcessor{}
+		},
 	},
 
 	/* ---------------------- Spotify ---------------------- */
@@ -89,7 +100,9 @@ var linkTypeMatchers = []linkTypeMatcher{
 			// track / album / playlist + ID (通常 22 字符)
 			regexp.MustCompile(`^https?://(?:open\.spotify\.com|play\.spotify\.com)/(?:track|album|playlist)/[A-Za-z0-9]+(?:\?.*)?$`),
 		},
-		handler: &music.SpotifyProcessor{},
+		factory: func() processor.Processor {
+			return &music.SpotifyProcessor{}
+		},
 	},
 	/* ---------------------- YouTube ---------------------- */
 	{
@@ -101,7 +114,9 @@ var linkTypeMatchers = []linkTypeMatcher{
 			// 短链格式
 			regexp.MustCompile(`^https?://youtu\.be/[\w-]+(?:\?.*)?$`),
 		},
-		handler: &video.YoutubeProcessor{},
+		factory: func() processor.Processor {
+			return &video.YoutubeProcessor{}
+		},
 	},
 	/* ---------------------- 抖音 ---------------------- */
 	{
@@ -112,26 +127,30 @@ var linkTypeMatchers = []linkTypeMatcher{
 			// 短链接形式
 			regexp.MustCompile(`https?://v\.douyin\.com/[\w-]+/?`),
 		},
-		handler: &video.DouyinProcessor{},
+		factory: func() processor.Processor {
+			return &video.DouyinProcessor{}
+		},
 	},
-    /* ---------------------- Bilibili ---------------------- */
-    {
-        domains: []string{"www.bilibili.com", "bilibili.com", "b23.tv", "m.bilibili.com"},
-        patterns: []*regexp.Regexp{
-            // 网页端标准视频链接 (BV/av)
-            regexp.MustCompile(`^https?://(?:www\.)?bilibili\.com/video/(?:BV|av)[A-Za-z0-9]+(?:[/?#].*)?$`),
+	/* ---------------------- Bilibili ---------------------- */
+	{
+		domains: []string{"www.bilibili.com", "bilibili.com", "b23.tv", "m.bilibili.com"},
+		patterns: []*regexp.Regexp{
+			// 网页端标准视频链接 (BV/av)
+			regexp.MustCompile(`^https?://(?:www\.)?bilibili\.com/video/(?:BV|av)[A-Za-z0-9]+(?:[/?#].*)?$`),
 
-            // B站短链接 (b23.tv)
-            regexp.MustCompile(`^https?://b23\.tv/[A-Za-z0-9]+(?:\?.*)?$`),
+			// B站短链接 (b23.tv)
+			regexp.MustCompile(`^https?://b23\.tv/[A-Za-z0-9]+(?:\?.*)?$`),
 
-            // 手机端分享链接
-            regexp.MustCompile(`^https?://m\.bilibili\.com/video/(?:BV|av)[A-Za-z0-9]+(?:[/?#].*)?$`),
+			// 手机端分享链接
+			regexp.MustCompile(`^https?://m\.bilibili\.com/video/(?:BV|av)[A-Za-z0-9]+(?:[/?#].*)?$`),
 
-            // 稍后再看或特定播放列表中的视频
-            regexp.MustCompile(`^https?://(?:www\.)?bilibili\.com/list/(?:watchlater|ml\d+)(?:.*)?\b(?:BV|av)[A-Za-z0-9]+(?:[/?#].*)?$`),
-        },
-        // 假设你在 video package 下定义了 BilibiliProcessor
-        handler: &video.BiliBiliProcessor{},
-    },
+			// 稍后再看或特定播放列表中的视频
+			regexp.MustCompile(`^https?://(?:www\.)?bilibili\.com/list/(?:watchlater|ml\d+)(?:.*)?\b(?:BV|av)[A-Za-z0-9]+(?:[/?#].*)?$`),
+		},
+		// 假设你在 video package 下定义了 BilibiliProcessor
+		factory: func() processor.Processor {
+			return &video.BiliBiliProcessor{}
+		},
+	},
 	/* ---------------------- 待补充 ---------------------- */
 }
