@@ -25,11 +25,12 @@ import (
 /* ---------------------- 结构体与构造方法 ---------------------- */
 
 type QQMusicProcessor struct {
-	cfg     *config.Config
-	tempDir string
-	songs   []*SongInfo
-	qmApi   *QQMusicAPI
-	client  *http.Client // http请求池
+	cfg            *config.Config
+	tempDir        string
+	songs          []*SongInfo
+	qmApi          *QQMusicAPI
+	client         *http.Client // API请求客户端
+	downloadClient *http.Client // 媒体文件下载客户端
 }
 
 type QQMusicLink struct {
@@ -130,12 +131,13 @@ func (p QQPlaylist) songs() []QQSong {
 
 // QQMusicAPI 自建qq-music-api
 type QQMusicAPI struct {
-	cfg          *config.Config    // 配置
-	headers      map[string]string // 请求头
-	client       *http.Client
-	musicKeyPath string // musickey文件路径
-	musicId      int    // api请求必须
-	musicKey     string // api请求必须
+	cfg            *config.Config    // 配置
+	headers        map[string]string // 请求头
+	client         *http.Client
+	downloadClient *http.Client
+	musicKeyPath   string // musickey文件路径
+	musicId        int    // api请求必须
+	musicKey       string // api请求必须
 }
 
 // 会话续期
@@ -194,26 +196,31 @@ func (qm *QQMusicProcessor) Init(cfg *config.Config) {
 			fmt.Printf("警告: 代理地址 [%s] 解析失败: %v，将使用直连模式\n", cfg.QQMusicApiConfig.ProxyUrl, err)
 		}
 	}
+	redirectFunc := func(req *http.Request, via []*http.Request) error {
+		// 允许跟随最多 10 次重定向
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		// 每次重定向时，务必带上 Header，因为 Go 默认重定向不带 Header
+		req.Header.Set("User-Agent", UserAgent)
+		req.Header.Set("Referer", "https://y.qq.com/")
+		return nil
+	}
 	qm.client = &http.Client{
-		Transport: tr,
-		Timeout:   15 * time.Second,
-		// 我们可以自定义 CheckRedirect 来直接获取重定向过程中的 URL，
-		// 或者让它自动跟随，最后取 resp.Request.URL
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// 允许跟随最多 10 次重定向
-			if len(via) >= 10 {
-				return errors.New("stopped after 10 redirects")
-			}
-			// 每次重定向时，务必带上 Header，因为 Go 默认重定向不带 Header
-			req.Header.Set("User-Agent", UserAgent)
-			req.Header.Set("Referer", "https://y.qq.com/")
-			return nil
-		},
+		Transport:     tr,
+		Timeout:       15 * time.Second,
+		CheckRedirect: redirectFunc,
+	}
+	// 大体积音频下载不能受 Client.Timeout 整体限制。
+	qm.downloadClient = &http.Client{
+		Transport:     tr,
+		CheckRedirect: redirectFunc,
 	}
 	qmApi := &QQMusicAPI{
-		cfg:          cfg,
-		client:       qm.client,
-		musicKeyPath: filepath.Join("data", "temp", "musickey.json"),
+		cfg:            cfg,
+		client:         qm.client,
+		downloadClient: qm.downloadClient,
+		musicKeyPath:   filepath.Join("data", "temp", "musickey.json"),
 	}
 	qm.qmApi = qmApi
 }
@@ -372,7 +379,7 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 		// 下载封面
 		tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, songData.Singer[0].Name))
 		utils.DebugWithFormat("[QQMusic] ⬇️ 下载封面: %s", tempCoverPath)
-		coverErr = utils.DownloadFile(qmApi.client, coverUrl, tempCoverPath)
+		coverErr = utils.DownloadFile(qmApi.downloadClient, coverUrl, tempCoverPath)
 	}()
 	go func() {
 		defer wg.Done()
@@ -382,7 +389,7 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 
 	// 下载音乐文件（主任务）
 	downloadStart := time.Now()
-	if err := utils.DownloadFile(qmApi.client, songUrl, tempPath); err != nil {
+	if err := utils.DownloadFile(qmApi.downloadClient, songUrl, tempPath); err != nil {
 		utils.ErrorWithFormat("[QQMusic] ❌ 下载音乐文件失败: %v", err)
 		_ = processor.RemoveTempDir(qm.tempDir)
 		return err
@@ -501,11 +508,11 @@ func (qmApi *QQMusicAPI) downloadPlaylistSong(qm *QQMusicProcessor, songData QQS
 		defer wg.Done()
 		var coverUrl = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", songData.Album.Pmid)
 		tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, songData.Singer[0].Name))
-		coverErr = utils.DownloadFile(qmApi.client, coverUrl, tempCoverPath)
+		coverErr = utils.DownloadFile(qmApi.downloadClient, coverUrl, tempCoverPath)
 	}()
 
 	// 下载音乐文件（主任务）
-	if err = utils.DownloadFile(qmApi.client, songUrl, tempPath); err != nil {
+	if err = utils.DownloadFile(qmApi.downloadClient, songUrl, tempPath); err != nil {
 		return err
 	}
 
