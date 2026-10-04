@@ -16,18 +16,20 @@ import (
 const searchStreamHeartbeat = 10 * time.Second
 
 type searchPlatformEvent struct {
-	Platform string             `json:"platform"`
-	Status   string             `json:"status"` // searching, partial, complete, error
-	Items    []SearchResultItem `json:"items,omitempty"`
-	Error    string             `json:"error,omitempty"`
+	Platform  string             `json:"platform"`
+	Status    string             `json:"status"` // searching, partial, complete, error
+	Items     []SearchResultItem `json:"items,omitempty"`
+	Error     string             `json:"error,omitempty"`
+	Truncated bool               `json:"truncated,omitempty"`
 }
 
 type searchCompleteEvent struct {
-	Items   []SearchResultItem   `json:"items"`
-	Total   int                  `json:"total"`
-	HasMore bool                 `json:"has_more"`
-	Errors  SearchPlatformErrors `json:"errors"`
-	Keyword string               `json:"keyword"`
+	Items     []SearchResultItem   `json:"items"`
+	Total     int                  `json:"total"`
+	HasMore   bool                 `json:"has_more"`
+	Truncated bool                 `json:"truncated"`
+	Errors    SearchPlatformErrors `json:"errors"`
+	Keyword   string               `json:"keyword"`
 }
 
 // HandleSearchStream streams platform progress/results and then a stable,
@@ -51,19 +53,24 @@ func HandleSearchStream(c *gin.Context) {
 	search := func(ctx context.Context, platform, keyword string, limit, offset int) ([]SearchResultItem, error) {
 		return cachedSearchPage(ctx, platform, keyword, limit, offset, searchProviderSearch)
 	}
-	updates := streamPlatformSearches(ctx, request.platforms, request.keyword, request.offset+request.limit+1, searchProviderPageSize(request.limit), search)
+	platforms := request.platforms
+	if request.filters.platform != "" {
+		platforms = []string{request.filters.platform}
+	}
+	updates := streamFilteredPlatformSearches(ctx, platforms, request.keyword, request.offset+request.limit+1, maxSearchCandidatesPerPlatform, searchProviderPageSize(request.limit), request.filters, search)
 
-	perPlatform := make([][]SearchResultItem, len(request.platforms))
-	platformIndex := make(map[string]int, len(request.platforms))
-	for i, platform := range request.platforms {
+	perPlatform := make([][]SearchResultItem, len(platforms))
+	platformIndex := make(map[string]int, len(platforms))
+	for i, platform := range platforms {
 		platformIndex[platform] = i
 	}
 	platformErrors := make(SearchPlatformErrors)
-	finished := make(map[string]bool, len(request.platforms))
+	finished := make(map[string]bool, len(platforms))
+	platformTruncated := make(map[string]bool, len(platforms))
 	finishedCount := 0
 	heartbeat := time.NewTicker(searchStreamHeartbeat)
 	defer heartbeat.Stop()
-	for finishedCount < len(request.platforms) {
+	for finishedCount < len(platforms) {
 		select {
 		case <-ctx.Done():
 			return
@@ -74,7 +81,7 @@ func HandleSearchStream(c *gin.Context) {
 			c.Writer.Flush()
 		case update, ok := <-updates:
 			if !ok {
-				finishedCount = len(request.platforms)
+				finishedCount = len(platforms)
 				break
 			}
 			if i, exists := platformIndex[update.Platform]; exists && update.Status != "searching" {
@@ -82,6 +89,9 @@ func HandleSearchStream(c *gin.Context) {
 			}
 			if update.Status == "error" {
 				platformErrors[update.Platform] = update.Error
+			}
+			if update.Status == "complete" || update.Status == "error" {
+				platformTruncated[update.Platform] = update.Truncated
 			}
 			if (update.Status == "complete" || update.Status == "error") && !finished[update.Platform] {
 				finished[update.Platform] = true
@@ -97,19 +107,23 @@ func HandleSearchStream(c *gin.Context) {
 		return
 	}
 	items, total, hasMore, errs := searchPageFromPrefixes(perPlatform, request.offset, request.limit, platformErrors)
+	truncated := false
+	for _, platformWasTruncated := range platformTruncated {
+		truncated = truncated || platformWasTruncated
+	}
 	if utils.Logger() != nil {
 		for platform, err := range errs {
 			utils.WarnWithFormat("[WebSearch] 平台 %s 搜索失败: %v", platform, err)
 		}
 	}
 	if err := writeSearchSSE(c, "complete", searchCompleteEvent{
-		Items: items, Total: total, HasMore: hasMore, Errors: errs, Keyword: request.keyword,
+		Items: items, Total: total, HasMore: hasMore, Truncated: truncated, Errors: errs, Keyword: request.keyword,
 	}); err != nil {
 		return
 	}
 }
 
-func streamPlatformSearches(ctx context.Context, platforms []string, keyword string, target, pageSize int, search contextSearchFunc) <-chan searchPlatformEvent {
+func streamFilteredPlatformSearches(ctx context.Context, platforms []string, keyword string, target, maxCandidates, pageSize int, filters searchResultFilters, search contextSearchFunc) <-chan searchPlatformEvent {
 	updates := make(chan searchPlatformEvent, max(16, len(platforms)*4))
 	var workers sync.WaitGroup
 	for _, platform := range platforms {
@@ -122,16 +136,16 @@ func streamPlatformSearches(ctx context.Context, platforms []string, keyword str
 			}
 			platformCtx, cancel := context.WithTimeout(ctx, searchProviderTimeout)
 			defer cancel()
-			items, err := searchPrefixWithPageSize(platformCtx, platform, keyword, target, pageSize, search, func(items []SearchResultItem) {
+			items, truncated, err := searchFilteredPrefixWithPageSize(platformCtx, platform, keyword, target, maxCandidates, pageSize, filters, search, func(items []SearchResultItem) {
 				_ = sendSearchPlatformUpdate(platformCtx, updates, searchPlatformEvent{Platform: platform, Status: "partial", Items: items})
 			})
 			if err != nil {
 				if ctx.Err() == nil {
-					_ = sendSearchPlatformUpdate(ctx, updates, searchPlatformEvent{Platform: platform, Status: "error", Items: items, Error: err.Error()})
+					_ = sendSearchPlatformUpdate(ctx, updates, searchPlatformEvent{Platform: platform, Status: "error", Items: items, Error: err.Error(), Truncated: truncated})
 				}
 				return
 			}
-			_ = sendSearchPlatformUpdate(ctx, updates, searchPlatformEvent{Platform: platform, Status: "complete", Items: items})
+			_ = sendSearchPlatformUpdate(ctx, updates, searchPlatformEvent{Platform: platform, Status: "complete", Items: items, Truncated: truncated})
 		}()
 	}
 	go func() {

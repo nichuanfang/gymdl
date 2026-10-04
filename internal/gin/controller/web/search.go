@@ -47,9 +47,18 @@ var searchProviderSearch contextSearchFunc = searchPlatformWithContext
 type searchRequest struct {
 	keyword   string
 	platforms []string
+	filters   searchResultFilters
 	offset    int
 	limit     int
 }
+
+type searchResultFilters struct {
+	query    string
+	platform string
+	vip      string
+}
+
+const maxSearchCandidatesPerPlatform = 2101
 
 func parseSearchRequest(c *gin.Context) (searchRequest, string) {
 	keyword := strings.TrimSpace(c.Query("keyword"))
@@ -71,10 +80,47 @@ func parseSearchRequest(c *gin.Context) (searchRequest, string) {
 	if err != nil || offset < 0 || offset > 2000 {
 		return searchRequest{}, "分页位置超出范围"
 	}
-	return searchRequest{keyword: keyword, platforms: platforms, offset: offset, limit: limit}, ""
+	filters, message := parseSearchResultFilters(c, platforms)
+	if message != "" {
+		return searchRequest{}, message
+	}
+	return searchRequest{keyword: keyword, platforms: platforms, filters: filters, offset: offset, limit: limit}, ""
 }
 
-// HandleSearch GET /api/web/search?keyword=xxx&platform=netease,qq,youtube,bilibili&offset=0&limit=10
+func parseSearchResultFilters(c *gin.Context, platforms []string) (searchResultFilters, string) {
+	filters := searchResultFilters{
+		query:    strings.TrimSpace(c.Query("filter_query")),
+		platform: strings.TrimSpace(c.Query("filter_platform")),
+		vip:      strings.ToLower(strings.TrimSpace(c.Query("filter_vip"))),
+	}
+	if len(filters.query) > 200 {
+		return searchResultFilters{}, "筛选词过长"
+	}
+	if filters.platform == "all" {
+		filters.platform = ""
+	}
+	if filters.platform != "" {
+		validPlatform := false
+		for _, platform := range platforms {
+			if platform == filters.platform {
+				validPlatform = true
+				break
+			}
+		}
+		if !validPlatform {
+			return searchResultFilters{}, "筛选平台必须属于本次搜索平台"
+		}
+	}
+	if filters.vip == "all" {
+		filters.vip = ""
+	}
+	if filters.vip != "" && filters.vip != "free" && filters.vip != "vip" {
+		return searchResultFilters{}, "VIP 筛选值无效"
+	}
+	return filters, ""
+}
+
+// HandleSearch GET /api/web/search?keyword=xxx&platform=netease,qq,youtube,bilibili&offset=0&limit=10&filter_query=...&filter_platform=...&filter_vip=...
 // This non-streaming endpoint remains available for existing clients.
 func HandleSearch(c *gin.Context) {
 	request, message := parseSearchRequest(c)
@@ -85,18 +131,19 @@ func HandleSearch(c *gin.Context) {
 	search := func(ctx context.Context, platform, keyword string, limit, offset int) ([]SearchResultItem, error) {
 		return cachedSearchPage(ctx, platform, keyword, limit, offset, searchProviderSearch)
 	}
-	items, total, hasMore, errs := combinedSearchPageContext(c.Request.Context(), request.platforms, request.keyword, request.offset, request.limit, search)
+	items, total, hasMore, truncated, errs := combinedSearchPageFilteredContext(c.Request.Context(), request.platforms, request.keyword, request.filters, request.offset, request.limit, search)
 	if utils.Logger() != nil {
 		for platform, searchErr := range errs {
 			utils.WarnWithFormat("[WebSearch] 平台 %s 搜索失败: %v", platform, searchErr)
 		}
 	}
 	response.Success(c, gin.H{
-		"items":    items,
-		"total":    total,
-		"has_more": hasMore,
-		"errors":   errs,
-		"keyword":  request.keyword,
+		"items":     items,
+		"total":     total,
+		"has_more":  hasMore,
+		"truncated": truncated,
+		"errors":    errs,
+		"keyword":   request.keyword,
 	})
 }
 
@@ -168,9 +215,18 @@ func combinedSearchPage(platforms []string, keyword string, offset, limit int, s
 }
 
 func combinedSearchPageContext(ctx context.Context, platforms []string, keyword string, offset, limit int, search contextSearchFunc) ([]SearchResultItem, int, bool, SearchPlatformErrors) {
+	items, total, hasMore, _, errs := combinedSearchPageFilteredContext(ctx, platforms, keyword, searchResultFilters{}, offset, limit, search)
+	return items, total, hasMore, errs
+}
+
+func combinedSearchPageFilteredContext(ctx context.Context, platforms []string, keyword string, filters searchResultFilters, offset, limit int, search contextSearchFunc) ([]SearchResultItem, int, bool, bool, SearchPlatformErrors) {
+	if filters.platform != "" {
+		platforms = []string{filters.platform}
+	}
 	target := offset + limit + 1
 	perPlatform := make([][]SearchResultItem, len(platforms))
 	platformErrors := make([]error, len(platforms))
+	platformTruncated := make([]bool, len(platforms))
 	var wg sync.WaitGroup
 	for i, platform := range platforms {
 		wg.Add(1)
@@ -178,19 +234,105 @@ func combinedSearchPageContext(ctx context.Context, platforms []string, keyword 
 			defer wg.Done()
 			platformCtx, cancel := context.WithTimeout(ctx, searchProviderTimeout)
 			defer cancel()
-			items, err := searchPrefixWithPageSize(platformCtx, p, keyword, target, searchProviderPageSize(limit), search, nil)
+			items, truncated, err := searchFilteredPrefixWithPageSize(platformCtx, p, keyword, target, maxSearchCandidatesPerPlatform, searchProviderPageSize(limit), filters, search, nil)
 			perPlatform[index] = items
+			platformTruncated[index] = truncated
 			platformErrors[index] = err
 		}(i, platform)
 	}
 	wg.Wait()
 	errs := make(SearchPlatformErrors)
+	truncated := false
 	for i, err := range platformErrors {
 		if err != nil {
 			errs[platforms[i]] = err.Error()
 		}
+		truncated = truncated || platformTruncated[i]
 	}
-	return searchPageFromPrefixes(perPlatform, offset, limit, errs)
+	items, total, hasMore, errs := searchPageFromPrefixes(perPlatform, offset, limit, errs)
+	return items, total, hasMore, truncated, errs
+}
+
+func searchFilteredPrefixWithPageSize(ctx context.Context, platform, keyword string, target, maxCandidates, pageSize int, filters searchResultFilters, search contextSearchFunc, onProgress func([]SearchResultItem)) ([]SearchResultItem, bool, error) {
+	if target <= 0 || maxCandidates <= 0 {
+		return nil, false, nil
+	}
+	if pageSize <= 0 {
+		pageSize = 1
+	}
+	if pageSize > 50 {
+		pageSize = 50
+	}
+
+	items := make([]SearchResultItem, 0, min(target, maxCandidates))
+	candidateOffset := 0
+	candidatesScanned := 0
+	for candidatesScanned < maxCandidates && len(items) < target {
+		if err := ctx.Err(); err != nil {
+			return items, false, err
+		}
+		batch, err := search(ctx, platform, keyword, pageSize, candidateOffset)
+		if err != nil {
+			return items, false, err
+		}
+		if len(batch) == 0 {
+			return items, false, nil
+		}
+		if len(batch) > pageSize {
+			batch = batch[:pageSize]
+		}
+
+		remainingCandidates := maxCandidates - candidatesScanned
+		candidateCount := min(len(batch), remainingCandidates)
+		matchBatch := make([]SearchResultItem, 0, candidateCount)
+		for _, item := range batch[:candidateCount] {
+			candidatesScanned++
+			if !matchesSearchResultFilters(item, filters) {
+				continue
+			}
+			matchBatch = append(matchBatch, item)
+			if len(items)+len(matchBatch) == target {
+				break
+			}
+		}
+		items = append(items, matchBatch...)
+		if onProgress != nil && len(matchBatch) > 0 {
+			onProgress(cloneSearchItems(matchBatch))
+		}
+
+		batchExhausted := len(batch) < pageSize
+		if len(items) >= target {
+			truncated := candidatesScanned >= maxCandidates && (candidateCount < len(batch) || !batchExhausted)
+			return items, truncated, nil
+		}
+		if candidatesScanned >= maxCandidates {
+			return items, candidateCount < len(batch) || !batchExhausted, nil
+		}
+		if batchExhausted {
+			return items, false, nil
+		}
+		candidateOffset += pageSize
+	}
+	return items, candidatesScanned >= maxCandidates, nil
+}
+
+func matchesSearchResultFilters(item SearchResultItem, filters searchResultFilters) bool {
+	if filters.platform != "" && item.Platform != filters.platform {
+		return false
+	}
+	if (filters.vip == "vip" && !item.IsVIP) || (filters.vip == "free" && item.IsVIP) {
+		return false
+	}
+	if filters.query == "" {
+		return true
+	}
+	query := strings.ToLower(filters.query)
+	for _, field := range []string{item.Name, item.Artists, item.Album, item.URL} {
+		if strings.Contains(strings.ToLower(field), query) {
+			return true
+		}
+	}
+	return false
 }
 
 func searchPageFromPrefixes(perPlatform [][]SearchResultItem, offset, limit int, errs SearchPlatformErrors) ([]SearchResultItem, int, bool, SearchPlatformErrors) {

@@ -13,7 +13,7 @@
             @focus="selectKeyword"
             @keyup.enter="startSearch"
           />
-          <n-button type="primary" size="large" :loading="loadingAction === 'search'" :disabled="searching" @click="startSearch">搜索</n-button>
+          <n-button type="primary" size="large" :loading="loadingAction === 'search' || loadingAction === 'filter'" :disabled="searching" @click="startSearch">搜索</n-button>
         </n-input-group>
         <n-checkbox-group v-model:value="selectedPlatforms" class="platform-selectors">
           <n-checkbox value="netease" label="网易云" :disabled="searching" />
@@ -41,8 +41,11 @@
       <n-alert v-if="activeErrors.length" type="warning" :show-icon="false">
         部分平台搜索失败：{{ activeErrors.join('；') }}。已返回其他平台结果。
       </n-alert>
+      <n-alert v-if="truncated" type="warning" :show-icon="false">
+        部分平台已达到候选扫描上限，筛选结果可能不完整。
+      </n-alert>
 
-      <div v-if="searched && results.length" class="result-toolbar">
+      <div v-if="searched && lastSearchedKeyword && !searchDefinitionDirty" class="result-toolbar">
         <div class="filter-controls">
           <n-input v-model:value="resultQuery" clearable size="small" placeholder="筛选歌曲 / 歌手 / 专辑" class="filter-query" />
           <n-select v-model:value="resultPlatform" size="small" :options="resultPlatformOptions" class="filter-platform" />
@@ -51,7 +54,7 @@
       </div>
       <n-data-table
         :columns="columns"
-        :data="filteredResults"
+        :data="results"
         size="small"
         :bordered="false"
         :row-key="rowKey"
@@ -59,7 +62,7 @@
       />
 
       <div v-if="searched" class="pagination-bar">
-        <span class="pagination-summary">本页 {{ filteredResults.length }} 条 <span class="summary-muted">/ {{ results.length }} 条</span></span>
+        <span class="pagination-summary">本页 {{ results.length }} 条</span>
         <div class="pagination-controls">
           <n-select
             v-model:value="batchSize"
@@ -87,7 +90,6 @@
       </div>
 
       <n-empty v-if="!searching && searched && results.length === 0" description="没有找到相关结果" style="margin-top: 32px" />
-      <n-empty v-else-if="!searching && searched && results.length > 0 && filteredResults.length === 0" description="当前筛选条件下没有匹配结果" style="margin-top: 20px" />
 
       <div v-if="searchHistory.length" class="history-strip">
         <span class="history-label">最近搜索</span>
@@ -126,12 +128,13 @@ type SearchRow = SearchResultItem
 
 const HISTORY_KEY = 'gymdl_search_history'
 const PLATFORM_ORDER = ['netease', 'qq', 'youtube', 'bilibili']
+const filterDebounceMs = 300
 const message = useMessage()
 const { submitWithDuplicateConfirmation } = useTaskSubmission()
 const keyword = ref('')
 const lastSearchedKeyword = ref('')
 const searching = ref(false)
-const loadingAction = ref<'search' | 'previous' | 'next' | 'size' | ''>('')
+const loadingAction = ref<'search' | 'filter' | 'previous' | 'next' | 'size' | ''>('')
 const searched = ref(false)
 const results = ref<SearchRow[]>([])
 const errors = ref<Record<string, string>>({})
@@ -139,6 +142,7 @@ const searchPlatforms = ref<string[]>([])
 const platformProgress = ref<Record<string, SearchPlatformEvent>>({})
 let activeSearchController: AbortController | null = null
 const hasMore = ref(false)
+const truncated = ref(false)
 const currentPage = ref(1)
 const lastSearchedPlatforms = ref<string[]>([])
 const qqEnabled = ref(true)
@@ -147,12 +151,14 @@ const searchHistory = ref<string[]>([])
 const resultQuery = ref('')
 const resultPlatform = ref('all')
 const vipFilter = ref('all')
+const lastSearchedFilterQuery = ref('')
+const lastSearchedFilterPlatform = ref('all')
+const lastSearchedVipFilter = ref('all')
 const batchSize = ref(10)
 const batchOptions = [10, 20, 50, 100].map((value) => ({ label: `每页 ${value} 首`, value }))
-const availableResultPlatforms = computed(() => {
-  const platformsWithResults = new Set<string>(results.value.map((item) => item.platform))
-  return PLATFORM_ORDER.filter((platform) => platformsWithResults.has(platform))
-})
+const availableResultPlatforms = computed(() =>
+  PLATFORM_ORDER.filter((platform) => lastSearchedPlatforms.value.includes(platform)),
+)
 const resultPlatformOptions = computed(() => [
   { label: '全部平台', value: 'all' },
   ...availableResultPlatforms.value.map((platform) => ({ label: platformLabel(platform), value: platform })),
@@ -164,8 +170,14 @@ const vipOptions = [
 ]
 const selectedPlatforms = ref<string[]>(['netease', 'qq', 'youtube', 'bilibili'])
 const chosenPlatforms = computed(() => PLATFORM_ORDER.filter((platform) => selectedPlatforms.value.includes(platform) && (platform !== 'qq' || qqEnabled.value)))
-const searchRequestDirty = computed(() =>
+const searchDefinitionDirty = computed(() =>
   keyword.value.trim() !== lastSearchedKeyword.value || chosenPlatforms.value.join(',') !== lastSearchedPlatforms.value.join(','),
+)
+const searchRequestDirty = computed(() =>
+  searchDefinitionDirty.value ||
+  resultQuery.value.trim() !== lastSearchedFilterQuery.value ||
+  resultPlatform.value !== lastSearchedFilterPlatform.value ||
+  vipFilter.value !== lastSearchedVipFilter.value,
 )
 const activeErrors = computed(() => Object.entries(errors.value).map(([platform, error]) => `${platformLabel(platform)}：${error}`))
 function progressLabel(progress?: SearchPlatformEvent): string {
@@ -180,22 +192,27 @@ function progressTagType(status?: SearchPlatformEvent['status']): 'default' | 'i
   if (status === 'partial') return 'info'
   return 'default'
 }
-watch([availableResultPlatforms, searching], ([platforms, isSearching]) => {
-  // A fast provider's temporary results must not clear filters while slower
-  // providers are still streaming their results.
-  if (!isSearching && resultPlatform.value !== 'all' && !platforms.some((platform) => platform === resultPlatform.value)) {
-    resultPlatform.value = 'all'
+let filterDebounceTimer: ReturnType<typeof setTimeout> | undefined
+function clearFilterDebounce() {
+  if (filterDebounceTimer !== undefined) {
+    clearTimeout(filterDebounceTimer)
+    filterDebounceTimer = undefined
   }
+}
+function canApplyResultFilters() {
+  return searched.value && !!lastSearchedKeyword.value && lastSearchedPlatforms.value.length > 0 && !searchDefinitionDirty.value
+}
+function applyResultFilters() {
+  clearFilterDebounce()
+  if (!canApplyResultFilters()) return
+  void loadPage(1, lastSearchedKeyword.value, lastSearchedPlatforms.value, 'filter')
+}
+watch(resultQuery, () => {
+  clearFilterDebounce()
+  if (!canApplyResultFilters()) return
+  filterDebounceTimer = setTimeout(applyResultFilters, filterDebounceMs)
 })
-const filteredResults = computed(() => {
-  const query = resultQuery.value.trim().toLocaleLowerCase()
-  return results.value.filter((item) => {
-    const textMatches = !query || [item.name, item.artists, item.album, item.url].some((field) => field?.toLocaleLowerCase().includes(query))
-    const platformMatches = resultPlatform.value === 'all' || item.platform === resultPlatform.value
-    const vipMatches = vipFilter.value === 'all' || (vipFilter.value === 'vip' ? item.is_vip : !item.is_vip)
-    return textMatches && platformMatches && vipMatches
-  })
-})
+watch([resultPlatform, vipFilter], applyResultFilters)
 const allPlatformsSelected = computed(() => {
   const enabled = PLATFORM_ORDER.filter((platform) => platform !== 'qq' || qqEnabled.value)
   return enabled.length > 0 && enabled.every((platform) => selectedPlatforms.value.includes(platform))
@@ -229,6 +246,7 @@ function clearHistory() {
   try { localStorage.removeItem(HISTORY_KEY) } catch { /* ignore */ }
 }
 async function startSearch() {
+  clearFilterDebounce()
   if (searching.value) return
   const query = keyword.value.trim()
   if (!query) {
@@ -246,6 +264,8 @@ async function startSearch() {
     resultQuery.value = ''
     resultPlatform.value = 'all'
     vipFilter.value = 'all'
+  } else if (resultPlatform.value !== 'all' && !platforms.includes(resultPlatform.value)) {
+    resultPlatform.value = 'all'
   }
   searched.value = true
   await loadPage(1, query, platforms, 'search')
@@ -266,11 +286,12 @@ async function changePageSize(size: number) {
   }
 }
 
-async function loadPage(page: number, query: string, platforms: string[], action: 'search' | 'previous' | 'next' | 'size'): Promise<boolean> {
-  const previousState = action === 'search' ? null : {
+async function loadPage(page: number, query: string, platforms: string[], action: 'search' | 'filter' | 'previous' | 'next' | 'size'): Promise<boolean> {
+  const previousState = action === 'search' || action === 'filter' ? null : {
     results: [...results.value],
     currentPage: currentPage.value,
     hasMore: hasMore.value,
+    truncated: truncated.value,
     errors: { ...errors.value },
     progress: { ...platformProgress.value },
   }
@@ -279,20 +300,34 @@ async function loadPage(page: number, query: string, platforms: string[], action
   activeSearchController = controller
   searching.value = true
   loadingAction.value = action
-  searchPlatforms.value = [...platforms]
-  platformProgress.value = Object.fromEntries(platforms.map((platform) => [platform, { platform: platform as SearchResultItem['platform'], status: 'searching', items: [] }]))
+  const progressPlatforms = resultPlatform.value === 'all' ? platforms : [resultPlatform.value]
+  searchPlatforms.value = [...progressPlatforms]
+  platformProgress.value = Object.fromEntries(progressPlatforms.map((platform) => [platform, { platform: platform as SearchResultItem['platform'], status: 'searching', items: [] }]))
   errors.value = {}
-  if (action === 'search') results.value = []
-  const offset = (page - 1) * batchSize.value
-  let receivedComplete = false
-  const previewResults = () => {
-    const perPlatform = platforms.map((platform) => platformProgress.value[platform]?.items || [])
-    const merged = interleaveResults(perPlatform)
-    results.value = merged.slice(offset, offset + batchSize.value)
+  truncated.value = false
+  if (action === 'search' || action === 'filter') {
+    results.value = []
+    hasMore.value = false
+    currentPage.value = 1
   }
+  const offset = (page - 1) * batchSize.value
+  const filters = {
+    query: resultQuery.value.trim(),
+    platform: resultPlatform.value,
+    vip: vipFilter.value,
+  }
+  let receivedComplete = false
   try {
     await streamSearch(
-      { keyword: query, platform: platforms, offset, limit: batchSize.value },
+      {
+        keyword: query,
+        platform: platforms,
+        offset,
+        limit: batchSize.value,
+        filterQuery: filters.query,
+        filterPlatform: filters.platform,
+        filterVip: filters.vip,
+      },
       (event) => {
         const previous = platformProgress.value[event.platform]
         const items = event.status === 'partial'
@@ -300,16 +335,19 @@ async function loadPage(page: number, query: string, platforms: string[], action
           : (event.items || previous?.items || [])
         platformProgress.value = { ...platformProgress.value, [event.platform]: { ...event, items } }
         if (event.error) errors.value = { ...errors.value, [event.platform]: event.error }
-        if (event.status === 'partial' || event.status === 'complete' || event.status === 'error') previewResults()
       },
       (complete: SearchCompleteEvent) => {
         receivedComplete = true
         results.value = complete.items || []
         hasMore.value = !!complete.has_more
+        truncated.value = !!complete.truncated
         errors.value = complete.errors || {}
         currentPage.value = page
         lastSearchedKeyword.value = query
         lastSearchedPlatforms.value = [...platforms]
+        lastSearchedFilterQuery.value = filters.query
+        lastSearchedFilterPlatform.value = filters.platform
+        lastSearchedVipFilter.value = filters.vip
         searched.value = true
         if (page === 1) saveHistory(query)
       },
@@ -320,6 +358,7 @@ async function loadPage(page: number, query: string, platforms: string[], action
       results.value = previousState.results
       currentPage.value = previousState.currentPage
       hasMore.value = previousState.hasMore
+      truncated.value = previousState.truncated
       errors.value = previousState.errors
       platformProgress.value = previousState.progress
     }
@@ -332,17 +371,6 @@ async function loadPage(page: number, query: string, platforms: string[], action
     }
   }
   return receivedComplete
-}
-
-function interleaveResults(perPlatform: SearchRow[][]): SearchRow[] {
-  const merged: SearchRow[] = []
-  const maxItems = Math.max(0, ...perPlatform.map((items) => items.length))
-  for (let index = 0; index < maxItems; index++) {
-    for (const items of perPlatform) {
-      if (index < items.length) merged.push(items[index])
-    }
-  }
-  return merged
 }
 
 async function handleDownload(row: SearchRow) {
@@ -413,7 +441,10 @@ onMounted(() => {
   loadHistory()
   void platformConfigPromise
 })
-onUnmounted(() => activeSearchController?.abort())
+onUnmounted(() => {
+  clearFilterDebounce()
+  activeSearchController?.abort()
+})
 </script>
 
 <style scoped>

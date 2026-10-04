@@ -5,12 +5,14 @@ export interface SearchPlatformEvent {
   status: 'searching' | 'partial' | 'complete' | 'error'
   items?: SearchResultItem[]
   error?: string
+  truncated?: boolean
 }
 
 export interface SearchCompleteEvent {
   items: SearchResultItem[]
   total: number
   has_more: boolean
+  truncated?: boolean
   errors: Record<string, string>
   keyword: string
 }
@@ -20,6 +22,9 @@ export interface SearchStreamParams {
   platform: string[]
   offset: number
   limit: number
+  filterQuery: string
+  filterPlatform: string
+  filterVip: string
 }
 
 export async function streamSearch(
@@ -33,6 +38,9 @@ export async function streamSearch(
     platform: params.platform.join(','),
     offset: String(params.offset),
     limit: String(params.limit),
+    filter_query: params.filterQuery,
+    filter_platform: params.filterPlatform,
+    filter_vip: params.filterVip,
   })
   const response = await fetch(`/api/web/search/stream?${query}`, {
     credentials: 'same-origin',

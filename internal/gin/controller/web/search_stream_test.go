@@ -155,7 +155,7 @@ func TestSearchStreamCancelsProviderWhenClientContextEnds(t *testing.T) {
 		close(stopped)
 		return nil, ctx.Err()
 	}
-	updates := streamPlatformSearches(ctx, []string{"netease"}, "cancel-test", 10, 20, search)
+	updates := streamFilteredPlatformSearches(ctx, []string{"netease"}, "cancel-test", 10, maxSearchCandidatesPerPlatform, 20, searchResultFilters{}, search)
 	<-started
 	// Drain the initial searching status then cancel the requesting client.
 	<-updates
@@ -227,7 +227,7 @@ func TestSearchStreamTimesOutOnlyTheSlowPlatform(t *testing.T) {
 		}
 		return []SearchResultItem{{Platform: platform, SongID: "ok"}}, nil
 	}
-	updates := streamPlatformSearches(context.Background(), []string{"netease", "youtube"}, "timeout-test", 10, 20, search)
+	updates := streamFilteredPlatformSearches(context.Background(), []string{"netease", "youtube"}, "timeout-test", 10, maxSearchCandidatesPerPlatform, 20, searchResultFilters{}, search)
 	statuses := make(map[string]string)
 	for update := range updates {
 		if update.Status == "complete" || update.Status == "error" {
