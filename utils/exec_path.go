@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,7 +50,21 @@ func ExtendedPATH() string {
 // Command 创建一个带扩展 PATH 的 exec.Cmd
 // 如果 LookPath(name) 在默认 PATH 中找不到，会尝试在扩展 PATH 中查找并把 cmd.Path 设为绝对路径
 func Command(name string, args ...string) *exec.Cmd {
-	cmd := exec.Command(name, args...)
+	return commandWithContext(nil, name, args...)
+}
+
+// CommandContext creates a cancellable command with the same extended PATH behavior as Command.
+func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	return commandWithContext(ctx, name, args...)
+}
+
+func commandWithContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	var cmd *exec.Cmd
+	if ctx == nil {
+		cmd = exec.Command(name, args...)
+	} else {
+		cmd = exec.CommandContext(ctx, name, args...)
+	}
 	cmd.Env = append(os.Environ(), "PATH="+ExtendedPATH())
 	// 如果默认 LookPath 失败，手动在扩展 PATH 中查找
 	if cmd.Err != nil || cmd.Path == "" || cmd.Path == name {

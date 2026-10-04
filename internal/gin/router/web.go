@@ -52,6 +52,7 @@ func SetupWebRoutes(rg *gin.RouterGroup, c *config.Config) {
 
 	// 搜索
 	group.GET("/search", web.HandleSearch)
+	group.GET("/search/stream", web.HandleSearchStream)
 
 	// 日志
 	group.GET("/logs", web.HandleListLogs)

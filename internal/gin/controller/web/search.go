@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	ncmapi "github.com/XiaoMengXinX/Music163Api-Go/api"
+	ncmtypes "github.com/XiaoMengXinX/Music163Api-Go/types"
 	ncmutils "github.com/XiaoMengXinX/Music163Api-Go/utils"
 	"github.com/gin-gonic/gin"
 	"github.com/nichuanfang/gymdl/config"
@@ -39,100 +40,105 @@ type SearchResultItem struct {
 // SearchPlatformErrors 各平台的错误信息
 type SearchPlatformErrors map[string]string
 
-// HandleSearch GET /api/web/search?keyword=xxx&platform=netease,qq,youtube,bilibili&offset=0&limit=10
-func HandleSearch(c *gin.Context) {
+var searchProviderSearch contextSearchFunc = searchPlatformWithContext
+
+// searchRequest is shared by the JSON and SSE search endpoints.
+type searchRequest struct {
+	keyword   string
+	platforms []string
+	offset    int
+	limit     int
+}
+
+func parseSearchRequest(c *gin.Context) (searchRequest, string) {
 	keyword := strings.TrimSpace(c.Query("keyword"))
 	if keyword == "" {
-		response.Fail(c, http.StatusBadRequest, "关键词不能为空")
-		return
+		return searchRequest{}, "关键词不能为空"
 	}
 	if len(keyword) > 200 {
-		response.Fail(c, http.StatusBadRequest, "关键词过长")
-		return
+		return searchRequest{}, "关键词过长"
 	}
-
 	platforms := parsePlatforms(c.DefaultQuery("platform", "netease"))
 	if len(platforms) == 0 {
-		response.Fail(c, http.StatusBadRequest, "无效的平台参数")
-		return
+		return searchRequest{}, "无效的平台参数"
 	}
 	limit, err := strconv.Atoi(c.DefaultQuery("limit", "10"))
 	if err != nil || limit <= 0 || limit > 100 {
-		response.Fail(c, http.StatusBadRequest, "每页数量必须在 1 到 100 之间")
-		return
+		return searchRequest{}, "每页数量必须在 1 到 100 之间"
 	}
 	offset, err := strconv.Atoi(c.DefaultQuery("offset", "0"))
 	if err != nil || offset < 0 || offset > 2000 {
-		response.Fail(c, http.StatusBadRequest, "分页位置超出范围")
+		return searchRequest{}, "分页位置超出范围"
+	}
+	return searchRequest{keyword: keyword, platforms: platforms, offset: offset, limit: limit}, ""
+}
+
+// HandleSearch GET /api/web/search?keyword=xxx&platform=netease,qq,youtube,bilibili&offset=0&limit=10
+// This non-streaming endpoint remains available for existing clients.
+func HandleSearch(c *gin.Context) {
+	request, message := parseSearchRequest(c)
+	if message != "" {
+		response.Fail(c, http.StatusBadRequest, message)
 		return
 	}
-
-	items, total, hasMore, errs := combinedSearchPage(platforms, keyword, offset, limit, searchPlatform)
-	for platform, searchErr := range errs {
-		utils.WarnWithFormat("[WebSearch] 平台 %s 搜索失败: %v", platform, searchErr)
+	search := func(ctx context.Context, platform, keyword string, limit, offset int) ([]SearchResultItem, error) {
+		return cachedSearchPage(ctx, platform, keyword, limit, offset, searchProviderSearch)
+	}
+	items, total, hasMore, errs := combinedSearchPageContext(c.Request.Context(), request.platforms, request.keyword, request.offset, request.limit, search)
+	if utils.Logger() != nil {
+		for platform, searchErr := range errs {
+			utils.WarnWithFormat("[WebSearch] 平台 %s 搜索失败: %v", platform, searchErr)
+		}
 	}
 	response.Success(c, gin.H{
 		"items":    items,
 		"total":    total,
 		"has_more": hasMore,
 		"errors":   errs,
-		"keyword":  keyword,
+		"keyword":  request.keyword,
 	})
 }
 
-// combinedSearchPage fetches stable platform prefixes, interleaves them in the
-// selected-platform order, then applies a single global offset/limit.
-func combinedSearchPage(platforms []string, keyword string, offset, limit int, search func(string, string, int, int) ([]SearchResultItem, error)) ([]SearchResultItem, int, bool, SearchPlatformErrors) {
-	target := offset + limit + 1 // one look-ahead item determines has_more
-	perPlatform := make([][]SearchResultItem, len(platforms))
-	errs := make(SearchPlatformErrors)
-	platformErrors := make([]error, len(platforms))
-	var wg sync.WaitGroup
-	for i, platform := range platforms {
-		wg.Add(1)
-		go func(index int, p string) {
-			defer wg.Done()
-			items, err := searchPrefix(p, keyword, target, search)
-			if err != nil {
-				platformErrors[index] = err
-				return
-			}
-			perPlatform[index] = items
-		}(i, platform)
-	}
-	wg.Wait()
-	for i, err := range platformErrors {
-		if err != nil {
-			errs[platforms[i]] = err.Error()
-		}
-	}
-
-	merged := interleaveSearchResults(perPlatform)
-	if offset >= len(merged) {
-		return []SearchResultItem{}, len(merged), false, errs
-	}
-	end := offset + limit
-	if end > len(merged) {
-		end = len(merged)
-	}
-	page := append([]SearchResultItem(nil), merged[offset:end]...)
-	return page, len(page), len(merged) > offset+limit, errs
+func searchPrefix(platform, keyword string, target int, search func(string, string, int, int) ([]SearchResultItem, error)) ([]SearchResultItem, error) {
+	return searchPrefixWithProgress(context.Background(), platform, keyword, target,
+		func(_ context.Context, p, q string, limit, offset int) ([]SearchResultItem, error) {
+			return search(p, q, limit, offset)
+		}, nil)
 }
 
-func searchPrefix(platform, keyword string, target int, search func(string, string, int, int) ([]SearchResultItem, error)) ([]SearchResultItem, error) {
+func searchProviderPageSize(limit int) int {
+	if limit < 20 {
+		return 20
+	}
+	if limit > 50 {
+		return 50
+	}
+	return limit
+}
+
+func searchPrefixWithProgress(ctx context.Context, platform, keyword string, target int, search contextSearchFunc, onProgress func([]SearchResultItem)) ([]SearchResultItem, error) {
+	pageSize := min(target, 50)
+	return searchPrefixWithPageSize(ctx, platform, keyword, target, pageSize, search, onProgress)
+}
+
+func searchPrefixWithPageSize(ctx context.Context, platform, keyword string, target, pageSize int, search contextSearchFunc, onProgress func([]SearchResultItem)) ([]SearchResultItem, error) {
 	if target <= 0 {
 		return nil, nil
 	}
-	const maxPageSize = 50
+	if pageSize <= 0 {
+		pageSize = 1
+	}
+	if pageSize > 50 {
+		pageSize = 50
+	}
 	items := make([]SearchResultItem, 0, target)
 	for offset := 0; offset < target; {
-		pageSize := target
-		if target > maxPageSize {
-			pageSize = maxPageSize
+		if err := ctx.Err(); err != nil {
+			return items, err
 		}
-		batch, err := search(platform, keyword, pageSize, offset)
+		batch, err := search(ctx, platform, keyword, pageSize, offset)
 		if err != nil {
-			return nil, err
+			return items, err
 		}
 		if len(batch) == 0 {
 			break
@@ -142,12 +148,61 @@ func searchPrefix(platform, keyword string, target int, search func(string, stri
 			batch = batch[:remaining]
 		}
 		items = append(items, batch...)
+		if onProgress != nil {
+			onProgress(cloneSearchItems(batch))
+		}
 		offset += pageSize
 		if len(batch) < pageSize {
 			break
 		}
 	}
 	return items, nil
+}
+
+func combinedSearchPage(platforms []string, keyword string, offset, limit int, search func(string, string, int, int) ([]SearchResultItem, error)) ([]SearchResultItem, int, bool, SearchPlatformErrors) {
+	return combinedSearchPageContext(context.Background(), platforms, keyword, offset, limit,
+		func(_ context.Context, platform, keyword string, pageSize, pageOffset int) ([]SearchResultItem, error) {
+			return search(platform, keyword, pageSize, pageOffset)
+		})
+}
+
+func combinedSearchPageContext(ctx context.Context, platforms []string, keyword string, offset, limit int, search contextSearchFunc) ([]SearchResultItem, int, bool, SearchPlatformErrors) {
+	target := offset + limit + 1
+	perPlatform := make([][]SearchResultItem, len(platforms))
+	platformErrors := make([]error, len(platforms))
+	var wg sync.WaitGroup
+	for i, platform := range platforms {
+		wg.Add(1)
+		go func(index int, p string) {
+			defer wg.Done()
+			platformCtx, cancel := context.WithTimeout(ctx, searchProviderTimeout)
+			defer cancel()
+			items, err := searchPrefixWithPageSize(platformCtx, p, keyword, target, searchProviderPageSize(limit), search, nil)
+			perPlatform[index] = items
+			platformErrors[index] = err
+		}(i, platform)
+	}
+	wg.Wait()
+	errs := make(SearchPlatformErrors)
+	for i, err := range platformErrors {
+		if err != nil {
+			errs[platforms[i]] = err.Error()
+		}
+	}
+	return searchPageFromPrefixes(perPlatform, offset, limit, errs)
+}
+
+func searchPageFromPrefixes(perPlatform [][]SearchResultItem, offset, limit int, errs SearchPlatformErrors) ([]SearchResultItem, int, bool, SearchPlatformErrors) {
+	merged := interleaveSearchResults(perPlatform)
+	if offset >= len(merged) {
+		return []SearchResultItem{}, 0, false, errs
+	}
+	end := offset + limit
+	if end > len(merged) {
+		end = len(merged)
+	}
+	page := append([]SearchResultItem(nil), merged[offset:end]...)
+	return page, len(page), len(merged) > offset+limit, errs
 }
 
 func interleaveSearchResults(platforms [][]SearchResultItem) []SearchResultItem {
@@ -186,17 +241,21 @@ func parsePlatforms(s string) []string {
 	return result
 }
 
-// searchPlatform 分发到具体平台
+// searchPlatform 分发到具体平台。
 func searchPlatform(platform, keyword string, limit, offset int) ([]SearchResultItem, error) {
+	return searchPlatformWithContext(context.Background(), platform, keyword, limit, offset)
+}
+
+func searchPlatformWithContext(ctx context.Context, platform, keyword string, limit, offset int) ([]SearchResultItem, error) {
 	switch platform {
 	case "netease":
-		return searchNetease(keyword, limit, offset)
+		return searchNeteaseWithContext(ctx, keyword, limit, offset)
 	case "qq":
-		return searchQQ(keyword, limit, offset)
+		return searchQQWithContext(ctx, keyword, limit, offset)
 	case "youtube":
-		return searchYouTube(keyword, limit, offset)
+		return searchYouTubeWithContext(ctx, keyword, limit, offset)
 	case "bilibili":
-		return searchBilibili(keyword, limit, offset)
+		return searchBilibiliWithContext(ctx, keyword, limit, offset)
 	}
 	return nil, fmt.Errorf("未知平台: %s", platform)
 }
@@ -204,54 +263,97 @@ func searchPlatform(platform, keyword string, limit, offset int) ([]SearchResult
 /* ------------------------ 网易云 ------------------------ */
 
 func searchNetease(keyword string, limit, offset int) ([]SearchResultItem, error) {
-	req := ncmutils.RequestData{}
-	// MUSIC_U cookie 可选，有的话提升准确度和减少风控
-	cookiePath := ""
-	if cfg := GetWebConfig(); cfg != nil && cfg.CookieCloud != nil {
-		cookiePath = filepath.Join(cfg.CookieCloud.CookieFilePath, cfg.CookieCloud.CookieFile)
-	}
-	if cookiePath != "" {
-		if musicU := utils.GetCookieValue(cookiePath, ".music.163.com", "MUSIC_U"); musicU != "" {
-			req.Cookies = []*http.Cookie{{Name: "MUSIC_U", Value: musicU}}
-			utils.DebugWithFormat("[WebSearch] NCM Cookie loaded: %d chars", len(musicU))
-		} else {
-			utils.WarnWithFormat("[WebSearch] NCM Cookie 未找到: path=%s", cookiePath)
-		}
-	}
+	return searchNeteaseWithContext(context.Background(), keyword, limit, offset)
+}
 
-	result, err := ncmapi.SearchSong(req, ncmapi.SearchSongConfig{
-		Keyword: keyword,
-		Limit:   limit,
-		Offset:  offset,
-	})
+func searchNeteaseWithContext(ctx context.Context, keyword string, limit, offset int) ([]SearchResultItem, error) {
+	cookiePath, musicU := neteaseSearchCookie()
+	if musicU == "" && cookiePath != "" {
+		utils.WarnWithFormat("[WebSearch] NCM Cookie 未找到: path=%s", cookiePath)
+	}
+	result, err := requestNeteaseSearch(ctx, "https://music.163.com/eapi/v1/search/song/get", keyword, limit, offset, musicU)
 	if err != nil {
 		return nil, fmt.Errorf("网易云搜索失败: %w", err)
 	}
-	utils.DebugWithFormat("[WebSearch] NCM code=%d, songs=%d, hasCookie=%v, cookiePath=%s",
-		result.Code, len(result.Result.Songs), req.Cookies != nil, cookiePath)
-	// result.Code 非 200 说明上游请求异常（风控、限流、参数错误等），不应静默返回空列表
+	if utils.Logger() != nil {
+		utils.DebugWithFormat("[WebSearch] NCM code=%d, songs=%d, hasCookie=%v, cookiePath=%s", result.Code, len(result.Result.Songs), musicU != "", cookiePath)
+	}
 	if result.Code != 200 {
 		return nil, fmt.Errorf("网易云搜索失败: 上游响应 code=%d", result.Code)
 	}
-
 	items := make([]SearchResultItem, 0, len(result.Result.Songs))
-	for _, s := range result.Result.Songs {
-		artists := make([]string, 0, len(s.Artists))
-		for _, a := range s.Artists {
-			artists = append(artists, a.Name)
+	for _, song := range result.Result.Songs {
+		artists := make([]string, 0, len(song.Artists))
+		for _, artist := range song.Artists {
+			artists = append(artists, artist.Name)
 		}
 		items = append(items, SearchResultItem{
-			Platform:    "netease",
-			SongID:      strconv.Itoa(s.Id),
-			Name:        s.Name,
-			Artists:     strings.Join(artists, " / "),
-			Album:       s.Album.Name,
-			DurationSec: s.Duration / 1000,
-			URL:         fmt.Sprintf("https://music.163.com/song?id=%d", s.Id),
-			IsVIP:       s.Fee == 1,
+			Platform: "netease", SongID: strconv.Itoa(song.Id), Name: song.Name,
+			Artists: strings.Join(artists, " / "), Album: song.Album.Name,
+			DurationSec: song.Duration / 1000,
+			URL:         fmt.Sprintf("https://music.163.com/song?id=%d", song.Id), IsVIP: song.Fee == 1,
 		})
 	}
 	return items, nil
+}
+
+func neteaseSearchCookie() (string, string) {
+	cfg := GetWebConfig()
+	if cfg == nil || cfg.CookieCloud == nil || cfg.CookieCloud.CookieFilePath == "" || cfg.CookieCloud.CookieFile == "" {
+		return "", ""
+	}
+	cookiePath := filepath.Join(cfg.CookieCloud.CookieFilePath, cfg.CookieCloud.CookieFile)
+	return cookiePath, utils.GetCookieValue(cookiePath, ".music.163.com", "MUSIC_U")
+}
+
+func requestNeteaseSearch(ctx context.Context, endpoint, keyword string, limit, offset int, musicU string) (ncmtypes.SearchSongData, error) {
+	var result ncmtypes.SearchSongData
+	reqJSON := ncmapi.CreateSearchSongReqJson(ncmapi.SearchSongConfig{Keyword: keyword, Limit: limit, Offset: offset})
+	params := ncmutils.Format2Params(ncmutils.SpliceStr(ncmapi.SearchSongAPI, reqJSON))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(params))
+	if err != nil {
+		return result, err
+	}
+	cookies := map[string]string{
+		"appver": "8.9.70", "buildver": strconv.FormatInt(time.Now().Unix(), 10),
+		"resolution": "1920x1080", "os": "android",
+	}
+	if musicU != "" {
+		cookies["MUSIC_U"] = musicU
+	} else {
+		cookies["MUSIC_A"] = "4ee5f776c9ed1e4d5f031b09e084c6cb333e43ee4a841afeebbef9bbf4b7e4152b51ff20ecb9e8ee9e89ab23044cf50d1609e4781e805e73a138419e5583bc7fd1e5933c52368d9127ba9ce4e2f233bf5a77ba40ea6045ae1fc612ead95d7b0e0edf70a74334194e1a190979f5fc12e9968c3666a981495b33a649814e309366"
+	}
+	encodedCookies := make([]string, 0, len(cookies))
+	for key, value := range cookies {
+		encodedCookies = append(encodedCookies, ncmCookieEscape(key)+"="+ncmCookieEscape(value))
+	}
+	req.Header.Set("Cookie", strings.Join(encodedCookies, "; "))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", ncmutils.ChooseUserAgent())
+	client := &http.Client{Timeout: searchProviderTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return result, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return result, fmt.Errorf("网易云 API HTTP 状态码: %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return result, err
+	}
+	// SearchSong uses ApiRequest: the request is EAPI-encrypted, but the
+	// response body is plain JSON (unlike the library's EapiRequest helper).
+	if err := json.Unmarshal(body, &result); err != nil {
+		return result, fmt.Errorf("解析网易云响应失败: %w", err)
+	}
+	result.RawJson = string(body)
+	return result, nil
+}
+
+func ncmCookieEscape(value string) string {
+	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
 }
 
 /* ------------------------ QQ 音乐 ------------------------ */
@@ -282,6 +384,10 @@ type qqSearchResponse struct {
 var qqSearchRefreshFlights singleflight.Group
 
 func searchQQ(keyword string, limit, offset int) ([]SearchResultItem, error) {
+	return searchQQWithContext(context.Background(), keyword, limit, offset)
+}
+
+func searchQQWithContext(ctx context.Context, keyword string, limit, offset int) ([]SearchResultItem, error) {
 	cfg := GetWebConfig()
 	if cfg == nil || cfg.QQMusicApiConfig == nil || !cfg.QQMusicApiConfig.Enable {
 		return nil, fmt.Errorf("QQ Music API 未启用")
@@ -299,17 +405,17 @@ func searchQQ(keyword string, limit, offset int) ([]SearchResultItem, error) {
 		utils.WarnWithFormat("[WebSearch] 读取 QQ 登录凭证失败，将先尝试无凭证搜索: %v", credentialErr)
 	}
 	cookie := qqSearchCredentialCookie(credential, cfg.QQMusicApiConfig)
-	client := &http.Client{Timeout: 15 * time.Second}
-	searchResp, err := requestQQSearch(client, cfg.QQMusicApiConfig.Endpoint, keyword, limit, page, cookie)
-	if refreshReason := qqCredentialRefreshReason(err); refreshReason != "" {
+	client := &http.Client{Timeout: searchProviderTimeout}
+	searchResp, err := requestQQSearch(ctx, client, cfg.QQMusicApiConfig.Endpoint, keyword, limit, page, cookie)
+	if err != nil && isQQRiskControlError(err.Error()) {
 		if utils.Logger() != nil {
-			utils.WarnWithFormat("[WebSearch] QQ 搜索遇到%s，尝试刷新凭证并重试一次", refreshReason)
+			utils.WarnWithFormat("[WebSearch] QQ 搜索触发风控，尝试刷新凭证并重试一次")
 		}
-		refreshedCookie, refreshErr := refreshQQCredentialForSearch(cfg.QQMusicApiConfig)
+		refreshedCookie, refreshErr := refreshQQCredentialForSearchContext(ctx, cfg.QQMusicApiConfig)
 		if refreshErr != nil {
 			return nil, fmt.Errorf("%w；自动刷新 QQ 凭证失败: %v", err, refreshErr)
 		}
-		searchResp, err = requestQQSearch(client, cfg.QQMusicApiConfig.Endpoint, keyword, limit, page, refreshedCookie)
+		searchResp, err = requestQQSearch(ctx, client, cfg.QQMusicApiConfig.Endpoint, keyword, limit, page, refreshedCookie)
 	}
 	if err != nil {
 		return nil, err
@@ -340,14 +446,14 @@ func searchQQ(keyword string, limit, offset int) ([]SearchResultItem, error) {
 	return items, nil
 }
 
-func requestQQSearch(client *http.Client, endpoint, keyword string, limit, page int, cookie string) (qqSearchResponse, error) {
+func requestQQSearch(ctx context.Context, client *http.Client, endpoint, keyword string, limit, page int, cookie string) (qqSearchResponse, error) {
 	query := url.Values{}
 	query.Set("keyword", keyword)
 	query.Set("search_type", "0")
 	query.Set("num", strconv.Itoa(limit))
 	query.Set("page", strconv.Itoa(page))
 	reqURL := strings.TrimSuffix(endpoint, "/") + "/search/search_by_type?" + query.Encode()
-	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return qqSearchResponse{}, err
 	}
@@ -363,7 +469,7 @@ func requestQQSearch(client *http.Client, endpoint, keyword string, limit, page 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return qqSearchResponse{}, &qqSearchHTTPError{StatusCode: resp.StatusCode}
+		return qqSearchResponse{}, fmt.Errorf("QQ Music API HTTP 状态码: %d", resp.StatusCode)
 	}
 
 	var searchResp qqSearchResponse
@@ -374,32 +480,6 @@ func requestQQSearch(client *http.Client, endpoint, keyword string, limit, page 
 		return searchResp, fmt.Errorf("QQ Music API 错误: %s", searchResp.Msg)
 	}
 	return searchResp, nil
-}
-
-type qqSearchHTTPError struct {
-	StatusCode int
-}
-
-func (e *qqSearchHTTPError) Error() string {
-	return fmt.Sprintf("QQ Music API HTTP 状态码: %d", e.StatusCode)
-}
-
-func isQQRateLimitError(err error) bool {
-	var statusErr *qqSearchHTTPError
-	return errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusTooManyRequests
-}
-
-func qqCredentialRefreshReason(err error) string {
-	if err == nil {
-		return ""
-	}
-	if isQQRiskControlError(err.Error()) {
-		return "风控"
-	}
-	if isQQRateLimitError(err) {
-		return "HTTP 429 限流"
-	}
-	return ""
 }
 
 func isQQRiskControlError(message string) bool {
@@ -413,12 +493,16 @@ func isQQRiskControlError(message string) bool {
 }
 
 func refreshQQCredentialForSearch(fallback *config.QQMusicApiConfig) (string, error) {
+	return refreshQQCredentialForSearchContext(context.Background(), fallback)
+}
+
+func refreshQQCredentialForSearchContext(ctx context.Context, fallback *config.QQMusicApiConfig) (string, error) {
 	if fallback == nil {
 		return "", fmt.Errorf("QQ Music API 配置不可用")
 	}
 	key := strings.TrimSpace(fallback.Endpoint)
 	value, err, _ := qqSearchRefreshFlights.Do(key, func() (any, error) {
-		return refreshQQCredentialForSearchOnce(fallback)
+		return refreshQQCredentialForSearchOnce(ctx, fallback)
 	})
 	if err != nil {
 		return "", err
@@ -430,7 +514,7 @@ func refreshQQCredentialForSearch(fallback *config.QQMusicApiConfig) (string, er
 	return cookie, nil
 }
 
-func refreshQQCredentialForSearchOnce(fallback *config.QQMusicApiConfig) (string, error) {
+func refreshQQCredentialForSearchOnce(ctx context.Context, fallback *config.QQMusicApiConfig) (string, error) {
 	credential, _, err := currentQQMusicCredential(qqMusicCredentialPath, fallback)
 	if err != nil {
 		return "", err
@@ -441,9 +525,9 @@ func refreshQQCredentialForSearchOnce(fallback *config.QQMusicApiConfig) (string
 
 	client := newQQMusicClient(credential)
 	client.httpClient.Timeout = 8 * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	refreshed, err := refreshQQMusicCredential(ctx, client, credential)
+	refreshed, err := refreshQQMusicCredential(refreshCtx, client, credential)
 	if err != nil {
 		return "", err
 	}
@@ -470,23 +554,32 @@ func qqSearchCredentialCookie(runtime, fallback *config.QQMusicApiConfig) string
 
 /* ------------------------ YouTube ------------------------ */
 
+var runYTDLPSearch = func(ctx context.Context, searchQuery string, _ int) ([]byte, error) {
+	cmd := utils.CommandContext(ctx, "yt-dlp",
+		searchQuery,
+		"--flat-playlist",
+		"--print", "%(id)s\n%(title)s\n%(uploader)s\n%(duration)s\n%(webpage_url)s",
+		"--no-warnings", "--quiet",
+	)
+	return cmd.Output()
+}
+
 func searchYouTube(keyword string, limit, offset int) ([]SearchResultItem, error) {
+	return searchYouTubeWithContext(context.Background(), keyword, limit, offset)
+}
+
+func searchYouTubeWithContext(ctx context.Context, keyword string, limit, offset int) ([]SearchResultItem, error) {
 	// yt-dlp 分页不支持 offset，取 limit+offset 条然后本地截断
 	total := limit + offset
 
 	// 传入 yt-dlp 的关键词需要转义，防止注入
 	searchQuery := fmt.Sprintf("ytsearch%d:%s", total, keyword)
 
-	utils.DebugWithFormat("[WebSearch] PATH: %s", utils.ExtendedPATH())
+	if utils.Logger() != nil {
+		utils.DebugWithFormat("[WebSearch] PATH: %s", utils.ExtendedPATH())
+	}
 	// 用换行作分隔符，标题里的竖线不会破坏字段对齐；每条记录以 webpage_url 结尾
-	cmd := utils.Command("yt-dlp",
-		searchQuery,
-		"--flat-playlist",
-		"--print", "%(id)s\n%(title)s\n%(uploader)s\n%(duration)s\n%(webpage_url)s",
-		"--no-warnings",
-		"--quiet",
-	)
-	output, err := cmd.Output()
+	output, err := runYTDLPSearch(ctx, searchQuery, total)
 	if err != nil {
 		return nil, fmt.Errorf("yt-dlp 搜索失败: %w", err)
 	}
@@ -542,14 +635,18 @@ type biliSearchResponse struct {
 }
 
 func searchBilibili(keyword string, limit, offset int) ([]SearchResultItem, error) {
-	page := offset/limit + 1
-	reqURL := fmt.Sprintf("https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=%s&page=%d&page_size=%d",
-		url.QueryEscape(keyword),
-		page,
-		limit,
-	)
+	return searchBilibiliWithContext(context.Background(), keyword, limit, offset)
+}
 
-	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+func searchBilibiliWithContext(ctx context.Context, keyword string, limit, offset int) ([]SearchResultItem, error) {
+	page := offset/limit + 1
+	return requestBilibiliSearch(ctx, &http.Client{Timeout: searchProviderTimeout}, "https://api.bilibili.com", keyword, page, limit)
+}
+
+func requestBilibiliSearch(ctx context.Context, client *http.Client, endpoint, keyword string, page, limit int) ([]SearchResultItem, error) {
+	var searchResp biliSearchResponse
+	reqURL := strings.TrimRight(endpoint, "/") + fmt.Sprintf("/x/web-interface/search/type?search_type=video&keyword=%s&page=%d&page_size=%d", url.QueryEscape(keyword), page, limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -557,21 +654,16 @@ func searchBilibili(keyword string, limit, offset int) ([]SearchResultItem, erro
 	req.Header.Set("Referer", "https://search.bilibili.com/")
 	req.Header.Set("Origin", "https://search.bilibili.com")
 	// B 站搜索 API 需要 buvid3 cookie，否则 412
-	req.Header.Set("Cookie", fmt.Sprintf(
-		"buvid3=%s; b_nut=%d",
-		generateBuvid(),
-		time.Now().Unix(),
-	))
-
-	client := &http.Client{Timeout: 15 * time.Second}
+	req.Header.Set("Cookie", fmt.Sprintf("buvid3=%s; b_nut=%d", generateBuvid(), time.Now().Unix()))
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("B 站搜索请求失败: %w", err)
 	}
 	defer resp.Body.Close()
-
-	var searchResp biliSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("B 站搜索 API HTTP 状态码: %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&searchResp); err != nil {
 		return nil, fmt.Errorf("解析 B 站响应失败: %w", err)
 	}
 	if searchResp.Code != 0 {

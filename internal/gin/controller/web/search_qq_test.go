@@ -83,17 +83,8 @@ func TestSearchQQRefreshesCredentialAndRetriesOnceAfterRiskControl(t *testing.T)
 	}
 }
 
-func TestSearchQQRefreshesCredentialAndRetriesOnceAfterHTTP429(t *testing.T) {
-	credentialPath := useQQMusicCredentialPath(t)
-	if _, err := saveQQMusicCredential(credentialPath, map[string]interface{}{
-		"musicid": "123456", "str_musicid": "123456", "musickey": "old-key",
-		"refresh_key": "old-refresh-key", "refresh_token": "old-refresh-token",
-		"access_token": "old-access-token", "openid": "old-open-id", "unionid": "old-union-id",
-		"expired_at": "2000000000", "login_type": "0",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
+func TestSearchQQDoesNotRefreshCredentialForHTTP429(t *testing.T) {
+	useQQMusicCredentialPath(t)
 	previousConfig := GetWebConfig()
 	previousManager := manager
 	manager = nil
@@ -108,28 +99,11 @@ func TestSearchQQRefreshesCredentialAndRetriesOnceAfterHTTP429(t *testing.T) {
 		switch r.URL.Path {
 		case "/search/search_by_type":
 			searchCalls++
-			cookie := r.Header.Get("Cookie")
-			if searchCalls == 1 {
-				if !strings.Contains(cookie, "musickey=old-key") {
-					t.Errorf("initial request did not use the saved credential: %q", cookie)
-				}
-				w.WriteHeader(http.StatusTooManyRequests)
-				_, _ = w.Write([]byte(`{"code":429,"msg":"too many requests","data":{}}`))
-				return
-			}
-			if searchCalls > 2 {
-				t.Errorf("QQ search retried more than once after 429: %d", searchCalls)
-			}
-			if !strings.Contains(cookie, "musickey=new-key") || !strings.Contains(cookie, "refresh_token=new-refresh-token") {
-				t.Errorf("retry did not use renewed credentials: %q", cookie)
-			}
-			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"song":[{"id":42,"mid":"song-mid","name":"Song","title":"Song","singer":[{"name":"Artist"}],"album":{"name":"Album"},"interval":205,"pay":{"pay_play":0}}]}}`))
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"code":429,"msg":"too many requests","data":{}}`))
 		case "/login/refresh_credential":
 			refreshCalls++
-			if !strings.Contains(r.Header.Get("Cookie"), "refresh_token=old-refresh-token") {
-				t.Errorf("refresh did not use the saved refresh token: %q", r.Header.Get("Cookie"))
-			}
-			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"musicid":123456,"str_musicid":"123456","musickey":"new-key","refresh_key":"new-refresh-key","refresh_token":"new-refresh-token","access_token":"new-access-token","openid":"new-open-id","unionid":"new-union-id","expired_at":2000000000,"login_type":0}}`))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"musicid":123456,"musickey":"unexpected"}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -139,19 +113,12 @@ func TestSearchQQRefreshesCredentialAndRetriesOnceAfterHTTP429(t *testing.T) {
 		Enable: true, Endpoint: api.URL, LoginType: 0,
 	}})
 
-	items, err := searchQQ("rate limited", 10, 0)
-	if err != nil {
-		t.Fatalf("QQ search should renew its credential after HTTP 429: %v", err)
+	_, err := searchQQ("rate limited", 10, 0)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 状态码: 429") {
+		t.Fatalf("HTTP 429 should be returned as an upstream rate limit, got %v", err)
 	}
-	if searchCalls != 2 || refreshCalls != 1 {
-		t.Fatalf("HTTP 429 should trigger exactly one refresh and retry, search=%d refresh=%d", searchCalls, refreshCalls)
-	}
-	if len(items) != 1 || items[0].SongID != "42" {
-		t.Fatalf("unexpected retried QQ search results: %#v", items)
-	}
-	stored, _, err := currentQQMusicCredential(credentialPath, GetWebConfig().QQMusicApiConfig)
-	if err != nil || stored == nil || stored.MusicKey != "new-key" {
-		t.Fatalf("renewed credential was not persisted: credential=%#v err=%v", stored, err)
+	if searchCalls != 1 || refreshCalls != 0 {
+		t.Fatalf("HTTP 429 must not refresh credentials or retry: search=%d refresh=%d", searchCalls, refreshCalls)
 	}
 }
 
@@ -195,12 +162,6 @@ func TestSearchQQDoesNotRefreshForNonRiskErrors(t *testing.T) {
 }
 
 func TestQQRiskControlErrorClassification(t *testing.T) {
-	if !isQQRateLimitError(&qqSearchHTTPError{StatusCode: http.StatusTooManyRequests}) {
-		t.Fatal("HTTP 429 should be classified as rate limited")
-	}
-	if isQQRateLimitError(&qqSearchHTTPError{StatusCode: http.StatusBadGateway}) {
-		t.Fatal("non-429 HTTP errors must not be classified as rate limited")
-	}
 	for _, text := range []string{
 		"QQ Music API 错误: 触发风控, 需登录或者安全验证",
 		"安全校验失败",
