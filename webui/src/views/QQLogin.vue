@@ -38,7 +38,7 @@
       <div class="qr-mark">♫</div>
       <p class="eyebrow">SCAN TO CONNECT</p>
       <h3>{{ overview.status === 'logged_out' ? (overview.account ? '登录凭证已失效' : '尚未登录') : '连接 QQ 音乐' }}</h3>
-      <p class="status-copy">使用 QQ 或微信扫描二维码。登录成功后凭证会安全保存到本地 config.yaml，页面不会展示密钥。</p>
+      <p class="status-copy">使用 QQ 或微信扫描二维码。登录成功后当前凭证会安全保存到本地 musickey.json，页面不会展示密钥；config.yaml 仅用作首次初始化凭证。</p>
       <n-button type="primary" size="large" :loading="starting" @click="startLogin">获取登录二维码</n-button>
     </n-card>
 

@@ -220,7 +220,7 @@ func (qm *QQMusicProcessor) Init(cfg *config.Config) {
 		cfg:            cfg,
 		client:         qm.client,
 		downloadClient: qm.downloadClient,
-		musicKeyPath:   filepath.Join("data", "temp", "musickey.json"),
+		musicKeyPath:   utils.QQMusicCredentialPath,
 	}
 	qm.qmApi = qmApi
 }

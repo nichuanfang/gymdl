@@ -217,81 +217,18 @@ func HandleUpdateConfig(c *gin.Context) {
 	})
 }
 
-// persistQQLoginCredential stores QR credentials locally without returning them to the browser.
+// persistQQLoginCredential stores QR credentials in the runtime cache without
+// writing them into config.yaml or returning them to the browser.
 func persistQQLoginCredential(credential map[string]interface{}) error {
-	musicID := credentialString(credential, "musicid", "musicId")
-	musicKey := credentialString(credential, "musickey", "musicKey")
-	if musicID == "" || musicKey == "" {
-		return errors.New("QQ Music API 未返回完整凭证")
-	}
-	if configFilePath == "" {
-		return errors.New("配置文件路径未初始化")
-	}
-
-	savedConfigMu.Lock()
-	defer savedConfigMu.Unlock()
-	doc := cloneYAMLMap(savedConfig)
-	if doc == nil {
-		return errors.New("无法读取当前配置")
-	}
-	qqConfig, _ := doc["qq_music_api"].(map[string]any)
-	if qqConfig == nil {
-		qqConfig = make(map[string]any)
-		doc["qq_music_api"] = qqConfig
-	}
-	for _, key := range []string{"refresh_key", "refresh_token", "access_token", "music_id", "str_music_id", "open_id", "union_id", "music_key"} {
-		qqConfig[key] = ""
-	}
-	qqConfig["expired_at"] = int64(0)
-	qqConfig["music_id"] = musicID
-	qqConfig["music_key"] = musicKey
-	qqConfig["str_music_id"] = credentialString(credential, "str_musicid", "str_music_id", "strMusicid")
-	qqConfig["open_id"] = credentialString(credential, "openid", "open_id", "openId")
-	qqConfig["union_id"] = credentialString(credential, "unionid", "union_id", "unionId")
-	qqConfig["refresh_key"] = credentialString(credential, "refresh_key", "refreshKey")
-	qqConfig["refresh_token"] = credentialString(credential, "refresh_token", "refreshToken")
-	qqConfig["access_token"] = credentialString(credential, "access_token", "accessToken")
-	if expiredAt, ok := credentialInt(credential, "expired_at", "expiredAt"); ok {
-		qqConfig["expired_at"] = expiredAt
-	}
-	if loginType, ok := credentialInt(credential, "login_type", "loginType"); ok {
-		qqConfig["login_type"] = loginType
-	}
-
-	encoded, err := yaml.Marshal(doc)
+	stored, err := saveQQMusicCredential(qqMusicCredentialPath, credential)
 	if err != nil {
-		return fmt.Errorf("序列化 QQ 凭证失败: %w", err)
+		return err
 	}
-	var persisted config.Config
-	if err := yaml.Unmarshal(encoded, &persisted); err != nil {
-		return fmt.Errorf("验证 QQ 凭证配置失败: %w", err)
+	var base *config.QQMusicApiConfig
+	if active := GetWebConfig(); active != nil {
+		base = active.QQMusicApiConfig
 	}
-	persisted.ConfigFile = configFilePath
-	if err := writeConfigAtomically(configFilePath, encoded); err != nil {
-		return fmt.Errorf("保存 QQ 凭证失败: %w", err)
-	}
-	savedConfig = doc
-
-	active := cloneWebConfig(GetWebConfig())
-	if active.QQMusicApiConfig == nil {
-		active.QQMusicApiConfig = &config.QQMusicApiConfig{}
-	}
-	activeQQ := active.QQMusicApiConfig
-	activeQQ.MusicId = persisted.QQMusicApiConfig.MusicId
-	activeQQ.MusicKey = persisted.QQMusicApiConfig.MusicKey
-	activeQQ.StrMusicId = persisted.QQMusicApiConfig.StrMusicId
-	activeQQ.OpenID = persisted.QQMusicApiConfig.OpenID
-	activeQQ.UnionID = persisted.QQMusicApiConfig.UnionID
-	activeQQ.RefreshKey = persisted.QQMusicApiConfig.RefreshKey
-	activeQQ.RefreshToken = persisted.QQMusicApiConfig.RefreshToken
-	activeQQ.AccessToken = persisted.QQMusicApiConfig.AccessToken
-	activeQQ.ExpiredAt = persisted.QQMusicApiConfig.ExpiredAt
-	activeQQ.LoginType = persisted.QQMusicApiConfig.LoginType
-	replaceWebConfig(active)
-	config.SetLiveRuntimeConfig(active)
-	if manager != nil {
-		manager.SetConfig(active)
-	}
+	applyQQMusicCredentialToRuntime(stored.toConfig(base))
 	return nil
 }
 

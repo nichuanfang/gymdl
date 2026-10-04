@@ -189,18 +189,28 @@ func buildQuery(params map[string]string) string {
 	return strings.Join(parts, "&")
 }
 
-// HandleQQLoginStatusOverview reports whether QQMusicApi has a valid stored credential.
+// HandleQQLoginStatusOverview reports whether the runtime QQ credential is valid.
 func HandleQQLoginStatusOverview(c *gin.Context) {
 	cfg := GetWebConfig()
 	if cfg == nil || cfg.QQMusicApiConfig == nil || !cfg.QQMusicApiConfig.Enable || cfg.QQMusicApiConfig.Endpoint == "" {
 		response.Success(c, gin.H{"enabled": false, "status": "disabled"})
 		return
 	}
-	client := newQQMusicClient(cfg.QQMusicApiConfig)
+	credential, source, err := currentQQMusicCredential(qqMusicCredentialPath, cfg.QQMusicApiConfig)
+	if err != nil {
+		response.Success(c, gin.H{"enabled": true, "status": "unknown", "message": "无法读取本地 QQ 登录凭证"})
+		return
+	}
+	if credential == nil {
+		response.Success(c, gin.H{"enabled": true, "status": "logged_out"})
+		return
+	}
+	applyQQMusicCredentialToRuntime(credential)
+	client := newQQMusicClient(credential)
 	client.httpClient.Timeout = 6 * time.Second
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
 	defer cancel()
-	result, err := client.getEnvelopeWithContext(ctx, "/login/check_expired", nil, qqMusicCredentialCookie(cfg.QQMusicApiConfig))
+	result, err := client.getEnvelopeWithContext(ctx, "/login/check_expired", nil, qqMusicCredentialCookie(credential))
 	if err != nil {
 		response.Success(c, gin.H{"enabled": true, "status": "unknown", "message": "无法查询 QQ 登录状态"})
 		return
@@ -210,24 +220,26 @@ func HandleQQLoginStatusOverview(c *gin.Context) {
 		response.Success(c, gin.H{"enabled": true, "status": "unknown", "message": "QQMusicApi 未返回可识别的凭证状态"})
 		return
 	}
-	account := maskQQAccount(cfg.QQMusicApiConfig.MusicId)
-	if expired {
-		// QQ 音乐的 musickey 通常只有效一小时。不能仅凭 check_expired
-		// 就要求用户重新扫码：refresh_token/refresh_key 仍有效时应先静默续期。
-		if qqCredentialConfigured(cfg.QQMusicApiConfig) {
-			refreshed, refreshErr := refreshQQMusicCredential(ctx, client, cfg.QQMusicApiConfig)
-			if refreshErr == nil {
-				if refreshedAccount := credentialString(refreshed, "musicid", "music_id"); refreshedAccount != "" {
-					account = maskQQAccount(refreshedAccount)
-				}
-				if err := persistQQLoginCredential(refreshed); err == nil {
-					response.Success(c, gin.H{
-						"enabled": true, "status": "logged_in", "account": account, "refreshed": true,
-					})
-					return
-				}
+	account := maskQQAccount(credential.MusicId)
+	// config.yaml is an initialization source only. Seed musickey.json from it
+	// once, and write all later refreshes back to the runtime cache.
+	if expired || source == "config.yaml" {
+		refreshed, refreshErr := refreshQQMusicCredential(ctx, client, credential)
+		if refreshErr == nil {
+			if saveErr := persistQQLoginCredential(refreshed); saveErr == nil {
+				response.Success(c, gin.H{
+					"enabled":   true,
+					"status":    "logged_in",
+					"account":   maskQQAccount(credentialString(refreshed, "str_musicid", "str_music_id", "musicid", "music_id")),
+					"refreshed": true,
+				})
+				return
 			}
+			response.Success(c, gin.H{"enabled": true, "status": "unknown", "account": account, "message": "QQ 登录凭证已续期，但无法保存本地凭证缓存"})
+			return
 		}
+	}
+	if expired {
 		response.Success(c, gin.H{
 			"enabled": true,
 			"status":  "logged_out",

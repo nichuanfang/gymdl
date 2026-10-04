@@ -1,12 +1,13 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,8 +17,10 @@ import (
 	ncmapi "github.com/XiaoMengXinX/Music163Api-Go/api"
 	ncmutils "github.com/XiaoMengXinX/Music163Api-Go/utils"
 	"github.com/gin-gonic/gin"
+	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/internal/gin/response"
 	"github.com/nichuanfang/gymdl/utils"
+	"golang.org/x/sync/singleflight"
 )
 
 // SearchResultItem 统一的搜索结果条目
@@ -36,7 +39,7 @@ type SearchResultItem struct {
 // SearchPlatformErrors 各平台的错误信息
 type SearchPlatformErrors map[string]string
 
-// HandleSearch GET /api/web/search?keyword=xxx&platform=netease,qq,youtube,bilibili&offset=0&limit=20
+// HandleSearch GET /api/web/search?keyword=xxx&platform=netease,qq,youtube,bilibili&offset=0&limit=10
 func HandleSearch(c *gin.Context) {
 	keyword := strings.TrimSpace(c.Query("keyword"))
 	if keyword == "" {
@@ -48,57 +51,123 @@ func HandleSearch(c *gin.Context) {
 		return
 	}
 
-	platformStr := c.DefaultQuery("platform", "netease")
-	platforms := parsePlatforms(platformStr)
+	platforms := parsePlatforms(c.DefaultQuery("platform", "netease"))
 	if len(platforms) == 0 {
 		response.Fail(c, http.StatusBadRequest, "无效的平台参数")
 		return
 	}
-
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	if limit <= 0 || limit > 50 {
-		limit = 20
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	if err != nil || limit <= 0 || limit > 100 {
+		response.Fail(c, http.StatusBadRequest, "每页数量必须在 1 到 100 之间")
+		return
 	}
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	if offset < 0 {
-		offset = 0
+	offset, err := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if err != nil || offset < 0 || offset > 2000 {
+		response.Fail(c, http.StatusBadRequest, "分页位置超出范围")
+		return
 	}
 
-	var (
-		mu      sync.Mutex
-		wg      sync.WaitGroup
-		items   = make([]SearchResultItem, 0)
-		errs    = make(SearchPlatformErrors)
-		hasMore bool
-	)
-
-	for _, p := range platforms {
-		wg.Add(1)
-		go func(platform string) {
-			defer wg.Done()
-			platformItems, err := searchPlatform(platform, keyword, limit, offset)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				errs[platform] = err.Error()
-				utils.WarnWithFormat("[WebSearch] 平台 %s 搜索失败: %v", platform, err)
-				return
-			}
-			items = append(items, platformItems...)
-			if len(platformItems) >= limit {
-				hasMore = true
-			}
-		}(p)
+	items, total, hasMore, errs := combinedSearchPage(platforms, keyword, offset, limit, searchPlatform)
+	for platform, searchErr := range errs {
+		utils.WarnWithFormat("[WebSearch] 平台 %s 搜索失败: %v", platform, searchErr)
 	}
-	wg.Wait()
-
 	response.Success(c, gin.H{
 		"items":    items,
-		"total":    len(items),
+		"total":    total,
 		"has_more": hasMore,
 		"errors":   errs,
 		"keyword":  keyword,
 	})
+}
+
+// combinedSearchPage fetches stable platform prefixes, interleaves them in the
+// selected-platform order, then applies a single global offset/limit.
+func combinedSearchPage(platforms []string, keyword string, offset, limit int, search func(string, string, int, int) ([]SearchResultItem, error)) ([]SearchResultItem, int, bool, SearchPlatformErrors) {
+	target := offset + limit + 1 // one look-ahead item determines has_more
+	perPlatform := make([][]SearchResultItem, len(platforms))
+	errs := make(SearchPlatformErrors)
+	platformErrors := make([]error, len(platforms))
+	var wg sync.WaitGroup
+	for i, platform := range platforms {
+		wg.Add(1)
+		go func(index int, p string) {
+			defer wg.Done()
+			items, err := searchPrefix(p, keyword, target, search)
+			if err != nil {
+				platformErrors[index] = err
+				return
+			}
+			perPlatform[index] = items
+		}(i, platform)
+	}
+	wg.Wait()
+	for i, err := range platformErrors {
+		if err != nil {
+			errs[platforms[i]] = err.Error()
+		}
+	}
+
+	merged := interleaveSearchResults(perPlatform)
+	if offset >= len(merged) {
+		return []SearchResultItem{}, len(merged), false, errs
+	}
+	end := offset + limit
+	if end > len(merged) {
+		end = len(merged)
+	}
+	page := append([]SearchResultItem(nil), merged[offset:end]...)
+	return page, len(page), len(merged) > offset+limit, errs
+}
+
+func searchPrefix(platform, keyword string, target int, search func(string, string, int, int) ([]SearchResultItem, error)) ([]SearchResultItem, error) {
+	if target <= 0 {
+		return nil, nil
+	}
+	const maxPageSize = 50
+	items := make([]SearchResultItem, 0, target)
+	for offset := 0; offset < target; {
+		pageSize := target
+		if target > maxPageSize {
+			pageSize = maxPageSize
+		}
+		batch, err := search(platform, keyword, pageSize, offset)
+		if err != nil {
+			return nil, err
+		}
+		if len(batch) == 0 {
+			break
+		}
+		remaining := target - len(items)
+		if len(batch) > remaining {
+			batch = batch[:remaining]
+		}
+		items = append(items, batch...)
+		offset += pageSize
+		if len(batch) < pageSize {
+			break
+		}
+	}
+	return items, nil
+}
+
+func interleaveSearchResults(platforms [][]SearchResultItem) []SearchResultItem {
+	total := 0
+	maxItems := 0
+	for _, items := range platforms {
+		total += len(items)
+		if len(items) > maxItems {
+			maxItems = len(items)
+		}
+	}
+	merged := make([]SearchResultItem, 0, total)
+	for i := 0; i < maxItems; i++ {
+		for _, items := range platforms {
+			if i < len(items) {
+				merged = append(merged, items[i])
+			}
+		}
+	}
+	return merged
 }
 
 // parsePlatforms 解析平台参数
@@ -210,50 +279,40 @@ type qqSearchResponse struct {
 	} `json:"data"`
 }
 
+var qqSearchRefreshFlights singleflight.Group
+
 func searchQQ(keyword string, limit, offset int) ([]SearchResultItem, error) {
 	cfg := GetWebConfig()
 	if cfg == nil || cfg.QQMusicApiConfig == nil || !cfg.QQMusicApiConfig.Enable {
 		return nil, fmt.Errorf("QQ Music API 未启用")
 	}
-	if cfg.QQMusicApiConfig.Endpoint == "" {
+	if strings.TrimSpace(cfg.QQMusicApiConfig.Endpoint) == "" {
 		return nil, fmt.Errorf("QQ Music API endpoint 未配置")
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("QQ 音乐搜索分页参数无效")
 	}
 
 	page := offset/limit + 1
-	reqURL := fmt.Sprintf("%s/search/search_by_type?keyword=%s&search_type=0&num=%d&page=%d",
-		strings.TrimSuffix(cfg.QQMusicApiConfig.Endpoint, "/"),
-		url.QueryEscape(keyword),
-		limit,
-		page,
-	)
-
-	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	credential, _, credentialErr := currentQQMusicCredential(qqMusicCredentialPath, cfg.QQMusicApiConfig)
+	if credentialErr != nil && utils.Logger() != nil {
+		utils.WarnWithFormat("[WebSearch] 读取 QQ 登录凭证失败，将先尝试无凭证搜索: %v", credentialErr)
+	}
+	cookie := qqSearchCredentialCookie(credential, cfg.QQMusicApiConfig)
+	client := &http.Client{Timeout: 15 * time.Second}
+	searchResp, err := requestQQSearch(client, cfg.QQMusicApiConfig.Endpoint, keyword, limit, page, cookie)
+	if refreshReason := qqCredentialRefreshReason(err); refreshReason != "" {
+		if utils.Logger() != nil {
+			utils.WarnWithFormat("[WebSearch] QQ 搜索遇到%s，尝试刷新凭证并重试一次", refreshReason)
+		}
+		refreshedCookie, refreshErr := refreshQQCredentialForSearch(cfg.QQMusicApiConfig)
+		if refreshErr != nil {
+			return nil, fmt.Errorf("%w；自动刷新 QQ 凭证失败: %v", err, refreshErr)
+		}
+		searchResp, err = requestQQSearch(client, cfg.QQMusicApiConfig.Endpoint, keyword, limit, page, refreshedCookie)
+	}
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Referer", "https://y.qq.com/")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-	// qm-api 有风控，带上本地 musickey（如果存在）
-	if cookie := qqMusicAuthCookie(); cookie != "" {
-		req.Header.Set("Cookie", cookie)
-		utils.DebugWithFormat("[WebSearch] QQ Cookie 已加载: %d 字节", len(cookie))
-	} else {
-		utils.WarnWithFormat("[WebSearch] QQ musickey.json 不存在或为空")
-	}
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("QQ Music API 请求失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	var searchResp qqSearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
-		return nil, fmt.Errorf("解析 QQ Music 响应失败: %w", err)
-	}
-	if searchResp.Code != 0 {
-		return nil, fmt.Errorf("QQ Music API 错误: %s", searchResp.Msg)
 	}
 
 	items := make([]SearchResultItem, 0, len(searchResp.Data.Song))
@@ -281,24 +340,132 @@ func searchQQ(keyword string, limit, offset int) ([]SearchResultItem, error) {
 	return items, nil
 }
 
-// qqMusicAuthCookie prefers the refreshed local key cache, then falls back to
-// the credential safely stored by the WebUI QR login flow.
-func qqMusicAuthCookie() string {
-	keyPath := filepath.Join("data", "temp", "musickey.json")
-	if data, err := os.ReadFile(keyPath); err == nil {
-		var keyData struct {
-			MusicID  int    `json:"musicid"`
-			MusicKey string `json:"musickey"`
-		}
-		if json.Unmarshal(data, &keyData) == nil && keyData.MusicID > 0 && keyData.MusicKey != "" {
-			return fmt.Sprintf("musicid=%d;musickey=%s", keyData.MusicID, keyData.MusicKey)
-		}
+func requestQQSearch(client *http.Client, endpoint, keyword string, limit, page int, cookie string) (qqSearchResponse, error) {
+	query := url.Values{}
+	query.Set("keyword", keyword)
+	query.Set("search_type", "0")
+	query.Set("num", strconv.Itoa(limit))
+	query.Set("page", strconv.Itoa(page))
+	reqURL := strings.TrimSuffix(endpoint, "/") + "/search/search_by_type?" + query.Encode()
+	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
+	if err != nil {
+		return qqSearchResponse{}, err
 	}
-	cfg := GetWebConfig()
-	if cfg != nil {
-		return qqMusicCredentialCookie(cfg.QQMusicApiConfig)
+	req.Header.Set("Referer", "https://y.qq.com/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return qqSearchResponse{}, fmt.Errorf("QQ Music API 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return qqSearchResponse{}, &qqSearchHTTPError{StatusCode: resp.StatusCode}
+	}
+
+	var searchResp qqSearchResponse
+	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+		return qqSearchResponse{}, fmt.Errorf("解析 QQ Music 响应失败: %w", err)
+	}
+	if searchResp.Code != 0 {
+		return searchResp, fmt.Errorf("QQ Music API 错误: %s", searchResp.Msg)
+	}
+	return searchResp, nil
+}
+
+type qqSearchHTTPError struct {
+	StatusCode int
+}
+
+func (e *qqSearchHTTPError) Error() string {
+	return fmt.Sprintf("QQ Music API HTTP 状态码: %d", e.StatusCode)
+}
+
+func isQQRateLimitError(err error) bool {
+	var statusErr *qqSearchHTTPError
+	return errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusTooManyRequests
+}
+
+func qqCredentialRefreshReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	if isQQRiskControlError(err.Error()) {
+		return "风控"
+	}
+	if isQQRateLimitError(err) {
+		return "HTTP 429 限流"
 	}
 	return ""
+}
+
+func isQQRiskControlError(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	for _, marker := range []string{"触发风控", "风控", "安全验证", "安全校验", "验证码", "captcha", "risk control", "security verification"} {
+		if strings.Contains(message, strings.ToLower(marker)) {
+			return true
+		}
+	}
+	return false
+}
+
+func refreshQQCredentialForSearch(fallback *config.QQMusicApiConfig) (string, error) {
+	if fallback == nil {
+		return "", fmt.Errorf("QQ Music API 配置不可用")
+	}
+	key := strings.TrimSpace(fallback.Endpoint)
+	value, err, _ := qqSearchRefreshFlights.Do(key, func() (any, error) {
+		return refreshQQCredentialForSearchOnce(fallback)
+	})
+	if err != nil {
+		return "", err
+	}
+	cookie, ok := value.(string)
+	if !ok || cookie == "" {
+		return "", fmt.Errorf("QQ 凭证刷新未返回有效凭证")
+	}
+	return cookie, nil
+}
+
+func refreshQQCredentialForSearchOnce(fallback *config.QQMusicApiConfig) (string, error) {
+	credential, _, err := currentQQMusicCredential(qqMusicCredentialPath, fallback)
+	if err != nil {
+		return "", err
+	}
+	if credential == nil || !qqCredentialConfigured(credential) {
+		return "", fmt.Errorf("没有可刷新的 QQ 登录凭证")
+	}
+
+	client := newQQMusicClient(credential)
+	client.httpClient.Timeout = 8 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	refreshed, err := refreshQQMusicCredential(ctx, client, credential)
+	if err != nil {
+		return "", err
+	}
+	if err := persistQQLoginCredential(refreshed); err != nil {
+		return "", err
+	}
+	updated, _, err := currentQQMusicCredential(qqMusicCredentialPath, fallback)
+	if err != nil {
+		return "", err
+	}
+	if updated == nil || !qqCredentialConfigured(updated) {
+		return "", fmt.Errorf("刷新后未找到有效的 QQ 登录凭证")
+	}
+	return qqMusicCredentialCookie(updated), nil
+}
+
+// qqSearchCredentialCookie uses the complete runtime credential when available.
+func qqSearchCredentialCookie(runtime, fallback *config.QQMusicApiConfig) string {
+	if runtime != nil && qqCredentialConfigured(runtime) {
+		return qqMusicCredentialCookie(runtime)
+	}
+	return qqMusicCredentialCookie(fallback)
 }
 
 /* ------------------------ YouTube ------------------------ */
@@ -306,9 +473,6 @@ func qqMusicAuthCookie() string {
 func searchYouTube(keyword string, limit, offset int) ([]SearchResultItem, error) {
 	// yt-dlp 分页不支持 offset，取 limit+offset 条然后本地截断
 	total := limit + offset
-	if total > 50 {
-		total = 50
-	}
 
 	// 传入 yt-dlp 的关键词需要转义，防止注入
 	searchQuery := fmt.Sprintf("ytsearch%d:%s", total, keyword)
