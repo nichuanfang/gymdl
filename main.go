@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
@@ -18,6 +19,7 @@ import (
 	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/internal/bot"
 	"github.com/nichuanfang/gymdl/internal/cron"
+	"github.com/nichuanfang/gymdl/internal/gin/middleware"
 	"github.com/nichuanfang/gymdl/internal/gin/router"
 	"github.com/nichuanfang/gymdl/internal/monitor"
 	"github.com/nichuanfang/gymdl/utils"
@@ -246,8 +248,23 @@ func main() {
 
 	printBanner()
 
+	// 绝对配置路径时以配置文件目录作为工作目录，保证相对数据目录一致。
+	if filepath.IsAbs(configFile) {
+		if cwd := filepath.Dir(configFile); cwd != "" {
+			_ = os.Chdir(cwd)
+		}
+	}
+
 	// 加载配置文件
 	c := config.LoadConfig(configFile)
+	c.ConfigFile = configFile
+	config.SetLiveRuntimeConfig(c)
+	if c.WebConfig != nil && c.WebConfig.Enable {
+		if err := middleware.ValidateWebAuthSettings(c.WebConfig.Auth); err != nil {
+			fmt.Println("WebUI 认证配置错误:", err)
+			return
+		}
+	}
 
 	// 初始化日志模块
 	if err := utils.InitLogger(c.Log); err != nil {

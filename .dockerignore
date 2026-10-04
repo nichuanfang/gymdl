@@ -1,0 +1,12 @@
+.git
+.github
+.playwright-cli
+**/node_modules
+webui/dist
+web/dist
+release
+data
+config.yaml
+config.yaml.bak
+config.json
+*.log

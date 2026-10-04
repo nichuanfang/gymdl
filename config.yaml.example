@@ -8,6 +8,10 @@ web_config:
   https: false  # 是否开启 HTTPS
   app_port: 8080  # web 服务监听端口
   gin_mode: "debug"  # Gin 运行模式: 可选 [debug, release, test]
+  auth:  # WebUI 管理登录；配置中的密码为明文，请限制 config.yaml 文件权限
+    enable: false  # 是否启用 WebUI 登录门禁
+    username: ""  # 管理员用户名
+    password: ""  # 管理员密码；也可使用 GYMDL_WEBUI_PASSWORD 环境变量覆盖
 
 # CookieCloud 配置
 cookie_cloud:
@@ -49,6 +53,13 @@ telegram:
   webhook_url: ""  # Webhook 地址 (mode=2 时必填)
   webhook_port: 9000  # Webhook 模式下监听端口
 
+# lrcapi 配置
+lrc_api:
+  enable: false  # 是否启用lrcapi歌词服务
+  lrc_api_url: "" # lrcapi服务url
+  api_key: "" # 认证key
+  lrc_api_host: "" # lrcapi服务主机名 需要容器名+frp访问才需要设置
+
 # AI 配置
 ai:
   enable: false  # 是否启用 AI 功能
@@ -56,13 +67,6 @@ ai:
   model: ""  # 使用的 AI 模型名称
   api_key: ""  # AI 服务的 API Key
   system_prompt: ""  # 默认系统提示词
-
-# lrcapi 配置
-lrc_api:
-  enable: false  # 是否启用lrcapi歌词服务
-  lrc_api_url: "" # lrcapi服务url
-  api_key: "" # 认证key
-  lrc_api_host: "" # lrcapi服务主机名 需要容器名+frp访问才需要设置
 
 # N8N配置  
 n8n_config:
@@ -102,11 +106,7 @@ additional_config:
   enable_monitor: false  # 是否启用目录监听 开启后监听下载目录使用um cli自动解密
   monitor_dirs:
     - ""  # 监听的目录,下载器监控
-
-# yt-dlp下载配置
-ytdlp:
-  pass_cookies: false #是否传递cookie  目前yt-dlp对传递cookie的支持不稳定 推荐设置为false
-  youtube_music_mode: false #是否将youtube视频链接当作YoutubeMusic来处理 根据个人喜欢设置 
+  music_mode: false  # 是否启用音乐模式 视频平台链接优先转为音频
 
 # 代理配置
 proxy:

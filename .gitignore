@@ -45,3 +45,13 @@ storage/*
 !docker-compose-local.yml
 
 .cache/
+# WebUI 构建产物
+web/dist/
+data/web_state/
+webui/node_modules/
+webui/dist/
+
+# Playwright CLI 临时文件
+.playwright-cli/
+# Runtime configuration backups may contain credentials.
+config.yaml.bak

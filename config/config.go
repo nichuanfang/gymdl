@@ -105,6 +105,7 @@ func (c *Config) setDefaults() {
             Https:     false,
             AppPort:   8080,
             GinMode:   "debug",
+            Auth:      WebAuthConfig{},
         }
     }
     if c.CookieCloud == nil {

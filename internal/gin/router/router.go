@@ -3,6 +3,7 @@ package router
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/nichuanfang/gymdl/config"
+	webstatic "github.com/nichuanfang/gymdl/web"
 	"github.com/nichuanfang/gymdl/internal/gin/middleware"
 	"github.com/nichuanfang/gymdl/utils"
 	"go.uber.org/zap"
@@ -32,5 +33,9 @@ func SetupRouter(c *config.Config) *gin.Engine {
 	RegisterTextRoutes(apiGroup)
 	// 注册指令处理器路由
 	RegisterCommandRoutes(apiGroup)
+	// 注册 WebUI 路由
+	SetupWebRoutes(apiGroup, c)
+	// 注册前端静态资源
+	webstatic.RegisterStaticRoutes(engine)
 	return engine
 }

@@ -4,7 +4,7 @@ package response
 
 import (
 	"net/http"
-	
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -27,7 +27,10 @@ func Success(c *gin.Context, data any) {
 
 // Fail 返回错误响应
 func Fail(c *gin.Context, code int, msg string, errs ...string) {
-	c.JSON(http.StatusOK, Response{
+	if code < 400 || code > 599 {
+		code = http.StatusBadRequest
+	}
+	c.JSON(code, Response{
 		Code:    code,
 		Message: msg,
 		Errors:  errs,

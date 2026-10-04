@@ -10,6 +10,7 @@ import (
 	"github.com/nichuanfang/gymdl/internal/bot/dispatch"
 	"github.com/nichuanfang/gymdl/utils"
 
+	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core/linkparser"
 	"github.com/nichuanfang/gymdl/processor/music"
 	"github.com/nichuanfang/gymdl/processor/video"
@@ -25,9 +26,10 @@ func (app *BotApp) HandleText(c tb.Context) error {
 	// 初始提示
 	msg, _ := b.Send(user, "🔍 正在识别链接...")
 
-	// 解析链接link:有效链接 linkType:链接类型
-	linkparser.InitLinkParser(app.cfg)
-	link, executor := linkparser.ParseLink(text)
+	// Use a per-message config snapshot so safe WebUI hot-reload fields apply only
+	// to new tasks and never change a task while it is running.
+	taskConfig := config.WithLiveTaskOverrides(app.cfg)
+	link, executor := linkparser.ParseLinkWithConfig(taskConfig, text)
 	if link == "" {
 		_, _ = b.Edit(msg, "❌ 暂不支持该类型的链接")
 		return nil
@@ -43,17 +45,17 @@ func (app *BotApp) HandleText(c tb.Context) error {
 		Msg:     msg,
 		Link:    link,
 		Start:   time.Now(),
-		Cfg:     app.cfg,
+		Cfg:     taskConfig,
 	}
 	var err error
 	switch expr := executor.(type) {
 	case music.Processor:
 		// 初始化音乐处理器
-		expr.Init(app.cfg)
+		expr.Init(taskConfig)
 		err = session.HandleMusic(expr)
 	case video.Processor:
 		// 初始化视频处理器
-		expr.Init(app.cfg)
+		expr.Init(taskConfig)
 		err = session.HandleVideo(expr)
 	default:
 		err = errors.New(fmt.Sprintf("未知处理器类型: %v", expr))
@@ -81,6 +83,8 @@ func (app *BotApp) HandleAudio(c tb.Context) error {
 	// 初始提示
 	msg, _ := b.Send(user, "🎧 正在处理音频...")
 
+	// New Telegram audio tasks also capture the currently active safe overrides.
+	taskConfig := config.WithLiveTaskOverrides(app.cfg)
 	// 创建会话对象
 	session := &dispatch.Session{
 		Text:    text,
@@ -89,11 +93,11 @@ func (app *BotApp) HandleAudio(c tb.Context) error {
 		Bot:     b,
 		Msg:     msg,
 		Start:   time.Now(),
-		Cfg:     app.cfg,
+		Cfg:     taskConfig,
 	}
 
 	processor := &music.ForwardProcessor{}
-	processor.Init(app.cfg)
+	processor.Init(taskConfig)
 
 	// 获取文件流 最大支持20MB
 	closer, err := b.File(file)

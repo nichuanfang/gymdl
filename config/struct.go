@@ -1,6 +1,7 @@
 package config
 
 type Config struct {
+	ConfigFile      string             `yaml:"-"`             // 配置文件路径（非 YAML 字段）
 	WebConfig        *WebConfig         `yaml:"web_config"`   // web配置
 	CookieCloud      *CookieCloudConfig `yaml:"cookie_cloud"` // cookiecloud配置
 	Tidy             *TidyConfig        `yaml:"tidy"`         // 资源整理配置
@@ -16,11 +17,18 @@ type Config struct {
 }
 
 type WebConfig struct {
-	Enable    bool   `yaml:"enable"`     // 是否启用该服务
-	AppDomain string `yaml:"app_domain"` // web服务domain
-	Https     bool   `yaml:"https"`      // 是否开启了 https
-	AppPort   int    `yaml:"app_port"`   // web服务监听端口
-	GinMode   string `yaml:"gin_mode"`   // Gin的运行模式: 可选项[debug release test]
+	Enable    bool          `yaml:"enable"`     // 是否启用该服务
+	AppDomain string        `yaml:"app_domain"` // web服务domain
+	Https     bool          `yaml:"https"`      // 是否开启了 https
+	AppPort   int           `yaml:"app_port"`   // web服务监听端口
+	GinMode   string        `yaml:"gin_mode"`   // Gin的运行模式: 可选项[debug release test]
+	Auth      WebAuthConfig `yaml:"auth"`       // WebUI 管理登录配置
+}
+
+type WebAuthConfig struct {
+	Enable   bool   `yaml:"enable"`   // 是否启用 WebUI 管理登录
+	Username string `yaml:"username"` // WebUI 管理员用户名
+	Password string `yaml:"password"` // WebUI 管理员密码（配置文件中为明文，建议限制文件权限）
 }
 
 type CookieCloudConfig struct {

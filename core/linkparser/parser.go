@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/nichuanfang/gymdl/config"
@@ -32,6 +33,8 @@ var genericURLRegex = regexp.MustCompile(`https?://[^\s<>"'()]*[\w/#?=&-]`)
 
 // 配置
 var cfg *config.Config
+var parserMu sync.Mutex
+var matcherInitialized bool
 
 // 全局转换表 MusicMode会用到
 var musicModeMappers = map[reflect.Type]func() processor.Processor{
@@ -48,19 +51,43 @@ var musicModeMappers = map[reflect.Type]func() processor.Processor{
 
 // 初始化
 func InitLinkParser(c *config.Config) {
+	parserMu.Lock()
+	defer parserMu.Unlock()
+	initLinkParserLocked(c)
+}
+
+func initLinkParserLocked(c *config.Config) {
 	cfg = c
+	if matcherInitialized {
+		return
+	}
 	for i := range linkTypeMatchers {
 		l := &linkTypeMatchers[i]
 		for _, d := range l.domains {
 			matcherMap[d] = l
 		}
 	}
+	matcherInitialized = true
 }
 
 /* ---------------------- 核心方法 ---------------------- */
 
 // ⚡ ParseLink 解析链接
 func ParseLink(text string) (string, processor.Processor) {
+	parserMu.Lock()
+	defer parserMu.Unlock()
+	return parseLinkLocked(text)
+}
+
+// ParseLinkWithConfig parses one URL against an immutable config snapshot.
+func ParseLinkWithConfig(c *config.Config, text string) (string, processor.Processor) {
+	parserMu.Lock()
+	defer parserMu.Unlock()
+	initLinkParserLocked(c)
+	return parseLinkLocked(text)
+}
+
+func parseLinkLocked(text string) (string, processor.Processor) {
 	raw := genericURLRegex.FindString(text)
 	if raw == "" {
 		return "", nil

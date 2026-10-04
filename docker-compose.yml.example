@@ -1,14 +1,16 @@
-version: '3'
 services:
   gymdl:
+    platform: linux/amd64
     image: ghcr.io/nichuanfang/gymdl:latest
     container_name: gymdl
     environment:
       - PUID=1000
       - PGID=1000
+      # Allows Settings to request a graceful container restart; keep restart policy enabled below.
+      - GYMDL_WEBUI_RESTART_ENABLED=true
     volumes:
      #必须挂载配置文件否则项目无法启动
-      - ./config.json:/app/config.json
+      - ./config.yaml:/app/config.yaml
       # 数据目录  目录结构和项目的data结构一致
       - ./data/bin:/app/data/bin
       - ./data/dist:/app/data/dist

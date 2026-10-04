@@ -81,7 +81,7 @@ func CheckHealth(opt HealthCheckOption) HealthCheckResult {
         }
         req.Header.Set(k, v)
     }
-    client = sharedHTTPClient
+    client := sharedHTTPClient
     
     if opt.Timeout > 0 {
         // 单独超时时间时，复用Transport但创建独立Client实例（避免修改共享Client）

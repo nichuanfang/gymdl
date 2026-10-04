@@ -115,7 +115,7 @@ func InitLogger(cfg *config.LogConfig) error {
 	}
 
 	core := zapcore.NewTee(cores...)
-	loggerInstance = zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1))
+	loggerInstance = zap.New(core, zap.AddCaller(), zap.AddCallerSkip(1), zap.Hooks(broadcastHook))
 	sugaredLoggerInstance = loggerInstance.Sugar()
 
 	return nil

@@ -200,7 +200,8 @@ func (wm *WatchManager) StartWorkerPool(workerCount int) {
 				if event.Op&(fsnotify.Create|fsnotify.Write) != 0 && !info.IsDir() {
 					if isFileStable(event.Name, 1*time.Second, 2) {
 						utils.DebugWithFormat("[Monitor] Worker %d: Music file ready: %s", id, event.Name)
-						songInfo, eventErr := HandleEvent(event.Name, wm.cfg)
+						taskConfig := config.WithLiveTaskOverrides(wm.cfg)
+						songInfo, eventErr := HandleEvent(event.Name, taskConfig)
 						if eventErr != nil {
 							continue
 						}
