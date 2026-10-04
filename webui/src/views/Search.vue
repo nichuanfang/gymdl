@@ -1,8 +1,6 @@
 <template>
   <section class="search-page">
-    <header class="page-heading">
-      <n-h2>搜索</n-h2>
-    </header>
+    <PageHeading eyebrow="MUSIC / DISCOVERY" title="搜索" />
 
     <n-space vertical :size="8" :wrap-item="false">
       <div class="search-toolbar">
@@ -11,20 +9,33 @@
             v-model:value="keyword"
             placeholder="输入歌曲 / 歌手 / 视频关键词"
             size="large"
+            :disabled="searching"
             @focus="selectKeyword"
             @keyup.enter="startSearch"
           />
           <n-button type="primary" size="large" :loading="loadingAction === 'search'" :disabled="searching" @click="startSearch">搜索</n-button>
         </n-input-group>
         <n-checkbox-group v-model:value="selectedPlatforms" class="platform-selectors">
-          <n-checkbox value="netease" label="网易云" />
-          <n-checkbox value="qq" label="QQ 音乐" :disabled="!qqEnabled" />
-          <n-checkbox value="youtube" label="YouTube" />
-          <n-checkbox value="bilibili" label="B 站" />
+          <n-checkbox value="netease" label="网易云" :disabled="searching" />
+          <n-checkbox value="qq" label="QQ 音乐" :disabled="searching || !qqEnabled" />
+          <n-checkbox value="youtube" label="YouTube" :disabled="searching" />
+          <n-checkbox value="bilibili" label="B 站" :disabled="searching" />
         </n-checkbox-group>
         <div class="platform-actions">
           <n-button quaternary size="small" :disabled="searching" @click="togglePlatforms">{{ allPlatformsSelected ? '反选' : '全选' }}</n-button>
         </div>
+      </div>
+
+      <div v-if="searching && searchPlatforms.length" class="search-progress" aria-live="polite">
+        <span class="progress-label">平台状态</span>
+        <n-tag
+          v-for="platform in searchPlatforms"
+          :key="platform"
+          size="small"
+          :type="progressTagType(platformProgress[platform]?.status)"
+        >
+          {{ platformLabel(platform) }} · {{ progressLabel(platformProgress[platform]) }}
+        </n-tag>
       </div>
 
       <n-alert v-if="activeErrors.length" type="warning" :show-icon="false">
@@ -81,7 +92,14 @@
       <div v-if="searchHistory.length" class="history-strip">
         <span class="history-label">最近搜索</span>
         <div class="history-items">
-          <n-tag v-for="item in searchHistory" :key="item" size="small" class="history-tag" @click="keyword = item; startSearch()">{{ item }}</n-tag>
+          <button
+            v-for="item in searchHistory"
+            :key="item"
+            type="button"
+            class="history-tag"
+            :disabled="searching"
+            @click="keyword = item; startSearch()"
+          >{{ item }}</button>
         </div>
         <n-button quaternary size="tiny" class="history-clear" @click="clearHistory">清空</n-button>
       </div>
@@ -90,13 +108,16 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, h } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, h } from 'vue'
 import {
-  NH2, NInputGroup, NInput, NButton, NSpace, NTag, NDataTable, NAlert,
+  NInputGroup, NInput, NButton, NSpace, NTag, NDataTable, NAlert,
   NEmpty, NCheckbox, NCheckboxGroup, NTooltip, NSelect, useMessage,
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { get } from '../api/http'
+import { streamSearch } from '../api/search'
+import type { SearchCompleteEvent, SearchPlatformEvent } from '../api/search'
+import PageHeading from '../components/PageHeading.vue'
 import { watchTaskCompletion } from '../components/taskNotifications'
 import { useTaskSubmission } from '../components/useTaskSubmission'
 import type { SearchResultItem } from '../types/search'
@@ -114,6 +135,9 @@ const loadingAction = ref<'search' | 'previous' | 'next' | 'size' | ''>('')
 const searched = ref(false)
 const results = ref<SearchRow[]>([])
 const errors = ref<Record<string, string>>({})
+const searchPlatforms = ref<string[]>([])
+const platformProgress = ref<Record<string, SearchPlatformEvent>>({})
+let activeSearchController: AbortController | null = null
 const hasMore = ref(false)
 const currentPage = ref(1)
 const lastSearchedPlatforms = ref<string[]>([])
@@ -125,12 +149,13 @@ const resultPlatform = ref('all')
 const vipFilter = ref('all')
 const batchSize = ref(10)
 const batchOptions = [10, 20, 50, 100].map((value) => ({ label: `每页 ${value} 首`, value }))
+const availableResultPlatforms = computed(() => {
+  const platformsWithResults = new Set<string>(results.value.map((item) => item.platform))
+  return PLATFORM_ORDER.filter((platform) => platformsWithResults.has(platform))
+})
 const resultPlatformOptions = computed(() => [
   { label: '全部平台', value: 'all' },
-  { label: '网易云', value: 'netease' },
-  { label: 'QQ 音乐', value: 'qq' },
-  { label: 'YouTube', value: 'youtube' },
-  { label: 'B 站', value: 'bilibili' },
+  ...availableResultPlatforms.value.map((platform) => ({ label: platformLabel(platform), value: platform })),
 ])
 const vipOptions = [
   { label: '全部结果', value: 'all' },
@@ -143,6 +168,25 @@ const searchRequestDirty = computed(() =>
   keyword.value.trim() !== lastSearchedKeyword.value || chosenPlatforms.value.join(',') !== lastSearchedPlatforms.value.join(','),
 )
 const activeErrors = computed(() => Object.entries(errors.value).map(([platform, error]) => `${platformLabel(platform)}：${error}`))
+function progressLabel(progress?: SearchPlatformEvent): string {
+  if (!progress || progress.status === 'searching') return '搜索中'
+  if (progress.status === 'partial') return `已返回 ${progress.items?.length || 0} 首，继续搜索`
+  if (progress.status === 'complete') return `完成 ${progress.items?.length || 0} 首`
+  return '搜索失败'
+}
+function progressTagType(status?: SearchPlatformEvent['status']): 'default' | 'info' | 'success' | 'warning' | 'error' {
+  if (status === 'complete') return 'success'
+  if (status === 'error') return 'error'
+  if (status === 'partial') return 'info'
+  return 'default'
+}
+watch([availableResultPlatforms, searching], ([platforms, isSearching]) => {
+  // A fast provider's temporary results must not clear filters while slower
+  // providers are still streaming their results.
+  if (!isSearching && resultPlatform.value !== 'all' && !platforms.some((platform) => platform === resultPlatform.value)) {
+    resultPlatform.value = 'all'
+  }
+})
 const filteredResults = computed(() => {
   const query = resultQuery.value.trim().toLocaleLowerCase()
   return results.value.filter((item) => {
@@ -214,38 +258,91 @@ async function goToPage(page: number) {
 }
 
 async function changePageSize(size: number) {
+  const previousSize = batchSize.value
   batchSize.value = size
   if (searched.value && lastSearchedKeyword.value && lastSearchedPlatforms.value.length && !searchRequestDirty.value) {
-    await loadPage(1, lastSearchedKeyword.value, lastSearchedPlatforms.value, 'size')
+    const loaded = await loadPage(1, lastSearchedKeyword.value, lastSearchedPlatforms.value, 'size')
+    if (!loaded) batchSize.value = previousSize
   }
 }
 
-async function loadPage(page: number, query: string, platforms: string[], action: 'search' | 'previous' | 'next' | 'size') {
+async function loadPage(page: number, query: string, platforms: string[], action: 'search' | 'previous' | 'next' | 'size'): Promise<boolean> {
+  const previousState = action === 'search' ? null : {
+    results: [...results.value],
+    currentPage: currentPage.value,
+    hasMore: hasMore.value,
+    errors: { ...errors.value },
+    progress: { ...platformProgress.value },
+  }
+  activeSearchController?.abort()
+  const controller = new AbortController()
+  activeSearchController = controller
   searching.value = true
   loadingAction.value = action
-  try {
-    const offset = (page - 1) * batchSize.value
-    const res = await get<{ items: SearchResultItem[]; total: number; has_more: boolean; errors: Record<string, string>; keyword: string }>(
-      '/search', { keyword: query, platform: platforms.join(','), offset, limit: batchSize.value },
-    )
-    if (res.code !== 200 || !res.data) {
-      message.error(res.message || '搜索失败')
-      return
-    }
-    results.value = res.data.items || []
-    lastSearchedKeyword.value = query
-    lastSearchedPlatforms.value = [...platforms]
-    hasMore.value = !!res.data.has_more
-    errors.value = res.data.errors || {}
-    currentPage.value = page
-    searched.value = true
-    if (page === 1) saveHistory(query)
-  } catch (error) {
-    message.error(error instanceof Error ? `搜索失败：${error.message}` : '搜索失败')
-  } finally {
-    searching.value = false
-    loadingAction.value = ''
+  searchPlatforms.value = [...platforms]
+  platformProgress.value = Object.fromEntries(platforms.map((platform) => [platform, { platform: platform as SearchResultItem['platform'], status: 'searching', items: [] }]))
+  errors.value = {}
+  if (action === 'search') results.value = []
+  const offset = (page - 1) * batchSize.value
+  let receivedComplete = false
+  const previewResults = () => {
+    const perPlatform = platforms.map((platform) => platformProgress.value[platform]?.items || [])
+    const merged = interleaveResults(perPlatform)
+    results.value = merged.slice(offset, offset + batchSize.value)
   }
+  try {
+    await streamSearch(
+      { keyword: query, platform: platforms, offset, limit: batchSize.value },
+      (event) => {
+        const previous = platformProgress.value[event.platform]
+        const items = event.status === 'partial'
+          ? [...(previous?.items || []), ...(event.items || [])]
+          : (event.items || previous?.items || [])
+        platformProgress.value = { ...platformProgress.value, [event.platform]: { ...event, items } }
+        if (event.error) errors.value = { ...errors.value, [event.platform]: event.error }
+        if (event.status === 'partial' || event.status === 'complete' || event.status === 'error') previewResults()
+      },
+      (complete: SearchCompleteEvent) => {
+        receivedComplete = true
+        results.value = complete.items || []
+        hasMore.value = !!complete.has_more
+        errors.value = complete.errors || {}
+        currentPage.value = page
+        lastSearchedKeyword.value = query
+        lastSearchedPlatforms.value = [...platforms]
+        searched.value = true
+        if (page === 1) saveHistory(query)
+      },
+      controller.signal,
+    )
+  } catch (error) {
+    if (previousState && !receivedComplete) {
+      results.value = previousState.results
+      currentPage.value = previousState.currentPage
+      hasMore.value = previousState.hasMore
+      errors.value = previousState.errors
+      platformProgress.value = previousState.progress
+    }
+    if (!controller.signal.aborted) message.error(error instanceof Error ? error.message : '搜索失败')
+  } finally {
+    if (activeSearchController === controller) {
+      activeSearchController = null
+      searching.value = false
+      loadingAction.value = ''
+    }
+  }
+  return receivedComplete
+}
+
+function interleaveResults(perPlatform: SearchRow[][]): SearchRow[] {
+  const merged: SearchRow[] = []
+  const maxItems = Math.max(0, ...perPlatform.map((items) => items.length))
+  for (let index = 0; index < maxItems; index++) {
+    for (const items of perPlatform) {
+      if (index < items.length) merged.push(items[index])
+    }
+  }
+  return merged
 }
 
 async function handleDownload(row: SearchRow) {
@@ -316,12 +413,11 @@ onMounted(() => {
   loadHistory()
   void platformConfigPromise
 })
+onUnmounted(() => activeSearchController?.abort())
 </script>
 
 <style scoped>
 .search-page { max-width: 1440px; margin: 0 auto; }
-.page-heading { display: flex; align-items: center; margin: 0 0 12px; }
-.page-heading :deep(.n-h2) { margin: 0; }
 
 .search-toolbar {
   display: flex;
@@ -338,6 +434,8 @@ onMounted(() => {
 .platform-selectors { display: flex; align-items: center; gap: 12px; white-space: nowrap; }
 .platform-actions { display: flex; align-items: center; padding-left: 8px; border-left: 1px solid rgba(145,160,154,.16); }
 
+.search-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-height: 30px; padding: 2px 2px; }
+.progress-label { margin-right: 2px; color: #7f8c86; font-size: 10px; letter-spacing: .06em; }
 .result-toolbar {
   display: flex;
   align-items: center;
@@ -380,7 +478,10 @@ onMounted(() => {
 }
 .history-label { flex: 0 0 auto; color: #87938e; font-size: 11px; }
 .history-items { display: flex; flex: 1 1 auto; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
-.history-tag { flex: 0 0 auto; cursor: pointer; }
+.history-tag { flex: 0 0 auto; padding: 3px 8px; border: 1px solid rgba(171,190,184,.18); border-radius: 3px; color: #c1cbc6; background: transparent; font: inherit; font-size: 11px; line-height: 1.4; cursor: pointer; }
+.history-tag:hover:not(:disabled) { border-color: rgba(99,226,183,.48); color: #8de8c8; }
+.history-tag:disabled { opacity: .5; cursor: not-allowed; }
+.history-tag:focus-visible { outline: 2px solid #63e2b7; outline-offset: 2px; }
 .song-title { cursor: help; font-weight: 500; }
 .vip-tag { margin-left: 6px; }
 
