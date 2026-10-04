@@ -1,12 +1,10 @@
 <template>
   <section class="qq-page">
-    <header class="page-heading">
-      <div>
-        <p class="eyebrow">ACCOUNT / CREDENTIAL STATUS</p>
-        <n-h2>QQ 音乐登录</n-h2>
-      </div>
-      <n-button quaternary :loading="checking" @click="loadOverview">刷新状态</n-button>
-    </header>
+    <PageHeading eyebrow="ACCOUNT / CREDENTIAL STATUS" title="QQ 音乐登录">
+      <template #actions>
+        <n-button quaternary :loading="checking" @click="loadOverview">刷新状态</n-button>
+      </template>
+    </PageHeading>
 
     <n-alert v-if="overview && !overview.enabled" type="warning" :show-icon="false">
       QQ Music API 未启用，请在配置中填写服务地址并启用后再登录。
@@ -67,9 +65,10 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { NH2, NButton, NCard, NSpace, NTag, NAlert, useMessage } from 'naive-ui'
+import { NButton, NCard, NSpace, NTag, NAlert, useMessage } from 'naive-ui'
 import { post, get, del } from '../api/http'
 import { getQQLoginOverview } from '../api'
+import PageHeading from '../components/PageHeading.vue'
 import type { QQLoginOverview } from '../api'
 
 interface QQLoginState {
@@ -182,9 +181,6 @@ onUnmounted(stopPolling)
 
 <style scoped>
 .qq-page { max-width: 1000px; margin: 0 auto; }
-.page-heading { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; }
-.eyebrow { margin: 0 0 8px; color: #638078; font-size: 10px; font-weight: 700; letter-spacing: .19em; }
-.page-heading :deep(.n-h2) { margin: 0; }
 .login-card, .status-card { width: min(100%, 560px); margin: 10vh auto 0; padding: 28px 30px; border: 1px solid rgba(141,167,160,.12); background: linear-gradient(150deg, rgba(24,29,34,.98), rgba(17,20,25,.98)); text-align: center; }
 .login-card h3, .status-card h3 { margin: 0 0 10px; color: #edf3f0; font-size: 20px; font-weight: 600; }
 .status-copy { max-width: 390px; margin: 12px auto 22px; color: #87938e; font-size: 12px; line-height: 1.75; }

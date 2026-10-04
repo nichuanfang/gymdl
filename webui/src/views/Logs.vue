@@ -1,14 +1,14 @@
 <template>
   <div>
-    <n-h2>日志</n-h2>
+    <PageHeading eyebrow="SYSTEM / LIVE LOGS" title="日志" />
     <n-space vertical :size="12">
       <n-space align="center" justify="space-between" style="width: 100%">
         <n-space align="center" :size="8">
           <n-select v-model:value="level" :options="levelOptions" size="small" style="width: 120px" @update:value="handleLevelChange" />
-          <n-input v-model:value="filterText" size="small" placeholder="过滤关键词..." style="width: 200px" clearable />
+          <n-input v-model:value="filterText" size="small" placeholder="过滤关键词…" style="width: 200px" clearable />
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" @click="paused = !paused">
+              <n-button size="small" :aria-label="paused ? '继续滚动日志' : '暂停日志滚动'" @click="paused = !paused">
                 <template #icon>
                   <n-icon><component :is="paused ? PlayOutline : PauseOutline" /></n-icon>
                 </template>
@@ -18,7 +18,7 @@
           </n-tooltip>
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" @click="clearLogs">
+              <n-button size="small" aria-label="清空当前日志" @click="clearLogs">
                 <template #icon>
                   <n-icon><TrashOutline /></n-icon>
                 </template>
@@ -28,7 +28,7 @@
           </n-tooltip>
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" @click="exportLogs" :disabled="logs.length === 0">
+              <n-button size="small" aria-label="导出当前日志" @click="exportLogs" :disabled="logs.length === 0">
                 <template #icon>
                   <n-icon><DownloadOutline /></n-icon>
                 </template>
@@ -38,7 +38,7 @@
           </n-tooltip>
           <n-tooltip trigger="hover">
             <template #trigger>
-              <n-button size="small" @click="refreshLogs" :loading="connecting">
+              <n-button size="small" aria-label="立即同步日志" @click="refreshLogs" :loading="connecting">
                 <template #icon>
                   <n-icon><RefreshOutline /></n-icon>
                 </template>
@@ -78,8 +78,9 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { NH2, NCard, NSpace, NSelect, NButton, NTag, NText, NInput, NTooltip, NIcon, NAlert } from 'naive-ui'
+import { NCard, NSpace, NSelect, NButton, NTag, NText, NInput, NTooltip, NIcon, NAlert } from 'naive-ui'
 import { PlayOutline, PauseOutline, TrashOutline, DownloadOutline, RefreshOutline } from '@vicons/ionicons5'
+import PageHeading from '../components/PageHeading.vue'
 
 interface LogEntry {
   id: number

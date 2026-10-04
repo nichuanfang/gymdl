@@ -1,12 +1,10 @@
 <template>
   <section class="history-page">
-    <header class="page-heading">
-      <div>
-        <p class="eyebrow">TASK JOURNAL / ARCHIVE</p>
-        <n-h2>下载历史</n-h2>
-      </div>
-      <span class="total-count">{{ total }} 条记录</span>
-    </header>
+    <PageHeading eyebrow="TASK JOURNAL / ARCHIVE" title="下载历史">
+      <template #actions>
+        <span class="total-count">{{ total }} 条记录</span>
+      </template>
+    </PageHeading>
 
     <n-card class="filter-card" size="small" :bordered="false">
       <n-space align="center" :size="10" wrap>
@@ -38,11 +36,12 @@
 <script setup lang="ts">
 import { ref, onActivated, onDeactivated, onUnmounted, h } from 'vue'
 import {
-  NH2, NDataTable, NPagination, NSpace, NTag, NButton, NTooltip, NText,
+  NDataTable, NPagination, NSpace, NTag, NButton, NTooltip, NText,
   NInput, NSelect, NDatePicker, NCard, useMessage,
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { getTaskHistory } from '../api'
+import PageHeading from '../components/PageHeading.vue'
 import type { TaskHistoryFilters } from '../api'
 import type { Task } from '../types'
 import { watchTaskCompletion } from '../components/taskNotifications'
@@ -198,9 +197,6 @@ onUnmounted(deactivateHistory)
 
 <style scoped>
 .history-page { max-width: 1440px; margin: 0 auto; }
-.page-heading { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 24px; }
-.eyebrow { margin: 0 0 7px; color: #638078; font-size: 10px; font-weight: 700; letter-spacing: .19em; }
-.page-heading :deep(.n-h2) { margin: 0; }
 .total-count { color: #7b8882; font-size: 12px; }
 .filter-card { margin-bottom: 14px; background: rgba(23,27,32,.75); }
 </style>

@@ -1,6 +1,6 @@
 <template>
   <div>
-    <n-h2>下载</n-h2>
+    <PageHeading eyebrow="TASKS / DOWNLOAD QUEUE" title="下载" />
     <n-space vertical :size="16">
       <n-input-group>
         <n-input v-model:value="url" placeholder="粘贴音乐/视频链接，支持 Apple Music / Spotify / QQ / 网易云 / YouTube 等" size="large" @keyup.enter="handleSubmit" />
@@ -39,8 +39,9 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { NH2, NInputGroup, NInput, NButton, NCard, NSpace, NTag, NEmpty, NText, useMessage } from 'naive-ui'
+import { NInputGroup, NInput, NButton, NCard, NSpace, NTag, NEmpty, NText, useMessage } from 'naive-ui'
 import { getActiveTasks, cancelTask } from '../api'
+import PageHeading from '../components/PageHeading.vue'
 import { watchTaskCompletion } from '../components/taskNotifications'
 import { useTaskSubmission } from '../components/useTaskSubmission'
 import type { Task } from '../types'

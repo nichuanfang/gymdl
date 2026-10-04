@@ -1,11 +1,8 @@
 <template>
   <section class="settings-page">
-    <header class="page-heading">
-      <div>
-        <p class="eyebrow">APPLICATION / CONFIGURATION</p>
-        <n-h2>设置</n-h2>
-      </div>
-      <n-space :size="8">
+    <PageHeading eyebrow="APPLICATION / CONFIGURATION" title="设置">
+      <template #actions>
+        <n-space :size="8" wrap>
         <n-popconfirm
           v-if="restartSupported"
           positive-text="重启"
@@ -17,9 +14,10 @@
           </template>
           重启会中断当前程序操作。仅在 Docker 配置了 restart 策略时会自动重新启动；请确认没有其他正在执行的任务。
         </n-popconfirm>
-        <n-button type="primary" :loading="saving" :disabled="loading || !config" @click="handleSaveConfig">保存全部设置</n-button>
-      </n-space>
-    </header>
+          <n-button type="primary" :loading="saving" :disabled="loading || !config" @click="handleSaveConfig">保存全部设置</n-button>
+        </n-space>
+      </template>
+    </PageHeading>
 
     <n-alert v-if="restartFields.length" type="warning" :show-icon="false" class="restart-alert">
       设置已保存。以下配置需重启服务后生效：{{ restartFields.join('、') }}
@@ -65,9 +63,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import {
-  NH2, NButton, NCard, NSpace, NSpin, NTabs, NTabPane, NAlert, NTag, NText, NPopconfirm, useMessage,
+  NButton, NCard, NSpace, NSpin, NTabs, NTabPane, NAlert, NTag, NText, NPopconfirm, useMessage,
 } from 'naive-ui'
 import ConfigEditorFields from '../components/ConfigEditorFields.vue'
+import PageHeading from '../components/PageHeading.vue'
 import { getSystemConfig, getSystemStatus, getCookieCloudStatus, syncCookieCloud, updateSystemConfig, requestApplicationRestart } from '../api'
 import type { CookieCloudStatus } from '../types'
 
@@ -191,9 +190,6 @@ onMounted(() => void load())
 
 <style scoped>
 .settings-page { max-width: 1480px; margin: 0 auto; }
-.page-heading { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; }
-.eyebrow { margin: 0 0 7px; color: #638078; font-size: 10px; font-weight: 700; letter-spacing: .19em; }
-.page-heading :deep(.n-h2) { margin: 0; }
 .settings-layout { min-height: 540px; }
 .settings-tabs { min-height: 540px; }
 .settings-tabs :deep(.n-tabs-nav) { width: 185px; }

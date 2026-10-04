@@ -1,12 +1,10 @@
 <template>
   <section class="files-page">
-    <header class="page-heading">
-      <div>
-        <p class="eyebrow">LIBRARY / TIDY DESTINATION</p>
-        <n-h2>文件库</n-h2>
-      </div>
-      <n-tag v-if="target" :bordered="false" type="info">{{ target === 'webdav' ? 'WebDAV 整理目录' : '本地整理目录' }}</n-tag>
-    </header>
+    <PageHeading eyebrow="LIBRARY / TIDY DESTINATION" title="文件库">
+      <template #actions>
+        <n-tag v-if="target" :bordered="false" type="info">{{ target === 'webdav' ? 'WebDAV 整理目录' : '本地整理目录' }}</n-tag>
+      </template>
+    </PageHeading>
 
     <n-space vertical :size="14">
       <div class="path-toolbar">
@@ -40,11 +38,14 @@
       <n-data-table
         v-if="entries.length > 0 || (!loadError && loading)"
         :columns="columns"
-        :data="entries"
+        :data="visibleEntries"
         :bordered="false"
         :row-key="(row: FileEntry) => row.path"
         :scroll-x="1120"
       />
+      <div v-if="entries.length > filePageSize" class="file-pagination">
+        <n-pagination v-model:page="filePage" :page-size="filePageSize" :item-count="entries.length" />
+      </div>
       <n-empty
         v-else-if="!loadError"
         style="margin-top: 44px"
@@ -87,10 +88,11 @@
 <script setup lang="ts">
 import { ref, computed, h, nextTick, watch, onActivated, onDeactivated } from 'vue'
 import {
-  NH2, NDataTable, NButton, NSpace, NInput, NInputGroup, NSelect, NEmpty, NTag, NModal, NAlert, NPopconfirm, NCard, NTooltip, useMessage,
+  NDataTable, NPagination, NButton, NSpace, NInput, NInputGroup, NSelect, NEmpty, NTag, NModal, NAlert, NPopconfirm, NCard, NTooltip, useMessage,
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { listFiles, getFileStreamUrl, deleteFile } from '../api'
+import PageHeading from '../components/PageHeading.vue'
 import type { FileEntry } from '../types'
 
 const message = useMessage()
@@ -98,6 +100,12 @@ const loading = ref(true)
 const searching = ref(false)
 const loadError = ref('')
 const entries = ref<FileEntry[]>([])
+const filePage = ref(1)
+const filePageSize = 50
+const visibleEntries = computed(() => {
+  const start = (filePage.value - 1) * filePageSize
+  return entries.value.slice(start, start + filePageSize)
+})
 const currentPath = ref('')
 const queryDraft = ref('')
 const fieldDraft = ref('all')
@@ -154,7 +162,7 @@ const columns: DataTableColumns<FileEntry> = [
   {
     title: '名称', key: 'name', minWidth: 220,
     render: (row) => row.is_dir
-      ? h('button', { class: 'directory-link', onClick: () => enterDirectory(row.path) }, `▸  ${row.name}`)
+      ? h('button', { class: 'directory-link', type: 'button', onClick: () => enterDirectory(row.path) }, `▸  ${row.name}`)
       : h(NTooltip, { trigger: 'hover' }, {
           trigger: () => h('span', { class: 'file-name' }, `♫  ${row.name}`),
           default: () => [row.artist, row.album].filter(Boolean).join(' · ') || row.path,
@@ -196,6 +204,7 @@ async function load(path = '/', options: { showPageLoading?: boolean; preserveEn
     const response = await listFiles(path, appliedQuery.value, appliedField.value)
     if (response.code === 200 && response.data) {
       entries.value = response.data.entries || []
+      filePage.value = 1
       currentPath.value = (response.data.path || '').replace(/^\/+|\/+$/g, '')
       target.value = response.data.target || 'local'
       truncated.value = !!response.data.truncated
@@ -267,9 +276,7 @@ onDeactivated(deactivateFiles)
 
 <style scoped>
 .files-page { max-width: 1480px; margin: 0 auto; }
-.page-heading { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; }
-.eyebrow { margin: 0 0 7px; color: #638078; font-size: 10px; font-weight: 700; letter-spacing: .19em; }
-.page-heading :deep(.n-h2) { margin: 0; }
+.file-pagination { display: flex; justify-content: flex-end; margin-top: 14px; }
 .path-toolbar { display: flex; align-items: center; gap: 10px; min-height: 32px; }
 .path-chip { color: #7e8985; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; overflow-wrap: anywhere; }
 .search-card { background: rgba(23,27,32,.75); }
@@ -277,8 +284,9 @@ onDeactivated(deactivateFiles)
 .field-select { width: 130px; }
 .search-hint { margin-top: 10px; color: #788580; font-size: 11px; }
 .search-hint strong { color: #b8c8c1; font-weight: 500; }
-.directory-link { border: 0; background: none; color: #75d8b4; cursor: pointer; font: inherit; text-align: left; }
-.directory-link:hover { color: #a4f5d6; }
+:global(.files-page .directory-link) { appearance: none; padding: 0; border: 0; background: transparent; color: #75d8b4; cursor: pointer; font: inherit; text-align: left; }
+:global(.files-page .directory-link:hover) { color: #a4f5d6; }
+:global(.files-page .directory-link:focus-visible) { border-radius: 2px; outline: 2px solid #63e2b7; outline-offset: 3px; }
 .file-name { color: #d9e2df; }
 :global(.n-card.preview-modal) { width: min(520px, calc(100vw - 32px)); }
 .preview-body { padding: 8px 4px 4px; text-align: center; }

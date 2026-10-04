@@ -1,15 +1,13 @@
 <template>
   <section class="dashboard-page">
-    <header class="page-heading">
-      <div>
-        <p class="eyebrow">OVERVIEW / SYSTEM HEALTH</p>
-        <n-h2>仪表盘</n-h2>
-      </div>
-      <div class="refresh-note">
-        <span class="pulse-dot" />
-        {{ checkedAtLabel }}
-      </div>
-    </header>
+    <PageHeading eyebrow="OVERVIEW / SYSTEM HEALTH" title="仪表盘">
+      <template #actions>
+        <div class="refresh-note">
+          <span class="pulse-dot" />
+          {{ checkedAtLabel }}
+        </div>
+      </template>
+    </PageHeading>
 
     <n-spin :show="loading && !status">
       <div class="metric-grid">
@@ -68,8 +66,9 @@
 
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { NH2, NGrid, NGridItem, NSpin } from 'naive-ui'
+import { NGrid, NGridItem, NSpin } from 'naive-ui'
 import { getDashboardSummary } from '../api'
+import PageHeading from '../components/PageHeading.vue'
 import type { SystemStatus, ServiceStatus } from '../types'
 
 const loading = ref(true)
@@ -148,10 +147,8 @@ onUnmounted(() => {
 
 <style scoped>
 .dashboard-page { max-width: 1440px; margin: 0 auto; }
-.page-heading, .section-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; }
-.page-heading { margin-bottom: 28px; }
+.section-heading { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; }
 .eyebrow { margin: 0 0 7px; color: #638078; font-size: 10px; font-weight: 700; letter-spacing: .19em; }
-.page-heading :deep(.n-h2) { margin: 0; color: #edf2f0; }
 .refresh-note { display: flex; align-items: center; gap: 9px; color: #788580; font-size: 11px; }
 .pulse-dot { width: 7px; height: 7px; background: #63e2b7; border-radius: 50%; box-shadow: 0 0 11px rgba(99,226,183,.7); }
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
