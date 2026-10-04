@@ -5,6 +5,7 @@ RELEASE_DIR=release
 GOBUILD=CGO_ENABLED=0 go build -trimpath -ldflags '-w -s -X "main.buildVersion=$(VERSION)"'
 
 # 前端构建（输出到 web/dist 供 go:embed）
+.PHONY: webui
 webui:
 	cd webui && npm ci && npm run build
 	rsync -a --delete webui/dist/ web/dist/

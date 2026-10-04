@@ -10,7 +10,7 @@ export const getQQLoginOverview = () => get<QQLoginOverview>('/qqmusic/status')
 export const getSystemConfig = () => get('/system/config')
 export const updateSystemConfig = (config: Record<string, any>, clearSecrets: string[] = []) => put('/system/config', { config, clear_secrets: clearSecrets })
 export const requestApplicationRestart = () => post<{ restarting: boolean }>('/system/restart')
-export const submitTask = (url: string) => post<Task>('/task/submit', { url })
+export const submitTask = (url: string, forceDownload = false) => post<TaskSubmitResponse>('/task/submit', { url, force_download: forceDownload })
 export const getActiveTasks = () => get<Task[]>('/task/active')
 export interface TaskHistoryFilters {
   q?: string
@@ -39,4 +39,15 @@ export interface QQLoginOverview {
   status: 'disabled' | 'logged_in' | 'logged_out' | 'unknown'
   account?: string
   message?: string
+}
+
+export interface DuplicateCheckResult {
+  status: 'duplicate' | 'clear' | 'unknown' | 'not_applicable'
+  reason?: string
+  target?: { name: string; artist: string; album: string; ext: string }
+  match?: { path: string; name: string; ext: string }
+}
+export interface TaskSubmitResponse extends Task {
+  confirmation_required?: boolean
+  duplicate?: DuplicateCheckResult
 }

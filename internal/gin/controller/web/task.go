@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nichuanfang/gymdl/internal/gin/response"
 	"github.com/nichuanfang/gymdl/internal/gin/task"
+	"github.com/nichuanfang/gymdl/utils"
 )
 
 var manager *task.TaskManager
@@ -22,7 +23,8 @@ func SetTaskManager(tm *task.TaskManager) {
 
 // SubmitTaskRequest 提交任务请求
 type SubmitTaskRequest struct {
-	URL string `json:"url" binding:"required"`
+	URL           string `json:"url" binding:"required"`
+	ForceDownload bool   `json:"force_download"`
 }
 
 // HandleSubmitTask POST /api/web/task/submit
@@ -31,6 +33,25 @@ func HandleSubmitTask(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.Fail(c, http.StatusBadRequest, "参数错误", err.Error())
 		return
+	}
+
+	if !req.ForceDownload {
+		checkStarted := time.Now()
+		check := duplicatePreflight(GetWebConfig(), req.URL)
+		if utils.Logger() != nil {
+			utils.InfoWithFormat("[WebDuplicate] preflight status=%s elapsed=%s reason=%s", check.Status, time.Since(checkStarted).Round(time.Millisecond), check.Reason)
+		}
+		if check.Status == "duplicate" || check.Status == "unknown" {
+			c.JSON(http.StatusConflict, response.Response{
+				Code:    http.StatusConflict,
+				Message: duplicateCheckConfirmation(check),
+				Data: gin.H{
+					"confirmation_required": true,
+					"duplicate":             check,
+				},
+			})
+			return
+		}
 	}
 
 	t, err := manager.SubmitTask(req.URL)

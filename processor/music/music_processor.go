@@ -10,8 +10,8 @@ import (
 	"time"
 
 	browser "github.com/EDDYCJY/fake-useragent"
-    "github.com/nichuanfang/gymdl/core"
-    "github.com/nichuanfang/gymdl/processor"
+	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/utils"
 	"go.senan.xyz/taglib"
 )
@@ -115,7 +115,7 @@ func ReadMusicDir(tempDir string, tidyType string, p Processor) ([]*SongInfo, er
 			fullPath := filepath.Join(tempDir, f.Name())
 
 			song, err := ReadTags(fullPath)
-            // 填充默认值,繁间转换等
+			// 填充默认值,繁间转换等
 			FillDefaultTags(fullPath, song)
 
 			if err != nil {
@@ -169,7 +169,7 @@ func ReadTags(path string) (*SongInfo, error) {
 	} else {
 		songInfo.SongName = filepath.Base(path)
 	}
-    
+
 	if a, ok := tags[taglib.Artist]; ok && len(a) > 0 {
 		songInfo.SongArtists = a[0]
 	}
@@ -197,21 +197,40 @@ func ReadTags(path string) (*SongInfo, error) {
 	return songInfo, nil
 }
 
+// ReadDuplicateTags reads only the four fields used for WebUI duplicate matching.
+func ReadDuplicateTags(path string) (*SongInfo, error) {
+	tags, err := taglib.ReadTags(path)
+	if err != nil {
+		return nil, err
+	}
+	info := &SongInfo{FileExt: strings.TrimPrefix(filepath.Ext(path), ".")}
+	if title, ok := tags[taglib.Title]; ok && len(title) > 0 {
+		info.SongName = title[0]
+	}
+	if artist, ok := tags[taglib.Artist]; ok && len(artist) > 0 {
+		info.SongArtists = artist[0]
+	}
+	if album, ok := tags[taglib.Album]; ok && len(album) > 0 {
+		info.SongAlbum = album[0]
+	}
+	return info, nil
+}
+
 // FillDefaultTags 标签写入默认值以及其他处理
 func FillDefaultTags(path string, info *SongInfo) {
 	updates := make(map[string][]string)
-    
-    // 歌曲 简繁转换
-    if songNeed, finalSongName:=utils.IsNeedTraditionalToSimple(info.SongName);songNeed {
-        info.SongName = finalSongName
-        updates[taglib.Title] = []string{finalSongName}
-    }
 
-    // 歌手 简繁转换
-    if artistNeed,finalSongArtist:=utils.IsNeedTraditionalToSimple(info.SongArtists);artistNeed {
-        info.SongArtists = finalSongArtist
-        updates[taglib.Artist] = []string{finalSongArtist}
-    }
+	// 歌曲 简繁转换
+	if songNeed, finalSongName := utils.IsNeedTraditionalToSimple(info.SongName); songNeed {
+		info.SongName = finalSongName
+		updates[taglib.Title] = []string{finalSongName}
+	}
+
+	// 歌手 简繁转换
+	if artistNeed, finalSongArtist := utils.IsNeedTraditionalToSimple(info.SongArtists); artistNeed {
+		info.SongArtists = finalSongArtist
+		updates[taglib.Artist] = []string{finalSongArtist}
+	}
 
 	// 默认专辑
 	if info.SongAlbum == "" {
@@ -248,25 +267,25 @@ func FillDefaultTags(path string, info *SongInfo) {
 
 	// 默认歌词
 	if info.Lyric == "" {
-        lrcApi := core.GlobalLrcAPI
-        var lyric string 
-        var err error
-        if lrcApi == nil {
-            lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
-        }else {
-            // album先不传 观察一段时间
-            lyric, err = lrcApi.GetLyrics(info.SongName, info.SongArtists, "")
-            if err != nil {
-                lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
-            }
-        }
-        info.Lyric = lyric
+		lrcApi := core.GlobalLrcAPI
+		var lyric string
+		var err error
+		if lrcApi == nil {
+			lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
+		} else {
+			// album先不传 观察一段时间
+			lyric, err = lrcApi.GetLyrics(info.SongName, info.SongArtists, "")
+			if err != nil {
+				lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
+			}
+		}
+		info.Lyric = lyric
 		updates[taglib.Lyrics] = []string{info.Lyric}
 	}
 
 	if len(updates) > 0 {
 		if err := taglib.WriteTags(path, updates, 0); err != nil {
-			utils.WarnWithFormat("write default tags failed: %w", err)
+			utils.WarnWithFormat("write default tags failed: %v", err)
 		}
 	}
 }
@@ -299,7 +318,7 @@ func WriteTagsWithCoverFile(song *SongInfo, filePath string, coverFilePath strin
 		taglib.AlbumArtist: {song.SongArtists},
 		taglib.Date:        {strconv.Itoa(song.Year)},
 		taglib.Lyrics:      {song.Lyric},
-        taglib.Comment: {song.Url},
+		taglib.Comment:     {song.Url},
 	}
 	var err error
 	// 写入文本标签（opts传taglib.Clear则清除原标签，传0则不清除）

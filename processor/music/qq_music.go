@@ -445,14 +445,22 @@ func (qmApi *QQMusicAPI) downloadSonglist(qm *QQMusicProcessor, songlistId strin
 	return nil
 }
 
-// querySong 查询歌曲信息
+// querySong 查询歌曲信息。下载流程保留短暂重试，以适配 QQ API 的瞬时抖动。
 func (qmApi *QQMusicAPI) querySong(songId string) (QQSong, error) {
-	songRes, err := doGetRequestWithRetry[QQSongDetail](qmApi, fmt.Sprintf("/song/%s/detail", songId), nil, 3)
+	return qmApi.querySongWithRetry(songId, 3)
+}
+
+// querySongWithRetry 查询歌曲，并允许查重预检使用单次请求，避免重试退避明显延迟下载确认。
+func (qmApi *QQMusicAPI) querySongWithRetry(songId string, attempts int) (QQSong, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	songRes, err := doGetRequestWithRetry[QQSongDetail](qmApi, fmt.Sprintf("/song/%s/detail", songId), nil, attempts)
 	if err != nil {
 		return QQSong{}, err
 	}
 	if songRes == nil {
-		return QQSong{}, nil
+		return QQSong{}, errors.New("QQ 音乐未返回歌曲详情")
 	}
 	songInfo := songRes.Data.TrackInfo
 	if songInfo.Mid == "" {
@@ -464,7 +472,6 @@ func (qmApi *QQMusicAPI) querySong(songId string) (QQSong, error) {
 	if len(songInfo.Singer) == 0 {
 		return QQSong{}, errors.New("歌曲详情缺少歌手信息")
 	}
-	// 简繁转换
 	songInfo.Title = utils.ToSimpleChinese(songInfo.Title)
 	songInfo.Singer[0].Name = utils.ToSimpleChinese(songInfo.Singer[0].Name)
 	return songInfo, nil
@@ -1030,4 +1037,66 @@ func (qm *QQMusicProcessor) safeCoverFileName(songName string, songArtists strin
 	return fmt.Sprintf("%s - %s.%s",
 		utils.SanitizeFileName(songArtists),
 		utils.SanitizeFileName(songName)+"_cover", "jpg")
+}
+
+// IsQQMusicSingleLink identifies a direct or redirected QQ single-song link.
+// Playlist links deliberately return false so bulk downloads are not prompted
+// once for every track.
+func IsQQMusicSingleLink(rawURL string) bool {
+	p := &QQMusicProcessor{}
+	if parsed := p.tryParseDirect(rawURL); parsed.id != "" {
+		return parsed.isSong
+	}
+	parsed, err := p.parseQQMusicLink(rawURL)
+	return err == nil && parsed.id != "" && parsed.isSong
+}
+
+// ResolveQQSingleMetadata reuses the same song detail and target-quality
+// selection used by the QQ single-song downloader, but does not fetch media.
+func ResolveQQSingleMetadata(cfg *config.Config, rawURL string) (*SongInfo, error) {
+	if cfg == nil || cfg.QQMusicApiConfig == nil || !cfg.QQMusicApiConfig.Enable {
+		return nil, errors.New("QQ Music API 未启用")
+	}
+	qm := &QQMusicProcessor{}
+	qm.Init(cfg)
+	// Preflight should fail fast to the existing confirmation dialog on service
+	// trouble rather than spending several seconds on retry backoff.
+	qm.client.Timeout = 6 * time.Second
+	link, err := qm.parseQQMusicLink(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	if link.id == "" || !link.isSong {
+		return nil, errors.New("链接不是可识别的 QQ 音乐单曲")
+	}
+	musicID, musicKey, err := qm.qmApi.ensureValidMusickey()
+	if err != nil {
+		return nil, err
+	}
+	qm.qmApi.musicId = musicID
+	qm.qmApi.musicKey = musicKey
+	qm.qmApi.initHeaders(cfg)
+
+	song, err := qm.qmApi.querySongWithRetry(link.id, 1)
+	if err != nil {
+		return nil, err
+	}
+	if len(song.Singer) == 0 {
+		return nil, errors.New("QQ 音乐歌曲缺少歌手信息")
+	}
+	metadata, err := utils.ParseQQFileMetadate(&song.File, song.Interval, cfg.QQMusicApiConfig.VipLevel)
+	if err != nil {
+		return nil, err
+	}
+	info := &SongInfo{
+		SongName:    song.Title,
+		SongArtists: song.Singer[0].Name,
+		SongAlbum:   song.Album.Name,
+		FileExt:     metadata.Ext,
+		MusicSize:   metadata.MusicSize,
+	}
+	if info.SongName == "" || info.SongArtists == "" || info.SongAlbum == "" || info.FileExt == "" {
+		return nil, errors.New("QQ 音乐歌曲元数据不完整，无法确认是否重复")
+	}
+	return info, nil
 }

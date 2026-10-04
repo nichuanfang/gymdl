@@ -42,14 +42,16 @@ import {
   NInput, NSelect, NDatePicker, NCard, useMessage,
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { getTaskHistory, submitTask } from '../api'
+import { getTaskHistory } from '../api'
 import type { TaskHistoryFilters } from '../api'
 import type { Task } from '../types'
 import { watchTaskCompletion } from '../components/taskNotifications'
+import { useTaskSubmission } from '../components/useTaskSubmission'
 
 defineOptions({ name: 'History' })
 
 const message = useMessage()
+const { submitWithDuplicateConfirmation } = useTaskSubmission()
 const loading = ref(true)
 const tasks = ref<Task[]>([])
 const total = ref(0)
@@ -95,11 +97,11 @@ function formatRangeBound(timestamp: number, endOfDay: boolean): string {
 
 async function handleRetry(row: Task) {
   try {
-    const res = await submitTask(row.url)
+    const res = await submitWithDuplicateConfirmation(row.url)
     if (res.code === 200) {
       message.success('已重新提交')
       if (res.data?.id) watchTaskCompletion(res.data.id)
-    } else message.error(res.message || '重试失败')
+    } else if (res.code !== 499) message.error(res.message || '重试失败')
   } catch (error) {
     message.error(error instanceof Error ? `重试失败：${error.message}` : '重试失败')
   }

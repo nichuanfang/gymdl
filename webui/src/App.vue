@@ -1,13 +1,15 @@
 <template>
   <n-config-provider :theme="darkTheme" :locale="zhCN" :date-locale="dateZhCN" style="height: 100vh">
     <n-message-provider placement="bottom" :max="4">
-      <WebUiShell />
+      <n-dialog-provider>
+        <WebUiShell />
+      </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>
 </template>
 
 <script setup lang="ts">
-import { NConfigProvider, NMessageProvider, darkTheme, zhCN, dateZhCN } from 'naive-ui'
+import { NConfigProvider, NMessageProvider, NDialogProvider, darkTheme, zhCN, dateZhCN } from 'naive-ui'
 import WebUiShell from './components/WebUiShell.vue'
 </script>
 

@@ -22,7 +22,7 @@
     </section>
   </main>
   <n-layout v-else class="app-shell" has-sider>
-    <n-layout-sider bordered :width="220" :collapsed-width="64" class="app-sider">
+    <n-layout-sider bordered :width="220" :collapsed-width="64" :collapsed="isCompactLayout" collapse-mode="width" class="app-sider">
       <div class="brand-lockup"><span class="brand-note">♫</span><span>GYMDL</span></div>
       <n-menu :options="menuOptions" :value="activeKey" @update:value="handleMenuClick" />
       <div class="sider-footer">
@@ -65,6 +65,12 @@ const authenticated = ref(true)
 const loggingIn = ref(false)
 const username = ref('')
 const password = ref('')
+const isCompactLayout = ref(false)
+const compactQuery = typeof window !== 'undefined' ? window.matchMedia('(max-width: 760px)') : null
+
+function updateCompactLayout() {
+  isCompactLayout.value = compactQuery?.matches ?? false
+}
 
 function renderIcon(icon: any) {
   return () => h(NIcon, null, { default: () => h(icon) })
@@ -133,10 +139,15 @@ function handleUnauthorized() {
 }
 
 onMounted(() => {
+  updateCompactLayout()
+  compactQuery?.addEventListener('change', updateCompactLayout)
   refreshSession()
   window.addEventListener('gymdl:unauthorized', handleUnauthorized)
 })
-onUnmounted(() => window.removeEventListener('gymdl:unauthorized', handleUnauthorized))
+onUnmounted(() => {
+  compactQuery?.removeEventListener('change', updateCompactLayout)
+  window.removeEventListener('gymdl:unauthorized', handleUnauthorized)
+})
 </script>
 
 <style scoped>
@@ -160,4 +171,11 @@ onUnmounted(() => window.removeEventListener('gymdl:unauthorized', handleUnautho
 .auth-loading { position: fixed; inset: 0; display: grid; place-items: center; background: #0a0c10; }
 .auth-loader-mark { color: #63e2b7; font-size: 13px; font-weight: 700; letter-spacing: .2em; animation: breathe 1.3s ease-in-out infinite alternate; }
 @keyframes breathe { to { opacity: .42; transform: translateY(-2px); } }
+@media (max-width: 760px) {
+  .brand-lockup { justify-content: center; padding: 20px 0 22px; }
+  .brand-lockup > span:last-child { display: none; }
+  .sider-footer { right: 0; bottom: 12px; left: 0; display: flex; justify-content: center; }
+  .session-indicator { justify-content: center; padding: 7px 0; border-top: 0; font-size: 0; }
+  .content-shell { padding: 20px 14px; }
+}
 </style>

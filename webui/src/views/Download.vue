@@ -40,11 +40,13 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { NH2, NInputGroup, NInput, NButton, NCard, NSpace, NTag, NEmpty, NText, useMessage } from 'naive-ui'
-import { submitTask, getActiveTasks, cancelTask } from '../api'
+import { getActiveTasks, cancelTask } from '../api'
 import { watchTaskCompletion } from '../components/taskNotifications'
+import { useTaskSubmission } from '../components/useTaskSubmission'
 import type { Task } from '../types'
 
 const message = useMessage()
+const { submitWithDuplicateConfirmation } = useTaskSubmission()
 const url = ref('')
 const submitting = ref(false)
 const activeTasks = ref<Task[]>([])
@@ -76,13 +78,13 @@ async function handleSubmit() {
   }
   submitting.value = true
   try {
-    const res = await submitTask(url.value.trim())
+    const res = await submitWithDuplicateConfirmation(url.value.trim())
     if (res.code === 200) {
       message.success('任务已提交')
       if (res.data?.id) watchTaskCompletion(res.data.id)
       url.value = ''
       await refresh()
-    } else {
+    } else if (res.code !== 499) {
       message.error(res.message || '提交失败')
     }
   } catch (error) {

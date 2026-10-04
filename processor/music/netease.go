@@ -257,6 +257,9 @@ func (ncm *NetEaseProcessor) FetchSongData(musicID int, cfg *config.Config) (*ty
 	if err := json.Unmarshal([]byte(parsed[api.SongDetailAPI]), &detail); err != nil {
 		return nil, nil, nil, fmt.Errorf("解析歌曲详情失败: %w", err)
 	}
+	if len(detail.Songs) == 0 {
+		return nil, nil, nil, errors.New("网易云未返回歌曲详情")
+	}
 	if err := json.Unmarshal([]byte(parsed[api.SongUrlAPI]), &urls); err != nil {
 		return nil, nil, nil, fmt.Errorf("解析歌曲URL失败: %w", err)
 	}
@@ -324,7 +327,7 @@ func (ncm *NetEaseProcessor) FetchSongLyric(musicID int, cfg *config.Config) str
 		return ""
 	}
 
-	utils.DebugWithFormat("[NCM] 歌词信息获取成功: %s", musicID)
+	utils.DebugWithFormat("[NCM] 歌词信息获取成功: %d", musicID)
 	return utils.ParseNCMLyric(&lyrics)
 }
 
@@ -466,7 +469,7 @@ func (ncm *NetEaseProcessor) buildSongInfo(cfg *config.Config, detail *types.Son
 		ncmLyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
 	}
 	year := utils.ParseNCMYear(detail)
-    
+
 	return &SongInfo{
 		SongName:    utils.ToSimpleChinese(s.Name),
 		SongArtists: utils.ToSimpleChinese(utils.ParseArtist(s)),
@@ -499,46 +502,46 @@ func (ncm *NetEaseProcessor) detectExt(url string) string {
 
 // safeFileName 合法的文件名
 func (ncm *NetEaseProcessor) safeFileName(info *SongInfo) string {
-    replacer := strings.NewReplacer("/", " ", "?", " ", "*", " ", ":", " ",
-        "|", " ", "\\", " ", "<", " ", ">", " ", "\"", " ")
+	replacer := strings.NewReplacer("/", " ", "?", " ", "*", " ", ":", " ",
+		"|", " ", "\\", " ", "<", " ", ">", " ", "\"", " ")
 
-    // 先把歌手和歌名拼起来
-    baseName := fmt.Sprintf("%s - %s", strings.ReplaceAll(info.SongArtists, "/", ","), info.SongName)
-    // 限制主文件名最多 120 个字符
-    baseName = truncateString(baseName, 120)
+	// 先把歌手和歌名拼起来
+	baseName := fmt.Sprintf("%s - %s", strings.ReplaceAll(info.SongArtists, "/", ","), info.SongName)
+	// 限制主文件名最多 120 个字符
+	baseName = truncateString(baseName, 120)
 
-    return replacer.Replace(fmt.Sprintf("%s.%s", baseName, info.FileExt))
+	return replacer.Replace(fmt.Sprintf("%s.%s", baseName, info.FileExt))
 }
 
 // safeCoverFileName 合法的封面文件名
 func (ncm *NetEaseProcessor) safeCoverFileName(info *SongInfo) string {
-    replacer := strings.NewReplacer("/", " ", "?", " ", "*", " ", ":", " ",
-        "|", " ", "\\", " ", "<", " ", ">", " ", "\"", " ")
+	replacer := strings.NewReplacer("/", " ", "?", " ", "*", " ", ":", " ",
+		"|", " ", "\\", " ", "<", " ", ">", " ", "\"", " ")
 
-    baseName := fmt.Sprintf("%s - %s_cover", strings.ReplaceAll(info.SongArtists, "/", ","), info.SongName)
-    baseName = truncateString(baseName, 120)
+	baseName := fmt.Sprintf("%s - %s_cover", strings.ReplaceAll(info.SongArtists, "/", ","), info.SongName)
+	baseName = truncateString(baseName, 120)
 
-    return replacer.Replace(fmt.Sprintf("%s.jpg", baseName))
+	return replacer.Replace(fmt.Sprintf("%s.jpg", baseName))
 }
 
 // safeTempFileName 合法临时文件路径
 func (ncm *NetEaseProcessor) safeTempFileName(info *SongInfo) string {
-    replacer := strings.NewReplacer("/", " ", "?", " ", "*", " ", ":", " ",
-        "|", " ", "\\", " ", "<", " ", ">", " ", "\"", " ")
+	replacer := strings.NewReplacer("/", " ", "?", " ", "*", " ", ":", " ",
+		"|", " ", "\\", " ", "<", " ", ">", " ", "\"", " ")
 
-    baseName := fmt.Sprintf("%s - %s_temp", strings.ReplaceAll(info.SongArtists, "/", ","), info.SongName)
-    baseName = truncateString(baseName, 120)
+	baseName := fmt.Sprintf("%s - %s_temp", strings.ReplaceAll(info.SongArtists, "/", ","), info.SongName)
+	baseName = truncateString(baseName, 120)
 
-    return replacer.Replace(fmt.Sprintf("%s.%s", baseName, info.FileExt))
+	return replacer.Replace(fmt.Sprintf("%s.%s", baseName, info.FileExt))
 }
 
 // truncateString 确保字符串不超过指定长度（按运行时的 rune/字符 计算）
 func truncateString(s string, maxLen int) string {
-    runes := []rune(s)
-    if len(runes) > maxLen {
-        return string(runes[:maxLen])
-    }
-    return s
+	runes := []rune(s)
+	if len(runes) > maxLen {
+		return string(runes[:maxLen])
+	}
+	return s
 }
 
 // 整理到本地
@@ -581,29 +584,85 @@ func (ncm *NetEaseProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.WebD
 		return errors.New("WebDAV 未初始化")
 	}
 
-    songMap := make(map[string]*SongInfo)
-    for _, song := range ncm.songs {
-        songMap[ncm.safeFileName(song)] = song
-    }
-    for _, f := range files {
-        songInfo, exists := songMap[f.Name()]
-        if !exists {
-            // 如果是不匹配的文件（比如过滤掉的封面，或者多余的临时文件），直接跳过
-            utils.DebugWithFormat("[NCM] 跳过无需处理的文件: %s", f.Name())
-            continue
-        }
-        musicFilePath := filepath.Join(ncm.tempDir, f.Name())
-        remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
-        if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
-            utils.WarnWithFormat("[NCM] ☁️ 上传失败 %s: %v", f.Name(), err)
-            return err
-        }
-        utils.InfoWithFormat("[NCM] ☁️ 已上传: %s", f.Name())
-    }
+	songMap := make(map[string]*SongInfo)
+	for _, song := range ncm.songs {
+		songMap[ncm.safeFileName(song)] = song
+	}
+	for _, f := range files {
+		songInfo, exists := songMap[f.Name()]
+		if !exists {
+			// 如果是不匹配的文件（比如过滤掉的封面，或者多余的临时文件），直接跳过
+			utils.DebugWithFormat("[NCM] 跳过无需处理的文件: %s", f.Name())
+			continue
+		}
+		musicFilePath := filepath.Join(ncm.tempDir, f.Name())
+		remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
+		if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
+			utils.WarnWithFormat("[NCM] ☁️ 上传失败 %s: %v", f.Name(), err)
+			return err
+		}
+		utils.InfoWithFormat("[NCM] ☁️ 已上传: %s", f.Name())
+	}
 	// 清除临时目录
 	err := processor.RemoveTempDir(ncm.tempDir)
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+// ResolveNeteaseSingleMetadata reuses the exact URL/quality lookup used by a
+// single-song download without downloading media to disk.
+func ResolveNeteaseSingleMetadata(cfg *config.Config, rawURL string) (*SongInfo, error) {
+	kind, musicID := utils.ParseMusicID(rawURL)
+	if kind != 1 || musicID <= 0 {
+		return nil, errors.New("链接不是可识别的网易云单曲")
+	}
+	if cfg == nil {
+		return nil, errors.New("配置不可用")
+	}
+
+	p := &NetEaseProcessor{cfg: cfg}
+	if cfg.CookieCloud != nil {
+		cookiePath := filepath.Join(cfg.CookieCloud.CookieFilePath, cfg.CookieCloud.CookieFile)
+		p.musicU = utils.GetCookieValue(cookiePath, ".music.163.com", "MUSIC_U")
+	}
+	batch := api.NewBatch(
+		api.BatchAPI{Key: api.SongDetailAPI, Json: api.CreateSongDetailReqJson([]int{musicID})},
+		api.BatchAPI{Key: api.SongUrlAPI, Json: api.CreateSongURLJson(api.SongURLConfig{EncodeType: "aac", Level: "lossless", Ids: []int{musicID}})},
+	)
+	request := ncmutils.RequestData{}
+	if p.musicU != "" {
+		request.Cookies = []*http.Cookie{{Name: "MUSIC_U", Value: p.musicU}}
+	}
+	if result := batch.Do(request); result.Error != nil {
+		return nil, fmt.Errorf("网易云API请求失败: %w", result.Error)
+	}
+	_, parsed := batch.Parse()
+	var detail types.SongsDetailData
+	var urls types.SongsURLData
+	if err := json.Unmarshal([]byte(parsed[api.SongDetailAPI]), &detail); err != nil {
+		return nil, fmt.Errorf("解析歌曲详情失败: %w", err)
+	}
+	if len(detail.Songs) == 0 {
+		return nil, errors.New("网易云未返回歌曲详情")
+	}
+	if err := json.Unmarshal([]byte(parsed[api.SongUrlAPI]), &urls); err != nil {
+		return nil, fmt.Errorf("解析歌曲URL失败: %w", err)
+	}
+	if len(urls.Data) == 0 || urls.Data[0].Url == "" {
+		return nil, errors.New("网易云未返回可下载的音质或格式信息")
+	}
+	song, file := detail.Songs[0], urls.Data[0]
+	info := &SongInfo{
+		SongName:    utils.ToSimpleChinese(song.Name),
+		SongArtists: utils.ToSimpleChinese(utils.ParseArtist(song)),
+		SongAlbum:   song.Al.Name,
+		FileExt:     p.detectExt(file.Url),
+		MusicSize:   int64(file.Size),
+	}
+	if info.SongName == "" || info.SongArtists == "" || info.SongAlbum == "" || info.FileExt == "" {
+		return nil, errors.New("网易云歌曲元数据不完整，无法确认是否重复")
+	}
+	return info, nil
 }
