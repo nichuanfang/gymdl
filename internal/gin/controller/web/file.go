@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,12 +12,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/internal/gin/response"
+	"golang.org/x/sync/singleflight"
 )
 
 // FileEntry represents a local or WebDAV audio file or directory.
@@ -27,6 +30,8 @@ type FileEntry struct {
 	Size    int64     `json:"size"`
 	ModTime time.Time `json:"mod_time"`
 	Ext     string    `json:"ext"`
+	Artist  string    `json:"artist,omitempty"`
+	Album   string    `json:"album,omitempty"`
 }
 
 func webDAVDirectory(cfg *config.Config) string {
@@ -119,86 +124,431 @@ func remoteSafePath(cfgDir, rel string) (string, error) {
 	return joined, nil
 }
 
+const maxFileSearchEntries = 5000
+const maxFileSearchDepth = 64
+
 func HandleListFiles(c *gin.Context) {
 	cfg := GetWebConfig()
 	if cfg == nil || cfg.Tidy == nil {
 		response.Fail(c, http.StatusInternalServerError, "整理配置不可用")
 		return
 	}
-	relPath := c.DefaultQuery("path", "/")
-	entries := make([]FileEntry, 0)
+	relPath := strings.Trim(c.DefaultQuery("path", "/"), "/")
+	query := strings.TrimSpace(c.Query("q"))
+	field := strings.ToLower(strings.TrimSpace(c.DefaultQuery("field", "all")))
+	if len(query) > 120 {
+		response.Fail(c, http.StatusBadRequest, "文件库搜索词过长")
+		return
+	}
+	if field != "all" && field != "song" && field != "artist" && field != "album" {
+		response.Fail(c, http.StatusBadRequest, "无效的文件库筛选字段")
+		return
+	}
+
+	var (
+		entries   []FileEntry
+		truncated bool
+		err       error
+	)
 	if cfg.Tidy.Mode == 2 {
 		if core.GlobalWebDAV == nil || core.GlobalWebDAV.Client == nil {
 			response.Fail(c, http.StatusBadGateway, "WebDAV 未初始化")
 			return
 		}
-		remotePath, err := remoteSafePath(webDAVDirectory(cfg), relPath)
-		if err != nil {
-			response.Fail(c, http.StatusBadRequest, "非法路径")
-			return
-		}
-		items, err := core.GlobalWebDAV.Client.ReadDir(remotePath)
-		if err != nil {
-			response.Fail(c, http.StatusBadGateway, "读取 WebDAV 目录失败: "+err.Error())
-			return
-		}
-		for _, item := range items {
-			if !item.IsDir() && !audioExtension(item.Name()) {
-				continue
-			}
-			rel := path.Join(strings.Trim(relPath, "/"), item.Name())
-			entries = append(entries, FileEntry{Name: item.Name(), Path: rel, IsDir: item.IsDir(), Size: item.Size(), ModTime: item.ModTime(), Ext: strings.ToLower(path.Ext(item.Name()))})
-		}
+		entries, truncated, err = listWebDAVFiles(webDAVDirectory(cfg), relPath, query, field, core.GlobalWebDAV.Client)
 	} else {
-		root := cfg.Tidy.DistDir
-		fullPath, err := localSafePath(root, relPath)
-		if err != nil {
-			response.Fail(c, http.StatusBadRequest, "非法路径")
-			return
-		}
-		absRoot, err := filepath.Abs(root)
-		if err != nil {
-			response.Fail(c, http.StatusInternalServerError, "整理目录路径无效")
-			return
-		}
-		realRoot, err := filepath.EvalSymlinks(absRoot)
-		if err != nil {
-			response.Fail(c, http.StatusInternalServerError, "整理目录不存在: "+err.Error())
-			return
-		}
-		items, err := os.ReadDir(fullPath)
-		if err != nil {
-			response.Fail(c, http.StatusInternalServerError, "读取目录失败: "+err.Error())
-			return
-		}
-		for _, item := range items {
-			info, err := item.Info()
-			if err != nil || (!item.IsDir() && !audioExtension(item.Name())) {
-				continue
-			}
-			entryPath := filepath.Join(fullPath, item.Name())
-			rel, err := filepath.Rel(realRoot, entryPath)
-			if err != nil {
-				continue
-			}
-			rel = filepath.ToSlash(rel)
-			if _, err := localSafePath(root, rel); err != nil {
-				continue
-			}
-			entries = append(entries, FileEntry{Name: item.Name(), Path: rel, IsDir: item.IsDir(), Size: info.Size(), ModTime: info.ModTime(), Ext: strings.ToLower(filepath.Ext(item.Name()))})
-		}
+		entries, truncated, err = listLocalFiles(cfg.Tidy.DistDir, relPath, query, field)
 	}
-	sort.Slice(entries, func(i, j int) bool {
+	if err != nil {
+		status := http.StatusInternalServerError
+		if cfg.Tidy.Mode == 2 {
+			status = http.StatusBadGateway
+		}
+		response.Fail(c, status, "读取文件库失败: "+err.Error())
+		return
+	}
+	sortFileEntries(entries)
+	mode := "local"
+	if cfg.Tidy.Mode == 2 {
+		mode = "webdav"
+	}
+	response.Success(c, gin.H{
+		"path":      relPath,
+		"entries":   entries,
+		"target":    mode,
+		"truncated": truncated,
+		"searching": query != "",
+	})
+}
+
+func sortFileEntries(entries []FileEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if !entries[i].ModTime.Equal(entries[j].ModTime) {
+			return entries[i].ModTime.After(entries[j].ModTime)
+		}
 		if entries[i].IsDir != entries[j].IsDir {
 			return entries[i].IsDir
 		}
 		return strings.ToLower(entries[i].Name) < strings.ToLower(entries[j].Name)
 	})
-	mode := "local"
-	if cfg.Tidy.Mode == 2 {
-		mode = "webdav"
+}
+
+func listLocalFiles(root, relPath, query, field string) ([]FileEntry, bool, error) {
+	relPath = strings.Trim(filepath.ToSlash(relPath), "/")
+	fullPath, err := localSafePath(root, relPath)
+	if err != nil {
+		return nil, false, err
 	}
-	response.Success(c, gin.H{"path": strings.Trim(relPath, "/"), "entries": entries, "target": mode})
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, false, err
+	}
+	realRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return nil, false, err
+	}
+	if query == "" {
+		items, err := os.ReadDir(fullPath)
+		if err != nil {
+			return nil, false, err
+		}
+		entries := make([]FileEntry, 0, len(items))
+		for _, item := range items {
+			info, err := item.Info()
+			if err != nil || (!item.IsDir() && !audioExtension(item.Name())) {
+				continue
+			}
+			rootRel := filepath.ToSlash(filepath.Join(relPath, item.Name()))
+			if _, err := localSafePath(root, rootRel); err != nil {
+				continue
+			}
+			artist, album := artistAlbumFromPath(rootRel)
+			entries = append(entries, FileEntry{
+				Name: item.Name(), Path: rootRel, IsDir: item.IsDir(), Size: info.Size(),
+				ModTime: info.ModTime(), Ext: strings.ToLower(filepath.Ext(item.Name())), Artist: artist, Album: album,
+			})
+		}
+		return entries, false, nil
+	}
+
+	entries := make([]FileEntry, 0)
+	truncated := false
+	visited := 0
+	err = filepath.WalkDir(fullPath, func(filePath string, item os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relFromSearchRoot, err := filepath.Rel(fullPath, filePath)
+		if err != nil {
+			return err
+		}
+		depth := len(strings.Split(filepath.ToSlash(relFromSearchRoot), "/"))
+		if item.IsDir() {
+			if filePath != fullPath && depth > maxFileSearchDepth {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		visited++
+		if visited > maxFileSearchEntries {
+			truncated = true
+			return filepath.SkipAll
+		}
+		if !audioExtension(item.Name()) {
+			return nil
+		}
+		info, err := item.Info()
+		if err != nil {
+			return err
+		}
+		rootRel, err := filepath.Rel(realRoot, filePath)
+		if err != nil {
+			return err
+		}
+		rootRel = filepath.ToSlash(rootRel)
+		if _, err := localSafePath(root, rootRel); err != nil {
+			return nil
+		}
+		artist, album := artistAlbumFromPath(rootRel)
+		entry := FileEntry{Name: item.Name(), Path: rootRel, Size: info.Size(), ModTime: info.ModTime(), Ext: strings.ToLower(filepath.Ext(item.Name())), Artist: artist, Album: album}
+		if fileMatchesQuery(entry, query, field) {
+			entries = append(entries, entry)
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, filepath.SkipAll) {
+		return nil, truncated, err
+	}
+	return entries, truncated, nil
+}
+
+type fileLibraryRemote interface {
+	ReadDir(string) ([]os.FileInfo, error)
+}
+
+const maxFileSearchDirs = 2000
+const webDAVFileIndexTTL = 15 * time.Second
+const maxWebDAVFileIndexes = 24
+const webDAVFileSearchConcurrency = 8
+
+type webDAVIndexResult struct {
+	entries   []FileEntry
+	truncated bool
+	expiresAt time.Time
+}
+
+var webDAVFileIndexes = struct {
+	sync.Mutex
+	items map[string]webDAVIndexResult
+}{items: make(map[string]webDAVIndexResult)}
+var webDAVFileIndexFlights singleflight.Group
+var webDAVFileSearchSlots = make(chan struct{}, webDAVFileSearchConcurrency)
+
+type webDAVDirTask struct {
+	remoteDir   string
+	relativeDir string
+	depth       int
+}
+
+type webDAVDirResult struct {
+	entries []FileEntry
+	dirs    []webDAVDirTask
+	err     error
+}
+
+func listWebDAVFiles(baseDir, relPath, query, field string, client fileLibraryRemote) ([]FileEntry, bool, error) {
+	relPath = strings.Trim(path.Clean("/"+strings.ReplaceAll(relPath, "\\", "/")), "/")
+	remotePath, err := remoteSafePath(baseDir, relPath)
+	if err != nil {
+		return nil, false, err
+	}
+	if query == "" {
+		items, err := client.ReadDir(remotePath)
+		if err != nil {
+			return nil, false, err
+		}
+		entries := make([]FileEntry, 0, len(items))
+		for _, item := range items {
+			if !item.IsDir() && !audioExtension(item.Name()) {
+				continue
+			}
+			entryRel := path.Join(relPath, item.Name())
+			if _, err := remoteSafePath(baseDir, entryRel); err != nil {
+				continue
+			}
+			artist, album := artistAlbumFromPath(entryRel)
+			entries = append(entries, FileEntry{
+				Name: item.Name(), Path: entryRel, IsDir: item.IsDir(), Size: item.Size(),
+				ModTime: item.ModTime(), Ext: strings.ToLower(path.Ext(item.Name())), Artist: artist, Album: album,
+			})
+		}
+		return entries, false, nil
+	}
+
+	cacheKey := fileIndexCacheKey(baseDir, relPath)
+	index, ok := getWebDAVFileIndex(cacheKey)
+	if !ok {
+		value, err, _ := webDAVFileIndexFlights.Do(cacheKey, func() (any, error) {
+			if cached, found := getWebDAVFileIndex(cacheKey); found {
+				return cached, nil
+			}
+			entries, truncated, err := scanWebDAVFileIndex(baseDir, relPath, client)
+			if err != nil {
+				return nil, err
+			}
+			index := webDAVIndexResult{entries: entries, truncated: truncated}
+			setWebDAVFileIndex(cacheKey, index)
+			return index, nil
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		index = value.(webDAVIndexResult)
+	}
+
+	entries := make([]FileEntry, 0)
+	for _, entry := range index.entries {
+		if fileMatchesQuery(entry, query, field) {
+			entries = append(entries, entry)
+		}
+	}
+	return entries, index.truncated, nil
+}
+
+func fileIndexCacheKey(baseDir, relPath string) string {
+	base := path.Clean("/" + strings.Trim(baseDir, "/"))
+	rel := path.Clean("/" + strings.Trim(relPath, "/"))
+	return base + "\x00" + rel
+}
+
+func getWebDAVFileIndex(key string) (webDAVIndexResult, bool) {
+	webDAVFileIndexes.Lock()
+	defer webDAVFileIndexes.Unlock()
+	item, ok := webDAVFileIndexes.items[key]
+	if !ok {
+		return webDAVIndexResult{}, false
+	}
+	if time.Now().After(item.expiresAt) {
+		delete(webDAVFileIndexes.items, key)
+		return webDAVIndexResult{}, false
+	}
+	item.entries = append([]FileEntry(nil), item.entries...)
+	return item, true
+}
+
+func setWebDAVFileIndex(key string, index webDAVIndexResult) {
+	webDAVFileIndexes.Lock()
+	defer webDAVFileIndexes.Unlock()
+	if len(webDAVFileIndexes.items) >= maxWebDAVFileIndexes {
+		// Expired indexes are removed first. If the map is still full, evict the
+		// index closest to expiry to keep memory bounded without a second LRU map.
+		now := time.Now()
+		var earliestKey string
+		var earliest time.Time
+		for candidateKey, candidate := range webDAVFileIndexes.items {
+			if !now.Before(candidate.expiresAt) {
+				delete(webDAVFileIndexes.items, candidateKey)
+				continue
+			}
+			if earliest.IsZero() || candidate.expiresAt.Before(earliest) {
+				earliestKey, earliest = candidateKey, candidate.expiresAt
+			}
+		}
+		if len(webDAVFileIndexes.items) >= maxWebDAVFileIndexes && earliestKey != "" {
+			delete(webDAVFileIndexes.items, earliestKey)
+		}
+	}
+	index.expiresAt = time.Now().Add(webDAVFileIndexTTL)
+	index.entries = append([]FileEntry(nil), index.entries...)
+	webDAVFileIndexes.items[key] = index
+}
+
+func invalidateWebDAVFileIndexes() {
+	webDAVFileIndexes.Lock()
+	clear(webDAVFileIndexes.items)
+	webDAVFileIndexes.Unlock()
+}
+
+func scanWebDAVFileIndex(baseDir, relPath string, client fileLibraryRemote) ([]FileEntry, bool, error) {
+	root, err := remoteSafePath(baseDir, relPath)
+	if err != nil {
+		return nil, false, err
+	}
+	current := []webDAVDirTask{{remoteDir: root, relativeDir: relPath, depth: 0}}
+	entries := make([]FileEntry, 0)
+	visitedFiles := 0
+	visitedDirs := 0
+	truncated := false
+
+	stopAtFileLimit := false
+	for len(current) > 0 {
+		results := make([]webDAVDirResult, len(current))
+		workers := webDAVFileSearchConcurrency
+		if workers > len(current) {
+			workers = len(current)
+		}
+		jobs := make(chan int)
+		var wg sync.WaitGroup
+		for worker := 0; worker < workers; worker++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for index := range jobs {
+					webDAVFileSearchSlots <- struct{}{}
+					task := current[index]
+					items, err := client.ReadDir(task.remoteDir)
+					<-webDAVFileSearchSlots
+					if err != nil {
+						results[index].err = err
+						continue
+					}
+					result := &results[index]
+					for _, item := range items {
+						entryRel := path.Join(task.relativeDir, item.Name())
+						entryRemote, err := remoteSafePath(baseDir, entryRel)
+						if err != nil {
+							continue
+						}
+						if item.IsDir() {
+							if task.depth < maxFileSearchDepth {
+								result.dirs = append(result.dirs, webDAVDirTask{
+									remoteDir: entryRemote, relativeDir: entryRel, depth: task.depth + 1,
+								})
+							}
+							continue
+						}
+						if !audioExtension(item.Name()) {
+							continue
+						}
+						artist, album := artistAlbumFromPath(entryRel)
+						result.entries = append(result.entries, FileEntry{
+							Name: item.Name(), Path: entryRel, Size: item.Size(), ModTime: item.ModTime(),
+							Ext: strings.ToLower(path.Ext(item.Name())), Artist: artist, Album: album,
+						})
+					}
+				}
+			}()
+		}
+		for index := range current {
+			jobs <- index
+		}
+		close(jobs)
+		wg.Wait()
+
+		next := make([]webDAVDirTask, 0)
+		for _, result := range results {
+			if result.err != nil {
+				return nil, truncated, result.err
+			}
+			visitedDirs++
+			remainingFiles := maxFileSearchEntries - visitedFiles
+			if len(result.entries) > remainingFiles {
+				result.entries = result.entries[:remainingFiles]
+				truncated = true
+				stopAtFileLimit = true
+			}
+			entries = append(entries, result.entries...)
+			visitedFiles += len(result.entries)
+			if stopAtFileLimit {
+				break
+			}
+
+			remainingDirs := maxFileSearchDirs - visitedDirs - len(next)
+			if len(result.dirs) > remainingDirs {
+				if remainingDirs > 0 {
+					next = append(next, result.dirs[:remainingDirs]...)
+				}
+				truncated = true
+			} else {
+				next = append(next, result.dirs...)
+			}
+		}
+		current = next
+	}
+	return entries, truncated, nil
+}
+
+func artistAlbumFromPath(filePath string) (string, string) {
+	parts := strings.Split(strings.Trim(path.Clean("/"+filepath.ToSlash(filePath)), "/"), "/")
+	if len(parts) < 3 {
+		return "", ""
+	}
+	return parts[len(parts)-3], parts[len(parts)-2]
+}
+
+func fileMatchesQuery(entry FileEntry, query, field string) bool {
+	query = strings.ToLower(strings.TrimSpace(query))
+	contains := func(value string) bool { return strings.Contains(strings.ToLower(value), query) }
+	switch field {
+	case "song":
+		return contains(strings.TrimSuffix(entry.Name, filepath.Ext(entry.Name)))
+	case "artist":
+		return contains(entry.Artist)
+	case "album":
+		return contains(entry.Album)
+	default:
+		return contains(entry.Name) || contains(entry.Artist) || contains(entry.Album)
+	}
 }
 
 func HandleStreamFile(c *gin.Context) {
@@ -359,6 +709,7 @@ func HandleDeleteFile(c *gin.Context) {
 			response.Fail(c, http.StatusBadGateway, "删除 WebDAV 文件失败: "+err.Error())
 			return
 		}
+		invalidateWebDAVFileIndexes()
 	} else {
 		fullPath, err := localSafePath(cfg.Tidy.DistDir, relPath)
 		if err != nil {

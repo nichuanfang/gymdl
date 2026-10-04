@@ -52,6 +52,8 @@ export interface FileEntry {
   size: number
   mod_time: string
   ext: string
+  artist?: string
+  album?: string
 }
 
 export interface CookieCloudStatus {

@@ -22,7 +22,7 @@ export interface TaskHistoryFilters {
 export const getTaskHistory = (offset = 0, limit = 20, filters: TaskHistoryFilters = {}) =>
   get<{ items: Task[]; total: number }>('/task/history', { offset, limit, ...filters })
 export const cancelTask = (id: string) => del(`/task/${id}`)
-export const listFiles = (path = '/') => get<{ path: string; entries: FileEntry[]; target: 'local' | 'webdav' }>('/files', { path })
+export const listFiles = (path = '/', q = '', field = 'all') => get<{ path: string; entries: FileEntry[]; target: 'local' | 'webdav'; truncated?: boolean; searching?: boolean }>('/files', { path, q: q || undefined, field })
 export const getFileStreamUrl = (path: string) => `/api/web/files/stream?path=${encodeURIComponent(path)}`
 export const deleteFile = (path: string) => del('/files', { path })
 export const getCookieCloudStatus = () => get<CookieCloudStatus>('/cookiecloud/status')
