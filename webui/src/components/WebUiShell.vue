@@ -1,6 +1,17 @@
 <template>
   <TaskNotificationBridge />
   <main v-if="authLoading" class="auth-loading"><span class="auth-loader-mark">♫ GYMDL</span></main>
+  <main v-else-if="authSessionUnavailable" class="login-screen">
+    <section class="login-card" aria-labelledby="session-unavailable-title">
+      <div class="login-mark">GYMDL <span>WEB CONSOLE</span></div>
+      <p class="login-kicker">CONNECTION / SESSION CHECK</p>
+      <h1 id="session-unavailable-title">暂时无法确认登录状态</h1>
+      <p class="login-copy">为保护控制台，登录状态未确认前不会显示管理页面。请检查服务连接后重试。</p>
+      <n-button class="login-submit" type="primary" block size="large" :loading="authLoading" @click="refreshSession">
+        重试连接
+      </n-button>
+    </section>
+  </main>
   <main v-else-if="authRequired && !authenticated" class="login-screen">
     <section class="login-card">
       <div class="login-mark">GYMDL <span>WEB CONSOLE</span></div>
@@ -62,6 +73,7 @@ const message = useMessage()
 const authLoading = ref(true)
 const authRequired = ref(false)
 const authenticated = ref(true)
+const authSessionUnavailable = ref(false)
 const loggingIn = ref(false)
 const username = ref('')
 const password = ref('')
@@ -93,12 +105,20 @@ function handleMenuClick(key: string) {
 }
 
 async function refreshSession() {
+  authLoading.value = true
   try {
     const response = await getAuthSession()
-    authRequired.value = !!response.data?.auth_enabled
-    authenticated.value = !authRequired.value || !!response.data?.authenticated
+    if (response.code !== 200 || !response.data) {
+      throw new Error(response.message || '登录状态接口返回异常')
+    }
+    authRequired.value = !!response.data.auth_enabled
+    authenticated.value = !authRequired.value || !!response.data.authenticated
+    authSessionUnavailable.value = false
   } catch {
+    // Fail closed: do not render the console until the auth mode is known.
+    authRequired.value = true
     authenticated.value = false
+    authSessionUnavailable.value = true
   } finally {
     authLoading.value = false
   }
