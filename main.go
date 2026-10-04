@@ -177,7 +177,7 @@ func initMonitor(ctx context.Context, c *config.Config) {
 		utils.Success("目录监控已启动")
 		wm.StartWorkerPool(runtime.NumCPU())
 	}()
-
+    
 	<-ctx.Done()
 	wm.Stop()
 	utils.Stop("目录监控已关闭")

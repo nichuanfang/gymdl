@@ -83,7 +83,7 @@ func TestSearchQQRefreshesCredentialAndRetriesOnceAfterRiskControl(t *testing.T)
 	}
 }
 
-func TestSearchQQDoesNotRefreshCredentialForHTTP429(t *testing.T) {
+func TestSearchQQRetriesHTTP429AtMostThreeTimesWithoutRefreshing(t *testing.T) {
 	useQQMusicCredentialPath(t)
 	previousConfig := GetWebConfig()
 	previousManager := manager
@@ -117,8 +117,45 @@ func TestSearchQQDoesNotRefreshCredentialForHTTP429(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "HTTP 状态码: 429") {
 		t.Fatalf("HTTP 429 should be returned as an upstream rate limit, got %v", err)
 	}
-	if searchCalls != 1 || refreshCalls != 0 {
-		t.Fatalf("HTTP 429 must not refresh credentials or retry: search=%d refresh=%d", searchCalls, refreshCalls)
+	if searchCalls != 4 || refreshCalls != 0 {
+		t.Fatalf("HTTP 429 should make one initial request and at most three retries without refreshing credentials: search=%d refresh=%d", searchCalls, refreshCalls)
+	}
+}
+
+func TestSearchQQRetriesHTTP429AndSucceeds(t *testing.T) {
+	useQQMusicCredentialPath(t)
+	previousConfig := GetWebConfig()
+	previousManager := manager
+	manager = nil
+	t.Cleanup(func() {
+		SetWebConfig(previousConfig)
+		manager = previousManager
+	})
+
+	searchCalls := 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		searchCalls++
+		if searchCalls == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{"song":[{"id":42,"mid":"song-mid","title":"Result title"}]}}`))
+	}))
+	defer api.Close()
+	SetWebConfig(&config.Config{QQMusicApiConfig: &config.QQMusicApiConfig{
+		Enable: true, Endpoint: api.URL,
+	}})
+
+	items, err := searchQQ("rate limited once", 10, 0)
+	if err != nil {
+		t.Fatalf("QQ search should succeed after retrying HTTP 429: %v", err)
+	}
+	if searchCalls != 2 {
+		t.Fatalf("expected one retry after the first HTTP 429, got %d search calls", searchCalls)
+	}
+	if len(items) != 1 || items[0].SongID != "42" {
+		t.Fatalf("unexpected retried QQ search results: %#v", items)
 	}
 }
 

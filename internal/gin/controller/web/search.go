@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -381,6 +382,8 @@ type qqSearchResponse struct {
 	} `json:"data"`
 }
 
+const qqSearchMax429Retries = 3
+
 var qqSearchRefreshFlights singleflight.Group
 
 func searchQQ(keyword string, limit, offset int) ([]SearchResultItem, error) {
@@ -406,7 +409,7 @@ func searchQQWithContext(ctx context.Context, keyword string, limit, offset int)
 	}
 	cookie := qqSearchCredentialCookie(credential, cfg.QQMusicApiConfig)
 	client := &http.Client{Timeout: searchProviderTimeout}
-	searchResp, err := requestQQSearch(ctx, client, cfg.QQMusicApiConfig.Endpoint, keyword, limit, page, cookie)
+	searchResp, err := requestQQSearchWith429Retry(ctx, client, cfg.QQMusicApiConfig.Endpoint, keyword, limit, page, cookie)
 	if err != nil && isQQRiskControlError(err.Error()) {
 		if utils.Logger() != nil {
 			utils.WarnWithFormat("[WebSearch] QQ 搜索触发风控，尝试刷新凭证并重试一次")
@@ -415,7 +418,7 @@ func searchQQWithContext(ctx context.Context, keyword string, limit, offset int)
 		if refreshErr != nil {
 			return nil, fmt.Errorf("%w；自动刷新 QQ 凭证失败: %v", err, refreshErr)
 		}
-		searchResp, err = requestQQSearch(ctx, client, cfg.QQMusicApiConfig.Endpoint, keyword, limit, page, refreshedCookie)
+		searchResp, err = requestQQSearchWith429Retry(ctx, client, cfg.QQMusicApiConfig.Endpoint, keyword, limit, page, refreshedCookie)
 	}
 	if err != nil {
 		return nil, err
@@ -446,6 +449,37 @@ func searchQQWithContext(ctx context.Context, keyword string, limit, offset int)
 	return items, nil
 }
 
+type qqSearchHTTPStatusError struct {
+	statusCode int
+}
+
+func (e *qqSearchHTTPStatusError) Error() string {
+	return fmt.Sprintf("QQ Music API HTTP 状态码: %d", e.statusCode)
+}
+
+func requestQQSearchWith429Retry(ctx context.Context, client *http.Client, endpoint, keyword string, limit, page int, cookie string) (qqSearchResponse, error) {
+	for retry := 0; ; retry++ {
+		searchResp, err := requestQQSearch(ctx, client, endpoint, keyword, limit, page, cookie)
+		if err == nil || !isQQSearchHTTPStatus(err, http.StatusTooManyRequests) || retry >= qqSearchMax429Retries {
+			return searchResp, err
+		}
+
+		delay := 250 * time.Millisecond * time.Duration(1<<retry)
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return qqSearchResponse{}, ctx.Err()
+		}
+	}
+}
+
+func isQQSearchHTTPStatus(err error, statusCode int) bool {
+	var statusErr *qqSearchHTTPStatusError
+	return errors.As(err, &statusErr) && statusErr.statusCode == statusCode
+}
+
 func requestQQSearch(ctx context.Context, client *http.Client, endpoint, keyword string, limit, page int, cookie string) (qqSearchResponse, error) {
 	query := url.Values{}
 	query.Set("keyword", keyword)
@@ -469,7 +503,7 @@ func requestQQSearch(ctx context.Context, client *http.Client, endpoint, keyword
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return qqSearchResponse{}, fmt.Errorf("QQ Music API HTTP 状态码: %d", resp.StatusCode)
+		return qqSearchResponse{}, &qqSearchHTTPStatusError{statusCode: resp.StatusCode}
 	}
 
 	var searchResp qqSearchResponse
