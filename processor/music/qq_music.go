@@ -908,7 +908,13 @@ func (qm *QQMusicProcessor) getFinalURL(raw string) (string, error) {
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 	req.Header.Set("Cookie", "")
 
-	resp, err := qm.client.Do(req)
+	// Link-identification helpers may use a zero-value QQMusicProcessor, so
+	// qm.client can be nil. Use a bounded fallback client in that case.
+	client := qm.client
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
