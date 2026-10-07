@@ -25,6 +25,8 @@ type BotApp struct {
 	pendingMu       sync.Mutex
 	pendingMusic    map[string]pendingMusicDownload
 	activeMusicKeys map[string]struct{}
+	musicActionMu   sync.Mutex
+	musicActions    map[string]pendingMusicAction
 }
 
 // NewBotApp 创建机器人
@@ -86,11 +88,12 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 		musicDedupe:     musicDedupe,
 		pendingMusic:    make(map[string]pendingMusicDownload),
 		activeMusicKeys: make(map[string]struct{}),
+		musicActions:    make(map[string]pendingMusicAction),
 	}
 	//注册处理器
 	app.registerHandlers()
 	//初始化notifier
-	InitBotNotifier(bot, cfg.Telegram.ChatID)
+	InitBotNotifier(bot, cfg.Telegram.ChatID, app)
 	return app, nil
 }
 

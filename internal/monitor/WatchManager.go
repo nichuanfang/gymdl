@@ -182,7 +182,7 @@ func SendTelegram(songInfo *music.SongInfo) {
 		)
 
 		// 发送消息
-		notifier.Send(messageText)
+		bot.SendMusicMessage(messageText, songInfo)
 	}
 }
 

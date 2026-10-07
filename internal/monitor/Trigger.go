@@ -118,9 +118,17 @@ func tidy(path string, cfg *config.Config) (*music.SongInfo, error) {
 	case 1:
 		songInfo.Tidy = "LOCAL"
 		err = tidyToLocal(path, cfg)
+		if err == nil {
+			songInfo.MusicPath = filepath.Join(cfg.Tidy.DistDir, utils.SanitizeFileName(filepath.Base(path)))
+		}
 	case 2:
 		songInfo.Tidy = "WEBDAV"
 		err = tidyToWebDAV(path, core.GlobalWebDAV, cfg)
+		if err == nil {
+			// Watcher uploads go to the WebDAV root; keep the path relative to
+			// WebDAVDir because the WebDAV helpers add that configured prefix.
+			songInfo.MusicPath = filepath.Base(path)
+		}
 	default:
 		utils.WarnWithFormat("[Um] 未知的整理模式: %s", path)
 		return nil, errors.New("未知的整理模式")

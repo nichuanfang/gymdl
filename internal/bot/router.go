@@ -37,6 +37,7 @@ func (app *BotApp) registerHandlers() {
 
 	// 处理Callback
 	app.bot.Handle(&duplicateCallbackEndpoint, app.HandleDuplicateMusicCallback)
+	app.bot.Handle(&musicActionCallbackEndpoint, app.HandleMusicActionCallback)
 	app.bot.Handle(tb.OnCallback, app.HandleCallBack)
 
 }
