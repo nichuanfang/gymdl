@@ -266,6 +266,7 @@ func (qm *QQMusicProcessor) BeforeTidy() error {
 		if err != nil {
 			return err
 		}
+		song.MusicPath = fileName
 	}
 	return nil
 }

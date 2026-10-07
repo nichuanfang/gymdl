@@ -71,7 +71,7 @@ func SendMusicMessage(msg string, song *music.SongInfo) {
 			log.Printf("[Telegram] 发送音乐入库通知失败: %v", err)
 			return
 		}
-		notifier.App.setMusicActionMessage(token, message)
+		notifier.App.setMusicActionMessages([]string{token}, message, markup)
 	}()
 }
 

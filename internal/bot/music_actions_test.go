@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/nichuanfang/gymdl/processor/music"
+	tb "gopkg.in/telebot.v4"
 )
 
 func TestMusicActionMarkupRegistersPlaybackAndDeleteActions(t *testing.T) {
@@ -27,6 +28,11 @@ func TestMusicActionMarkupRegistersPlaybackAndDeleteActions(t *testing.T) {
 			t.Errorf("callback payload is %d bytes; Telegram allows at most 64", callbackLength)
 		}
 	}
+	for _, action := range []string{"confirm_delete", "cancel_delete"} {
+		if callbackLength := len(musicActionCallbackUnique) + 1 + len(action) + 1 + len(token); callbackLength > 64 {
+			t.Errorf("%s callback payload is %d bytes; Telegram allows at most 64", action, callbackLength)
+		}
+	}
 
 	action, ok := app.getMusicAction(token)
 	if !ok {
@@ -47,5 +53,22 @@ func TestMusicActionMarkupRequiresStoredPathAndSupportedStorage(t *testing.T) {
 		if token != "" || markup != nil {
 			t.Fatalf("expected no actions for incomplete storage data, got token=%q markup=%#v", token, markup)
 		}
+	}
+}
+
+func TestRemoveMusicActionRowKeepsOtherSongs(t *testing.T) {
+	markup := &tb.ReplyMarkup{}
+	first := markup.Data("▶️ 播放", musicActionCallbackUnique, "play", "first-token")
+	firstDelete := markup.Data("🗑 删除", musicActionCallbackUnique, "delete", "first-token")
+	second := markup.Data("▶️ 播放", musicActionCallbackUnique, "play", "second-token")
+	secondDelete := markup.Data("🗑 删除", musicActionCallbackUnique, "delete", "second-token")
+	markup.Inline(markup.Row(first, firstDelete), markup.Row(second, secondDelete))
+
+	updated := removeMusicActionRow(markup, "first-token")
+	if len(updated.InlineKeyboard) != 1 || len(updated.InlineKeyboard[0]) != 2 {
+		t.Fatalf("expected the second song's action row to remain, got %#v", updated.InlineKeyboard)
+	}
+	if got := updated.InlineKeyboard[0][0].Data; got != "play|second-token" {
+		t.Fatalf("remaining play callback = %q, want %q", got, "play|second-token")
 	}
 }

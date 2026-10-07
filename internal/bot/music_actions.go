@@ -28,6 +28,7 @@ type pendingMusicAction struct {
 	storage   string
 	expiresAt time.Time
 	origin    *tb.Message
+	markup    *tb.ReplyMarkup
 	deleting  bool
 }
 
@@ -40,7 +41,7 @@ func (app *BotApp) musicActionMarkup(song *music.SongInfo) (string, *tb.ReplyMar
 		return "", nil
 	}
 
-	token := uuid.NewString()
+	token := strings.ReplaceAll(uuid.NewString(), "-", "")
 	action := pendingMusicAction{
 		path:      song.MusicPath,
 		title:     song.SongName,
@@ -64,15 +65,19 @@ func (app *BotApp) musicActionMarkup(song *music.SongInfo) (string, *tb.ReplyMar
 	return token, markup
 }
 
-func (app *BotApp) setMusicActionMessage(token string, message *tb.Message) {
-	if token == "" || message == nil {
+func (app *BotApp) setMusicActionMessages(tokens []string, message *tb.Message, markup *tb.ReplyMarkup) {
+	if len(tokens) == 0 || message == nil {
 		return
 	}
+	markupCopy := cloneMusicActionMarkup(markup)
 	app.musicActionMu.Lock()
 	defer app.musicActionMu.Unlock()
-	if action, ok := app.musicActions[token]; ok {
-		action.origin = message
-		app.musicActions[token] = action
+	for _, token := range tokens {
+		if action, ok := app.musicActions[token]; ok {
+			action.origin = message
+			action.markup = cloneMusicActionMarkup(markupCopy)
+			app.musicActions[token] = action
+		}
 	}
 }
 
@@ -88,6 +93,57 @@ func (app *BotApp) purgeMusicActionsLocked(now time.Time) {
 	for token, action := range app.musicActions {
 		if now.After(action.expiresAt) {
 			delete(app.musicActions, token)
+		}
+	}
+}
+
+func cloneMusicActionMarkup(markup *tb.ReplyMarkup) *tb.ReplyMarkup {
+	cloned := &tb.ReplyMarkup{}
+	if markup == nil {
+		return cloned
+	}
+	cloned.InlineKeyboard = make([][]tb.InlineButton, len(markup.InlineKeyboard))
+	for i, row := range markup.InlineKeyboard {
+		cloned.InlineKeyboard[i] = append([]tb.InlineButton(nil), row...)
+	}
+	return cloned
+}
+
+func removeMusicActionRow(markup *tb.ReplyMarkup, token string) *tb.ReplyMarkup {
+	updated := &tb.ReplyMarkup{}
+	if markup == nil {
+		return updated
+	}
+	needle := "|" + token
+	for _, row := range markup.InlineKeyboard {
+		belongsToAction := false
+		for _, button := range row {
+			if button.Unique == musicActionCallbackUnique && strings.HasSuffix(button.Data, needle) {
+				belongsToAction = true
+				break
+			}
+		}
+		if !belongsToAction {
+			updated.InlineKeyboard = append(updated.InlineKeyboard, append([]tb.InlineButton(nil), row...))
+		}
+	}
+	return updated
+}
+
+func sameMusicActionMessage(left, right *tb.Message) bool {
+	if left == nil || right == nil || left.ID != right.ID || left.Chat == nil || right.Chat == nil {
+		return false
+	}
+	return left.Chat.ID == right.Chat.ID
+}
+
+func (app *BotApp) updateMusicActionMarkupForMessage(message *tb.Message, markup *tb.ReplyMarkup) {
+	app.musicActionMu.Lock()
+	defer app.musicActionMu.Unlock()
+	for token, action := range app.musicActions {
+		if sameMusicActionMessage(action.origin, message) {
+			action.markup = cloneMusicActionMarkup(markup)
+			app.musicActions[token] = action
 		}
 	}
 }
@@ -209,7 +265,11 @@ func (app *BotApp) confirmMusicActionDelete(c tb.Context, token string, action p
 	delete(app.musicActions, token)
 	app.musicActionMu.Unlock()
 	if action.origin != nil {
-		_, _ = c.Bot().EditReplyMarkup(action.origin, &tb.ReplyMarkup{})
+		updatedMarkup := removeMusicActionRow(action.markup, token)
+		app.updateMusicActionMarkupForMessage(action.origin, updatedMarkup)
+		if _, err := c.Bot().EditReplyMarkup(action.origin, updatedMarkup); err != nil {
+			utils.WarnWithFormat("[Telegram] 更新歌曲操作按钮失败: %v", err)
+		}
 	}
 	return c.Edit("✅ 已删除《"+action.title+"》的入库文件。", &tb.ReplyMarkup{})
 }

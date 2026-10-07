@@ -84,6 +84,7 @@ func (ncm *NetEaseProcessor) BeforeTidy() error {
 		if err != nil {
 			return err
 		}
+		song.MusicPath = fileName
 	}
 	return nil
 }

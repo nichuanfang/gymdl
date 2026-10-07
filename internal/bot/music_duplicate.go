@@ -202,14 +202,16 @@ func (app *BotApp) HandleDuplicateMusicCallback(c tb.Context) error {
 	}
 	p.Init(pending.cfg)
 	session := &dispatch.Session{
-		Text:    pending.link,
-		Context: c,
-		User:    c.Sender(),
-		Bot:     c.Bot(),
-		Msg:     c.Message(),
-		Link:    link,
-		Start:   time.Now(),
-		Cfg:     pending.cfg,
+		Text:                    pending.link,
+		Context:                 c,
+		User:                    c.Sender(),
+		Bot:                     c.Bot(),
+		Msg:                     c.Message(),
+		Link:                    link,
+		Start:                   time.Now(),
+		Cfg:                     pending.cfg,
+		CreateMusicActionMarkup: app.musicActionMarkup,
+		SetMusicActionMessages:  app.setMusicActionMessages,
 	}
 	app.attachDownloadRecorder(session, p.Name(), pending.track)
 	return session.HandleMusic(p)

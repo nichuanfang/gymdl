@@ -134,6 +134,7 @@ func ReadMusicDir(tempDir string, tidyType string, p Processor) ([]*SongInfo, er
 			}
 
 			song.Tidy = tidyType
+			song.MusicPath = fullPath
 			songs = append(songs, song)
 		}
 	}

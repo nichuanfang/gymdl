@@ -38,14 +38,16 @@ func (app *BotApp) HandleText(c tb.Context) error {
 
 	// 创建会话对象
 	session := &dispatch.Session{
-		Text:    text,
-		Context: c,
-		User:    user,
-		Bot:     b,
-		Msg:     msg,
-		Link:    link,
-		Start:   time.Now(),
-		Cfg:     taskConfig,
+		Text:                    text,
+		Context:                 c,
+		User:                    user,
+		Bot:                     b,
+		Msg:                     msg,
+		Link:                    link,
+		Start:                   time.Now(),
+		Cfg:                     taskConfig,
+		CreateMusicActionMarkup: app.musicActionMarkup,
+		SetMusicActionMessages:  app.setMusicActionMessages,
 	}
 	var err error
 	switch expr := executor.(type) {
@@ -87,13 +89,15 @@ func (app *BotApp) HandleAudio(c tb.Context) error {
 	taskConfig := config.WithLiveTaskOverrides(app.cfg)
 	// 创建会话对象
 	session := &dispatch.Session{
-		Text:    text,
-		Context: c,
-		User:    user,
-		Bot:     b,
-		Msg:     msg,
-		Start:   time.Now(),
-		Cfg:     taskConfig,
+		Text:                    text,
+		Context:                 c,
+		User:                    user,
+		Bot:                     b,
+		Msg:                     msg,
+		Start:                   time.Now(),
+		Cfg:                     taskConfig,
+		CreateMusicActionMarkup: app.musicActionMarkup,
+		SetMusicActionMessages:  app.setMusicActionMessages,
 	}
 
 	processor := &music.ForwardProcessor{}

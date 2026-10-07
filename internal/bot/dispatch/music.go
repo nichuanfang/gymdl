@@ -2,6 +2,8 @@ package dispatch
 
 import (
 	"fmt"
+	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/nichuanfang/gymdl/processor/music"
@@ -47,6 +49,7 @@ func (s *Session) HandleMusic(p music.Processor) error {
 		_, _ = bot.Edit(msg, fmt.Sprintf("⚠️ 文件入库失败：\n<pre>%s</pre>", utils.EscapeHTML(utils.TruncateString(err.Error(), 400))), tb.ModeHTML)
 		return nil
 	}
+	s.setStoredMusicPaths(p.Songs())
 	if s.OnMusicDownloaded != nil {
 		s.OnMusicDownloaded(p.Songs())
 	}
@@ -92,7 +95,7 @@ func (s *Session) sendMusicFeedback(p music.Processor) {
 			strings.ToUpper(song.Tidy),
 		)
 
-		_, _ = bot.Edit(msg, successMsg, tb.ModeHTML)
+		s.editMusicSuccess(successMsg, songs)
 		return
 	}
 
@@ -130,5 +133,61 @@ func (s *Session) sendMusicFeedback(p music.Processor) {
 		strings.ToUpper(songs[0].Tidy),
 	)
 
-	_, _ = bot.Edit(msg, successMsg, tb.ModeHTML)
+	s.editMusicSuccess(successMsg, songs)
+}
+
+func (s *Session) editMusicSuccess(text string, songs []*music.SongInfo) {
+	options := []interface{}{tb.ModeHTML}
+	var actionTokens []string
+	var actionMarkup *tb.ReplyMarkup
+	if s.CreateMusicActionMarkup != nil {
+		for _, song := range songs {
+			token, markup := s.CreateMusicActionMarkup(song)
+			if token == "" || markup == nil {
+				continue
+			}
+			actionTokens = append(actionTokens, token)
+			if actionMarkup == nil {
+				actionMarkup = &tb.ReplyMarkup{}
+			}
+			actionMarkup.InlineKeyboard = append(actionMarkup.InlineKeyboard, markup.InlineKeyboard...)
+		}
+	}
+	if actionMarkup != nil {
+		options = append(options, actionMarkup)
+	}
+
+	updated, err := s.Bot.Edit(s.Msg, text, options...)
+	if err != nil {
+		utils.WarnWithFormat("[Telegram] 更新入库成功消息失败: %v", err)
+		return
+	}
+	if len(actionTokens) > 0 && s.SetMusicActionMessages != nil {
+		if updated == nil {
+			updated = s.Msg
+		}
+		s.SetMusicActionMessages(actionTokens, updated, actionMarkup)
+	}
+}
+
+func (s *Session) setStoredMusicPaths(songs []*music.SongInfo) {
+	if s.Cfg == nil || s.Cfg.Tidy == nil {
+		return
+	}
+	for _, song := range songs {
+		if song == nil || song.MusicPath == "" {
+			continue
+		}
+		fileName := filepath.Base(song.MusicPath)
+		switch s.Cfg.Tidy.Mode {
+		case 1:
+			song.MusicPath = filepath.Join(s.Cfg.Tidy.DistDir, utils.SanitizeFileName(fileName))
+		case 2:
+			song.MusicPath = path.Join(
+				utils.SanitizeFileName(song.SongArtists),
+				utils.SanitizeFileName(song.SongAlbum),
+				fileName,
+			)
+		}
+	}
 }
