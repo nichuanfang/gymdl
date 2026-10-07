@@ -1,16 +1,13 @@
 package music
 
 import (
-    "bufio"
     "encoding/json"
     "errors"
     "fmt"
-    "io"
     "os"
     "os/exec"
     "path/filepath"
     "strings"
-    "sync"
     "time"
 
     "github.com/nichuanfang/gymdl/config"
@@ -74,45 +71,10 @@ func (p *YoutubeMusicProcessor) DownloadMusic(
         return err
     }
 
-    stdout, err := cmd.StdoutPipe()
-    if err != nil {
-        return err
-    }
-
-    stderr, err := cmd.StderrPipe()
-    if err != nil {
-        return err
-    }
-
-    if err := cmd.Start(); err != nil {
-        return err
-    }
-
-    var wg sync.WaitGroup
-    wg.Add(2)
-
-    go func() {
-        defer wg.Done()
-        p.streamPipe(stdout, "stdout")
-    }()
-
-    go func() {
-        defer wg.Done()
-        p.streamPipe(stderr, "stderr")
-    }()
-
-    err = cmd.Wait()
-    wg.Wait()
-
-    if err != nil {
+    if err := runYTDLPCommand(cmd); err != nil {
         _ = processor.RemoveTempDir(p.tempDir)
-
-        utils.ErrorWithFormat(
-            "[YoutubeMusic] ❌ 下载失败: %v",
-            err,
-        )
-
-        return fmt.Errorf("yt-dlp 下载失败: %w", err)
+        utils.ErrorWithFormat("[YoutubeMusic] ❌ %v", err)
+        return err
     }
 
     utils.InfoWithFormat(
@@ -130,27 +92,6 @@ func (p *YoutubeMusicProcessor) DownloadMusic(
     return nil
 }
 
-func (p *YoutubeMusicProcessor) streamPipe(r io.ReadCloser, prefix string) {
-    defer r.Close()
-
-    reader := bufio.NewReaderSize(r, 64*1024)
-
-    for {
-        line, err := reader.ReadString('\n')
-
-        if len(line) > 0 {
-            line = strings.TrimSpace(line)
-            if line != "" {
-                utils.DebugWithFormat("[%s] %s", prefix, line)
-            }
-        }
-
-        if err != nil {
-            return
-        }
-    }
-}
-
 /* ---------------------- format 解析 ---------------------- */
 
 func (p *YoutubeMusicProcessor) getAvailableFormats(
@@ -163,7 +104,6 @@ func (p *YoutubeMusicProcessor) getAvailableFormats(
         "--skip-download",
         "--no-warnings",
         "--no-progress",
-        "--no-call-home",
         "--cookies", cookiePath,
         "-J",
         url,
