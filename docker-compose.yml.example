@@ -11,11 +11,8 @@ services:
     volumes:
      #必须挂载配置文件否则项目无法启动
       - ./config.yaml:/app/config.yaml
-      # 数据目录  目录结构和项目的data结构一致
-      - ./data/bin:/app/data/bin
-      - ./data/dist:/app/data/dist
-      - ./data/logs:/app/data/logs
-      - ./data/temp:/app/data/temp
+      # 持久化全部运行数据（SQLite、历史、下载目录、日志、临时文件等）
+      - ./data:/app/data
       # pip 缓存目录
       - ./.pipcache:/root/.cache/pip
     expose:

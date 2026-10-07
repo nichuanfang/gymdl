@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sync"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/internal/musicdedupe"
 	"github.com/nichuanfang/gymdl/utils"
 	"go.uber.org/zap"
 	tb "gopkg.in/telebot.v4"
@@ -17,8 +19,12 @@ var (
 )
 
 type BotApp struct {
-	bot *tb.Bot
-	cfg *config.Config
+	bot             *tb.Bot
+	cfg             *config.Config
+	musicDedupe     *musicdedupe.Store
+	pendingMu       sync.Mutex
+	pendingMusic    map[string]pendingMusicDownload
+	activeMusicKeys map[string]struct{}
 }
 
 // NewBotApp 创建机器人
@@ -69,10 +75,17 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 	if err != nil {
 		return nil, err
 	}
+	musicDedupe, err := musicdedupe.Open(musicdedupe.DefaultDatabasePath)
+	if err != nil {
+		return nil, err
+	}
 
 	app = &BotApp{
-		bot: bot,
-		cfg: cfg,
+		bot:             bot,
+		cfg:             cfg,
+		musicDedupe:     musicDedupe,
+		pendingMusic:    make(map[string]pendingMusicDownload),
+		activeMusicKeys: make(map[string]struct{}),
 	}
 	//注册处理器
 	app.registerHandlers()
@@ -91,4 +104,7 @@ func (app *BotApp) Start() {
 // Stop 关闭机器人
 func (app *BotApp) Stop() {
 	app.bot.Stop()
+	if app.musicDedupe != nil {
+		_ = app.musicDedupe.Close()
+	}
 }

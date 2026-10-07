@@ -37,6 +37,12 @@ data/temp/*
 !data/temp/.gitkeep
 data/logs/*
 !data/logs/.gitkeep
+data/gymdl.sqlite3
+data/gymdl.sqlite3-shm
+data/gymdl.sqlite3-wal
+data/music_downloads.sqlite3
+data/music_downloads.sqlite3-shm
+data/music_downloads.sqlite3-wal
 
 config.json
 .aider*

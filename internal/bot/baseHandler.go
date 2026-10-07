@@ -52,7 +52,7 @@ func (app *BotApp) HandleText(c tb.Context) error {
 	case music.Processor:
 		// 初始化音乐处理器
 		expr.Init(taskConfig)
-		err = session.HandleMusic(expr)
+		err = app.handleMusicWithDuplicateCheck(session, expr)
 	case video.Processor:
 		// 初始化视频处理器
 		expr.Init(taskConfig)

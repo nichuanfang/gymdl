@@ -1051,6 +1051,19 @@ func IsQQMusicSingleLink(rawURL string) bool {
 	return err == nil && parsed.id != "" && parsed.isSong
 }
 
+// QQMusicTrackID returns the provider-owned id for a single-song URL.
+func QQMusicTrackID(rawURL string) (string, bool) {
+	p := &QQMusicProcessor{}
+	if parsed := p.tryParseDirect(rawURL); parsed.id != "" {
+		return parsed.id, parsed.isSong
+	}
+	parsed, err := p.parseQQMusicLink(rawURL)
+	if err != nil || parsed.id == "" || !parsed.isSong {
+		return "", false
+	}
+	return parsed.id, true
+}
+
 // ResolveQQSingleMetadata reuses the same song detail and target-quality
 // selection used by the QQ single-song downloader, but does not fetch media.
 func ResolveQQSingleMetadata(cfg *config.Config, rawURL string) (*SongInfo, error) {
