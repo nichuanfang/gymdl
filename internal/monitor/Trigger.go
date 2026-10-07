@@ -30,7 +30,7 @@ func HandleEvent(path string, cfg *config.Config) (*music.SongInfo, error) {
 		//调用um工具解密
 		cmd := BuildUmCmd(path, tempDir)
 		output, err = cmd.CombinedOutput()
-		utils.InfoWithFormat(string(output))
+		utils.InfoWithFormat("%s", string(output))
 		if err != nil {
 			utils.ErrorWithFormat("[Um] 音乐解密失败: %v", err)
 			return nil, err
@@ -44,14 +44,14 @@ func HandleEvent(path string, cfg *config.Config) (*music.SongInfo, error) {
 		songInfo, err = tidy(findTrack(tempDir), cfg)
 		_ = processor.RemoveTempDir(tempDir)
 		if err != nil {
-			utils.ErrorWithFormat(err.Error())
+			utils.ErrorWithFormat("%s", err.Error())
 			return nil, err
 		}
 	} else {
 		//直接整理
 		songInfo, err = tidy(path, cfg)
 		if err != nil {
-			utils.ErrorWithFormat(err.Error())
+			utils.ErrorWithFormat("%s", err.Error())
 			return nil, err
 		}
 	}

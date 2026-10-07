@@ -114,7 +114,7 @@ func (wm *WatchManager) watchLoop(watcher *fsnotify.Watcher, dir string) {
 			if !ok {
 				return
 			}
-			utils.ErrorWithFormat("watcher error:", err)
+			utils.ErrorWithFormat("watcher error: %v", err)
 		case <-wm.stopCh:
 			return
 		}
