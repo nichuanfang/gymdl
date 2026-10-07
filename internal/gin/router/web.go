@@ -10,12 +10,16 @@ import (
 
 // SetupWebRoutes 注册 WebUI 相关路由
 func SetupWebRoutes(rg *gin.RouterGroup, c *config.Config) {
+	SetupWebRoutesWithTaskManager(rg, c, task.NewTaskManager(c))
+}
+
+// SetupWebRoutesWithTaskManager registers WebUI routes with an injected task
+// manager. Tests use this to keep SQLite state inside their temporary directory.
+func SetupWebRoutesWithTaskManager(rg *gin.RouterGroup, c *config.Config, tm *task.TaskManager) {
 	// 注入配置
 	web.SetWebConfig(c)
 	web.SetConfigFilePath(c.ConfigFile)
 
-	// 初始化任务管理器
-	tm := task.NewTaskManager(c)
 	web.SetTaskManager(tm)
 
 	group := rg.Group("/web")

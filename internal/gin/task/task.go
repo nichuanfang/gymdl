@@ -1,11 +1,8 @@
 package task
 
 import (
-	"encoding/json"
+	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core/linkparser"
+	"github.com/nichuanfang/gymdl/internal/storage"
 	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/processor/music"
 	"github.com/nichuanfang/gymdl/processor/video"
@@ -50,60 +48,68 @@ type TaskManager struct {
 	tasks       map[string]*Task
 	order       []string
 	sem         chan struct{}
-	history     []*Task
-	historyMu   sync.Mutex
+	historyDB   *sql.DB
+	historyErr  error
 	cfg         *config.Config
-	historyPath string
 	subscribers map[string]map[chan *Task]struct{}
 	subsMu      sync.Mutex
 }
 
 // NewTaskManager 创建任务管理器
 func NewTaskManager(cfg *config.Config) *TaskManager {
+	return NewTaskManagerWithDBPath(cfg, storage.DefaultDatabasePath, "data/web_state/history.json")
+}
+
+// NewTaskManagerWithDBPath creates a task manager using an explicit SQLite
+// path. legacyHistoryPath may be empty to disable one-time JSON import.
+func NewTaskManagerWithDBPath(cfg *config.Config, dbPath, legacyHistoryPath string) *TaskManager {
 	tm := &TaskManager{
 		tasks:       make(map[string]*Task),
 		order:       make([]string, 0),
 		sem:         make(chan struct{}, 2),
-		history:     make([]*Task, 0),
 		cfg:         cfg,
-		historyPath: filepath.Join("data", "web_state", "history.json"),
 		subscribers: make(map[string]map[chan *Task]struct{}),
 	}
-	tm.loadHistory()
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		tm.historyErr = err
+		utils.ErrorWithFormat("打开下载历史 SQLite 失败: %v", err)
+		return tm
+	}
+	if err := initializeTaskHistory(db, ""); err != nil {
+		_ = db.Close()
+		tm.historyErr = err
+		utils.ErrorWithFormat("初始化下载历史 SQLite 失败: %v", err)
+		return tm
+	}
+	tm.historyDB = db
+	if legacyHistoryPath != "" {
+		if err := importLegacyTaskHistory(db, legacyHistoryPath); err != nil {
+			utils.WarnWithFormat("导入旧下载历史失败，原 JSON 文件已保留: %v", err)
+		}
+	}
 	return tm
 }
 
-// loadHistory 从磁盘加载历史记录
-func (tm *TaskManager) loadHistory() {
-	data, err := os.ReadFile(tm.historyPath)
-	if err != nil {
-		return // 文件不存在或不可读，静默跳过
+func (tm *TaskManager) Close() error {
+	if tm == nil {
+		return nil
 	}
-	var history []*Task
-	if err := json.Unmarshal(data, &history); err != nil {
-		return
+	tm.mu.Lock()
+	db := tm.historyDB
+	tm.historyDB = nil
+	tm.mu.Unlock()
+	if db == nil {
+		return nil
 	}
-	tm.history = history
+	return db.Close()
 }
 
-// saveHistory 将历史持久化到磁盘
-func (tm *TaskManager) saveHistory() {
-	tm.historyMu.Lock()
-	data, err := json.MarshalIndent(tm.history, "", "  ")
-	tm.historyMu.Unlock()
-	if err != nil {
-		return
+func (tm *TaskManager) InitializationError() error {
+	if tm == nil {
+		return fmt.Errorf("task manager is nil")
 	}
-	dir := filepath.Dir(tm.historyPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	// 写临时文件再 rename，避免写入中断导致数据损坏
-	tmpPath := tm.historyPath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
-		return
-	}
-	_ = os.Rename(tmpPath, tm.historyPath)
+	return tm.historyErr
 }
 
 // SubmitTask 提交下载任务
@@ -139,6 +145,12 @@ func (tm *TaskManager) SetConfig(cfg *config.Config) {
 }
 
 func (tm *TaskManager) SubmitTask(rawURL string) (*Task, error) {
+	if tm.historyErr != nil {
+		return nil, fmt.Errorf("下载历史数据库不可用: %v", tm.historyErr)
+	}
+	if tm.historyDB == nil {
+		return nil, fmt.Errorf("下载历史数据库已关闭")
+	}
 	cfg := tm.configSnapshot()
 	link, executor := linkparser.ParseLinkWithConfig(cfg, rawURL)
 	if link == "" {
@@ -268,6 +280,10 @@ func (tm *TaskManager) updateTask(id string, fn func(*Task)) {
 
 // moveToHistory 移动到历史
 func (tm *TaskManager) moveToHistory(id string) {
+	if tm.historyDB == nil {
+		utils.ErrorWithFormat("保存下载历史失败: SQLite 数据库不可用 (%v)", tm.historyErr)
+		return
+	}
 	tm.mu.Lock()
 	t, ok := tm.tasks[id]
 	if !ok {
@@ -275,6 +291,18 @@ func (tm *TaskManager) moveToHistory(id string) {
 		return
 	}
 	snapshot := *t
+	tm.mu.Unlock()
+
+	if err := insertTaskHistory(tm.historyDB, &snapshot); err != nil {
+		utils.ErrorWithFormat("保存下载历史失败: %v", err)
+		return
+	}
+
+	tm.mu.Lock()
+	if _, ok := tm.tasks[id]; !ok {
+		tm.mu.Unlock()
+		return
+	}
 	delete(tm.tasks, id)
 	for i, v := range tm.order {
 		if v == id {
@@ -283,12 +311,6 @@ func (tm *TaskManager) moveToHistory(id string) {
 		}
 	}
 	tm.mu.Unlock()
-
-	tm.historyMu.Lock()
-	tm.history = append([]*Task{&snapshot}, tm.history...)
-	tm.historyMu.Unlock()
-
-	tm.saveHistory()
 }
 
 // notifySubscribers 通知所有订阅者
@@ -334,64 +356,16 @@ func (tm *TaskManager) GetHistory(offset, limit int) ([]*Task, int) {
 
 // GetFilteredHistory filters persisted task history before applying pagination.
 func (tm *TaskManager) GetFilteredHistory(offset, limit int, filter HistoryFilter) ([]*Task, int) {
-	query := strings.ToLower(strings.TrimSpace(filter.Query))
-	platform := strings.ToLower(strings.TrimSpace(filter.Platform))
-	status := strings.ToLower(strings.TrimSpace(filter.Status))
-	tm.historyMu.Lock()
-	defer tm.historyMu.Unlock()
-	filtered := make([]*Task, 0, len(tm.history))
-	for _, item := range tm.history {
-		if item == nil {
-			continue
-		}
-		if platform != "" && !strings.EqualFold(item.Platform, platform) {
-			continue
-		}
-		if status != "" && !strings.EqualFold(string(item.Status), status) {
-			continue
-		}
-		if !filter.From.IsZero() && item.CreatedAt.Before(filter.From) {
-			continue
-		}
-		if !filter.To.IsZero() && item.CreatedAt.After(filter.To) {
-			continue
-		}
-		if query != "" && !taskMatches(item, query) {
-			continue
-		}
-		snapshot := *item
-		filtered = append(filtered, &snapshot)
+	if tm.historyErr != nil || tm.historyDB == nil {
+		utils.ErrorWithFormat("查询下载历史失败，SQLite 不可用: %v", tm.historyErr)
+		return []*Task{}, 0
 	}
-	total := len(filtered)
-	if offset < 0 {
-		offset = 0
+	items, total, err := loadTaskHistory(tm.historyDB, offset, limit, filter)
+	if err != nil {
+		utils.ErrorWithFormat("查询下载历史失败: %v", err)
+		return []*Task{}, 0
 	}
-	if limit <= 0 {
-		limit = 20
-	}
-	if offset >= total {
-		return []*Task{}, total
-	}
-	end := offset + limit
-	if end > total {
-		end = total
-	}
-	return filtered[offset:end], total
-}
-
-func taskMatches(item *Task, query string) bool {
-	fields := []string{item.URL, item.Platform, string(item.Status), item.Error}
-	for _, song := range item.SongInfo {
-		if song != nil {
-			fields = append(fields, song.SongName, song.SongArtists, song.SongAlbum)
-		}
-	}
-	for _, field := range fields {
-		if strings.Contains(strings.ToLower(field), query) {
-			return true
-		}
-	}
-	return false
+	return items, total
 }
 
 type DashboardMetrics struct {
@@ -414,28 +388,18 @@ func (tm *TaskManager) DashboardMetrics(now time.Time) DashboardMetrics {
 	}
 	tm.mu.Unlock()
 
-	tm.historyMu.Lock()
-	defer tm.historyMu.Unlock()
-	metrics.TotalHistory = len(tm.history)
-	cutoff := now.Add(-24 * time.Hour)
-	for _, item := range tm.history {
-		if item == nil {
-			continue
-		}
-		completedAt := item.UpdatedAt
-		if completedAt.IsZero() {
-			completedAt = item.CreatedAt
-		}
-		if completedAt.Before(cutoff) {
-			continue
-		}
-		switch item.Status {
-		case TaskStatusCompleted:
-			metrics.Completed24h++
-		case TaskStatusFailed:
-			metrics.Failed24h++
-		}
+	if tm.historyErr != nil || tm.historyDB == nil {
+		utils.ErrorWithFormat("读取下载历史指标失败，SQLite 不可用: %v", tm.historyErr)
+		return metrics
 	}
+	historyMetrics, err := taskHistoryMetrics(tm.historyDB, now)
+	if err != nil {
+		utils.ErrorWithFormat("读取下载历史指标失败: %v", err)
+		return metrics
+	}
+	metrics.Completed24h = historyMetrics.Completed24h
+	metrics.Failed24h = historyMetrics.Failed24h
+	metrics.TotalHistory = historyMetrics.TotalHistory
 	return metrics
 }
 
@@ -483,18 +447,14 @@ func (tm *TaskManager) Subscribe(taskID string) chan *Task {
 		return ch
 	}
 	tm.mu.Unlock()
-	tm.historyMu.Lock()
-	for _, item := range tm.history {
-		if item != nil && item.ID == taskID {
-			snapshot := *item
+	if tm.historyErr == nil && tm.historyDB != nil {
+		if item, err := loadTaskHistoryByID(tm.historyDB, taskID); err == nil {
 			select {
-			case ch <- &snapshot:
+			case ch <- item:
 			default:
 			}
-			break
 		}
 	}
-	tm.historyMu.Unlock()
 	return ch
 }
 

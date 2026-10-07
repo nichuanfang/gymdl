@@ -283,7 +283,12 @@ func TestDuplicateSubmitConfirmationAndForceSubmission(t *testing.T) {
 		SetWebConfig(previousConfig)
 	})
 	SetWebConfig(&config.Config{Tidy: &config.TidyConfig{Mode: 1, DistDir: t.TempDir()}})
-	manager = webtask.NewTaskManager(&config.Config{AdditionalConfig: &config.AdditionalConfig{}})
+	taskManager := webtask.NewTaskManagerWithDBPath(&config.Config{AdditionalConfig: &config.AdditionalConfig{}}, filepath.Join(t.TempDir(), "tasks.sqlite3"), "")
+	if err := taskManager.InitializationError(); err != nil {
+		t.Fatal(err)
+	}
+	manager = taskManager
+	t.Cleanup(func() { _ = taskManager.Close() })
 	calls := 0
 	duplicatePreflight = func(*config.Config, string) duplicateCheckResult {
 		calls++
@@ -313,7 +318,12 @@ func TestUnknownDuplicatePreflightRequiresConfirmation(t *testing.T) {
 		SetWebConfig(previousConfig)
 	})
 	SetWebConfig(&config.Config{Tidy: &config.TidyConfig{Mode: 1, DistDir: t.TempDir()}})
-	manager = webtask.NewTaskManager(&config.Config{AdditionalConfig: &config.AdditionalConfig{}})
+	taskManager := webtask.NewTaskManagerWithDBPath(&config.Config{AdditionalConfig: &config.AdditionalConfig{}}, filepath.Join(t.TempDir(), "tasks.sqlite3"), "")
+	if err := taskManager.InitializationError(); err != nil {
+		t.Fatal(err)
+	}
+	manager = taskManager
+	t.Cleanup(func() { _ = taskManager.Close() })
 	duplicatePreflight = func(*config.Config, string) duplicateCheckResult {
 		return duplicateCheckResult{Status: "unknown", Reason: "暂时无法读取整理目录"}
 	}
