@@ -4,7 +4,8 @@
 <p align="center">
     <a href="#"><img src="https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go" /></a>
     <a href="#"><img src="https://img.shields.io/badge/License-MIT-green" /></a>
-    <a href="#"><img src="https://img.shields.io/github/actions/workflow/status/nichuanfang/gymdl/release.yml?logo=github" /></a>
+    <a href="https://github.com/nichuanfang/gymdl/releases"><img src="https://img.shields.io/github/v/release/nichuanfang/gymdl?logo=github" /></a>
+    <a href="https://github.com/nichuanfang/gymdl/pkgs/container/gymdl"><img src="https://img.shields.io/badge/GHCR-gymdl-blue?logo=docker" /></a>
     <a href="#"><img src="https://img.shields.io/badge/Telegram-Bot-blue?logo=telegram" /></a>
 </p>
 
@@ -12,8 +13,11 @@
 
 ## 🧭 项目简介
 
-**GYMDL** 是一款跨平台智能音乐下载与管理工具，基于 Go开发，支持自动识别主流音乐平台的音乐链接，并实现高效下载、解密与整理。同时提供
-CookieCloud 自动同步登录、WebDAV 上传、下载器监控、Telegram Bot 控制与通知等功能，让音乐管理更智能、更便捷。
+**GYMDL** 是一款跨平台智能音乐下载与管理工具，基于 Go 开发，支持自动识别主流音乐平台链接，并实现高效下载、解密与整理。同时提供
+CookieCloud 自动同步登录、WebDAV 上传、目录监控、Telegram Bot 控制与通知，以及内置 WebUI（下载 / 搜索 / 历史 / 文件库 / 日志 / 设置 / QQ 扫码登录）等功能，让音乐管理更智能、更便捷。
+
+- **当前版本**：[`v1.5.10`](https://github.com/nichuanfang/gymdl/releases)（多平台二进制 + Docker 镜像）
+- **运行形态**：本地二进制 / Docker / NAS，均可叠加 Telegram Bot 与 WebUI
 
 ---
 
@@ -21,25 +25,50 @@ CookieCloud 自动同步登录、WebDAV 上传、下载器监控、Telegram Bot 
 
 | 功能                                                            | 状态      |
 | --------------------------------------------------------------- | --------- |
-| 主流音乐平台：Apple Music、Spotify、YouTube Music、SoundCloud等 | ✅        |
+| 主流音乐平台：Apple Music、Spotify、YouTube Music、SoundCloud 等 | ✅        |
 | 智能链接识别与解析                                              | ✅        |
 | CookieCloud 自动同步登录状态                                    | ✅        |
 | WebDAV 自动上传整理后的音乐                                     | ✅        |
 | Telegram Bot 控制下载、接收通知                                 | ✅        |
 | 定时任务调度（gocron）                                          | ✅        |
-| 重构模块                                                        | ✅        |
-| 下载器监控                                                      | ✅        |
-| QQ音乐下载                                                      | ✅        |
+| 目录监控 / 下载器监控                                           | ✅        |
+| QQ 音乐下载                                                     | ✅        |
 | 网易云音乐下载                                                  | ✅        |
-| AppleMusic下载                                                  | ✅        |
-| YoutubeMusic下载                                                | ✅        |
-| Soundcloud下载                                                  | ✅        |
+| Apple Music 下载                                                | ✅        |
+| YouTube Music 下载                                              | ✅        |
+| SoundCloud 下载                                                 | ✅        |
+| Spotify 下载                                                    | ✅        |
 | AI 助手                                                         | ✅        |
-| 集成n8n                                                         | ✅        |
-| Spotify下载                                                     | ✅        |
-| 视频下载                                                        | 🚧 开发中 |
+| 集成 n8n                                                        | ✅        |
+| Web UI（下载 / 搜索 / 历史 / 文件库 / 日志 / 设置 / QQ 登录）     | ✅        |
+| 视频下载（YouTube、Bilibili、抖音等）                           | ✅        |
 | 多个通知渠道                                                    | ⚠️ 规划中 |
-| Web UI                                                          | 🚧 开发中 |
+
+---
+
+## 🎧 支持的平台
+
+### 音乐
+
+| 平台            | 链接示例                                                        | 说明                          |
+| --------------- | --------------------------------------------------------------- | ----------------------------- |
+| 网易云音乐      | `music.163.com/#/song?id=...`、`163cn.tv/...`                   | 支持歌曲 / 歌单 / 专辑 / 电台 |
+| QQ 音乐         | `y.qq.com/...`、`i.y.qq.com/n2/m/share/details/...`             | 需配合 QQMusicApi 使用        |
+| Apple Music     | `music.apple.com/.../song/...`、`.../album/...`                 | 支持歌曲 / 专辑 / 播放列表    |
+| YouTube Music   | `music.youtube.com/watch?v=...`                                 | 基于 yt-dlp                   |
+| SoundCloud      | `soundcloud.com/...`、`snd.sc/...`                              | 支持曲目 / Set                |
+| Spotify         | `open.spotify.com/track/...`                                    | 支持 track / album / playlist |
+
+### 视频
+
+| 平台     | 链接示例                            |
+| -------- | ----------------------------------- |
+| YouTube  | `youtube.com/watch?v=...`、`youtu.be/...` |
+| Bilibili | `bilibili.com/video/BV...`、`b23.tv/...` |
+| 抖音     | `douyin.com/video/...`、`v.douyin.com/...` |
+| 小红书   | 站内分享链接                        |
+
+> 💡 `additional_config.music_mode` 开启后，视频平台链接会优先转为音频下载。
 
 ---
 
@@ -49,26 +78,28 @@ CookieCloud 自动同步登录、WebDAV 上传、下载器监控、Telegram Bot 
 
 <a href="#"><img src="img/architecture.svg" /></a>
 
-### n8n架构
+### n8n 架构
 
 <a href="#"><img src="img/n8n_automation.svg" /></a>
 
+---
 
 ## 🖥️ Web UI
 
-内置 Web UI（开发中），提供以下功能：
+内置 Web UI，提供以下功能：
 
 - **仪表盘**：各服务在线状态总览
 - **下载**：粘贴链接提交下载，实时查看任务进度
+- **搜索**：多平台（网易云 / QQ 等）关键词搜索，支持 10/20/50/100 条合并分页，点击下载时进行重复预检
 - **历史**：查看已完成/失败的下载记录（持久化到 `data/gymdl.sqlite3`）
-- **文件库**：浏览整理后的音乐文件，支持试听/删除
-- **设置**：配置概览 + CookieCloud 手动同步
+- **文件库**：浏览整理后的音乐文件，支持在当前目录子树按歌曲名/歌手/专辑搜索，并支持试听/删除
+- **设置**：在线编辑并保存 `config.yaml` + CookieCloud 手动同步 + 容器重启
 - **日志**：实时 SSE 日志流，支持级别过滤 / 暂停 / 搜索
 - **QQ 登录**：浏览器内扫码登录 QQ 音乐，无需 Bot
 
-启用方式：`config.yaml` 中设置 `web_config.enable: true`，访问 `http://localhost:8080`。
+**启用方式**：`config.yaml` 中设置 `web_config.enable: true`，访问 `http://localhost:8080`。
 
-开发模式：
+**开发模式**：
 ```bash
 # 终端 1: 启动后端
 go run main.go -c config.yaml
@@ -77,6 +108,12 @@ go run main.go -c config.yaml
 cd webui && npm run dev
 ```
 
+**关于认证**：WebUI 默认保持兼容模式、不要求登录。启用 `web_config.auth` 后，配置、搜索、任务、日志和文件接口均需要登录，会话有效期 12 小时；密钥值不会回显，留空保持原值，需清除时使用字段旁的“清除”操作。反向代理部署请使用 HTTPS。
+
+**关于服务重启**：Docker 部署下，Compose 示例已启用配置页的“容器重启”按钮（`GYMDL_WEBUI_RESTART_ENABLED=true`）；按钮只在容器中显示，存在进行中的下载任务时会拒绝重启。
+
+**关于热加载**：目前仅 `tidy.dist_dir` 和 `additional_config.music_mode` 支持热加载，并应用于保存后的新任务；运行中的任务保留启动时快照，其余配置保存后需重启服务。
+
 ---
 
 ## ⚙️ 快速开始
@@ -84,9 +121,14 @@ cd webui && npm run dev
 ### 1️⃣ 获取项目并编译
 
 ```bash
-git clone https://github.com/nichuanfang/gymdl.git .
+git clone https://github.com/nichuanfang/gymdl.git
+cd gymdl
 make release
 ```
+
+> 💡 `make release` 会先编译 WebUI（`make webui`，输出到 `web/dist` 供 `go:embed`），再交叉编译各平台二进制到 `release/` 目录，并把 `config.yaml.example`、`requirements.txt` 等一起打包。仅编译后端时可先跳过 WebUI 步骤（但 WebUI 资源将不可用）。
+
+也可以直接下载 [Releases](https://github.com/nichuanfang/gymdl/releases) 中对应平台的压缩包。
 
 ### 2️⃣ 配置文件 `config.yaml` 示例
 
@@ -166,13 +208,13 @@ ai:
 
 # N8N配置
 n8n_config:
-  enable: # 是否启用n8n
-  n8n_base_url: # 自建n8n的地址
-  auth_token: # 端点认证密钥
-  empty_trash_endpoint: # 清空回收站
-  ai_playlist_endpoint: # AI智能歌单
-  tidy_playlist_endpoint: # 歌单整理端点
-  playlist_assist: # 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
+  enable: false # 是否启用n8n
+  n8n_base_url: '' # 自建n8n的地址
+  auth_token: '' # 端点认证密钥
+  empty_trash_endpoint: '' # 清空回收站
+  ai_playlist_endpoint: '' # AI智能歌单
+  tidy_playlist_endpoint: '' # 歌单整理端点
+  playlist_assist: '' # 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
   tidy_playlist: #歌单,名称必须与navidrome中保持一致
     - name: 中文
       desc: 歌曲的主要演唱语言为中文(含普通话、粤语、闽南语等)
@@ -183,18 +225,18 @@ n8n_config:
 qq_music_api:
   enable: false #是否启用
   endpoint: '' #服务地址 如果需要proxy_url代理 必须填公网地址 否则无法访问
-  proxy_url: #代理地址 国外服务器需要配置以绕过地区限制
+  proxy_url: '' #代理地址 国外服务器需要配置以绕过地区限制
   vip_level: vip #qq会员级别,可选vip或者svip,影响音质
   login_type: 0 #登录方式: 0未登录 1微信 2QQ
-  refresh_key: #用于刷新已失效的musickey musickey1小时会过期
-  refresh_token: #用于刷新已失效的musickey musickey1小时会过期
-  access_token: #用于刷新已失效的musickey musickey1小时会过期
-  music_id: #用于刷新已失效的musickey musickey1小时会过期
-  str_music_id: #用于刷新已失效的musickey
-  open_id: #用于刷新已失效的musickey musickey1小时会过期
-  union_id: #用于刷新已失效的musickey musickey1小时会过期
-  music_key: #用于刷新已失效的musickey musickey1小时会过期
-  expired_at: #用于刷新已失效的musickey musickey1小时会过期
+  refresh_key: '' #用于刷新已失效的musickey musickey1小时会过期
+  refresh_token: '' #用于刷新已失效的musickey musickey1小时会过期
+  access_token: '' #用于刷新已失效的musickey musickey1小时会过期
+  music_id: '' #用于刷新已失效的musickey musickey1小时会过期
+  str_music_id: '' #用于刷新已失效的musickey
+  open_id: '' #用于刷新已失效的musickey musickey1小时会过期
+  union_id: '' #用于刷新已失效的musickey musickey1小时会过期
+  music_key: '' #用于刷新已失效的musickey musickey1小时会过期
+  expired_at: '' #用于刷新已失效的musickey musickey1小时会过期
 
 # 附加配置
 additional_config:
@@ -217,37 +259,56 @@ proxy:
 
 </details>
 
-> ℹ️ **提示**：展开查看每个字段的详细注释说明，方便初学者直接修改配置。
+> ℹ️ **提示**：展开查看每个字段的详细注释说明，方便初学者直接修改配置。完整模板见仓库中的 [`config.yaml.example`](config.yaml.example)。
 
 ---
 
 ### 3️⃣ 运行 GYMDL
 
+**方式一：源码运行**
 ```bash
-git clone https://github.com/nichuanfang/gymdl.git .
+git clone https://github.com/nichuanfang/gymdl.git
+cd gymdl
 go mod tidy
 go run main.go
 ```
 
-or
-
+**方式二：二进制运行**
 ```bash
 ./gymdl -c config.yaml
 ```
 
+**方式三：Docker Compose（推荐）**
+
+```bash
+# 1. 准备配置与目录
+cp config.yaml.example config.yaml
+mkdir -p data
+
+# 2. 准备 Compose 文件（需先创建外部网络 mynet）
+cp docker-compose.yml.example docker-compose.yml
+docker network create mynet   # 若已存在可跳过
+
+# 3. 启动
+docker compose up -d
+```
+
+> 镜像：`ghcr.io/nichuanfang/gymdl:latest`。当前发布镜像目标平台为 `linux/amd64`，ARM 主机通过 Compose 示例中的 `platform: linux/amd64` 模拟运行。
+> Compose 示例必须挂载 `./config.yaml` 与 `./data`（SQLite、历史、下载目录、日志、临时文件等均在其中），否则将无法启动或丢失数据。
+
 > [!TIP]
 > 推荐的三种运行模式
 >
-> 1. vps运行,telegram接收用户消息,通过webdav整理入库
-> 2. nas运行,telegram接收用户消息,直接整理到nas目录
-> 3. win/mac运行,通过下载器监控解锁客户端应用,整理入库
+> 1. vps 运行，telegram 接收用户消息，通过 webdav 整理入库
+> 2. nas 运行，telegram 接收用户消息，直接整理到 nas 目录
+> 3. win/mac 运行，通过下载器监控解锁客户端应用，整理入库
 
 ---
 
 ### 4️⃣ 使用流程
 
 1. 安装 [CookieCloud 插件](https://chrome.google.com/webstore/detail/cookiecloud/ffjiejobkoibkjlhjnlgmcnnigeelbdl)
-2. 登录音乐平台并同步 Cookie(需会员)
+2. 登录音乐平台并同步 Cookie（需会员）
 3. 配置 `config.yaml`
 4. 配置好必要的运行环境
 5. 使用 `gymdl`
@@ -263,21 +324,33 @@ or
 | 科学上网             | ✅       |
 | 登录音乐平台会员账号 | ✅       |
 | CookieCloud 已同步   | ✅       |
-| 部署方式             | 详见下表 |
 
-| 部署方式       | 说明                                                                                             |
-| -------------- | ------------------------------------------------------------------------------------------------ |
-| 🐳 Docker 部署 | <br>• 配置 `config.yaml`<br>                                                                     |
-| 💻 本地部署    | 需额外安装：<br>• `Python(3.12+)`<br>• `ffmpeg` / `ffprobe`<br>• `N_m3u8DL-RE`<br>• `MP4Box`<br> |
+| 部署方式       | 说明                                                                                                          |
+| -------------- | ------------------------------------------------------------------------------------------------------------- |
+| 🐳 Docker 部署 | • 直接使用官方镜像，内置 `ffmpeg` / `ffprobe` / `MP4Box` / `N_m3u8DL-RE` / `aria2` / Playwright 等运行依赖     |
+| 💻 本地部署    | 需额外安装：`Python(3.12+)`、`ffmpeg` / `ffprobe`、`N_m3u8DL-RE`、`MP4Box`                                   |
+
+---
+
+## 📁 数据与目录说明
+
+| 路径                 | 说明                                                   |
+| -------------------- | ------------------------------------------------------ |
+| `data/gymdl.sqlite3` | WebUI 历史 / 任务持久化数据库                          |
+| `data/dist`          | `tidy.mode=1` 时的本地整理目录                         |
+| `data/temp`          | 下载临时目录（启动时清理）                             |
+| `data/logs`          | 日志文件目录（`log.mode` 含文件时）                    |
+| `data/temp/musickey.json` | QQ 音乐运行时凭证缓存（不会随每次登录改写 `config.yaml`） |
 
 ---
 
 ## 🤝 贡献指南
 
 ❤️ 欢迎提交 **Issue** 或 **Pull Request**
-• 保持代码风格一致
-• PR 前使用 `go fmt` 格式化代码
-• PR 中详细说明改动内容
+
+- 保持代码风格一致
+- PR 前使用 `go fmt` 格式化代码
+- PR 中详细说明改动内容
 
 ---
 
@@ -293,30 +366,3 @@ MIT License ([LICENSE](LICENSE))
 - Email：[f18326186224@gmail.com](mailto:f18326186224@gmail.com)
 
 > 💬 _“愿你的音乐，永不停歇。”_ 🎧
-
----
-
-## WebUI 管理登录
-
-WebUI 默认保持兼容模式，不要求登录。需要通过局域网或公网访问时，可在 `config.yaml` 的 `web_config.auth` 中启用并设置管理员凭据：
-
-```yaml
-web_config:
-  auth:
-    enable: true
-    username: 'admin'
-    password: '替换为强密码'
-```
-
-配置内密码以明文保存，请将 `config.yaml` 权限限制为仅运行用户可读写（例如 `chmod 600 config.yaml`），不要提交真实密码到仓库。也可继续使用 `GYMDL_WEBUI_AUTH_ENABLED`、`GYMDL_WEBUI_USERNAME` 和 `GYMDL_WEBUI_PASSWORD` 环境变量；非空环境变量会覆盖配置文件中的对应值，适合通过部署环境安全注入秘密变量。启用后，WebUI 的配置、搜索、任务、日志和文件接口均需要登录；会话有效期为 12 小时。反向代理部署请使用 HTTPS。启用认证但最终没有有效用户名或密码时，GYMDL 会拒绝启动 Web 服务。
-
-设置页面支持编辑并保存 `config.yaml`。保存后页面会标明热加载字段和需要重启的字段；密钥值不会回显，留空保持原值，需清除时使用字段旁的“清除”操作。QQ 扫码成功后的当前凭证保存在运行时 `data/temp/musickey.json` 中；`config.yaml` 的 QQ 凭证只作为该缓存首次初始化/续期时的回退来源，不会随每次登录或续期被改写。WebUI 不会展示原始凭证。
-
-目前支持热加载的设置只有 `tidy.dist_dir` 和 `additional_config.music_mode`，并应用于保存后的新下载/整理任务；运行中的任务保留启动时快照。其他配置保存后需要重启服务。
-
-搜索页支持 10/20/50/100 条合并分页，可通过“上一页 / 下一页”切换结果页；更换关键词或平台组合后从第一页重新搜索。用户点击下载时才进行重复预检，按歌名、歌手、专辑、字节大小和格式五项精确匹配；五项完全匹配会提示重复；为兼容旧版嵌入封面导致的文件字节变化，歌名、歌手、专辑、格式相同且大小接近的旧文件会作为“疑似重复”询问确认。新整理的歌曲会在音频标签保存原始音源大小，后续可精确匹配。网易云与 QQ 音乐会复用短时缓存的目标音质元数据，歌单等多曲链接不逐曲弹出确认。WebDAV 文件库可在当前目录子树按歌曲名、歌手或专辑搜索，并按更新时间从新到旧显示。
-
-Docker 镜像构建会先编译 WebUI，再将前端资源嵌入 Go 程序；Compose 示例挂载的配置文件为 `config.yaml`。当前发布镜像目标为 `linux/amd64`，ARM 主机通过 Compose 示例中的 `platform: linux/amd64` 使用模拟运行。
-
-
-Docker Compose 示例启用了 WebUI 的容器重启按钮（`GYMDL_WEBUI_RESTART_ENABLED=true`）并配置了 `restart: always`。按钮只在容器中显现；有下载任务时会拒绝重启。自定义 Docker 部署需同时设置该环境变量和容器重启策略。当前发布镜像面向 `linux/amd64`。
