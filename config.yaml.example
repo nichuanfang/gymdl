@@ -8,7 +8,7 @@ web_config:
   https: false  # 是否开启 HTTPS
   app_port: 8080  # web 服务监听端口
   gin_mode: "debug"  # Gin 运行模式: 可选 [debug, release, test]
-  auth:  # WebUI 管理登录；配置中的密码为明文，请限制 config.yaml 文件权限
+  auth:  # WebUI 管理登录；密码在配置文件中为明文，请限制文件权限
     enable: false  # 是否启用 WebUI 登录门禁
     username: ""  # 管理员用户名
     password: ""  # 管理员密码；也可使用 GYMDL_WEBUI_PASSWORD 环境变量覆盖
@@ -26,7 +26,7 @@ cookie_cloud:
 # 资源整理配置
 tidy:
   mode: 1  # 资源整理模式: 1=整理到 dist_dir, 2=整理到 webdav_dir
-  dist_dir: "data/dist"  # 当 mode=1 时使用的本地整理目录
+  dist_dir: "data/dist"  # 当 mode=1 时使用的本地整理目录(支持热加载)
 
 # WebDAV 配置
 webdav:
@@ -48,8 +48,8 @@ telegram:
   mode: 1  # 运行模式: 1=长轮询, 2=Webhook (推荐开发用1, 生产用2)
   chat_id: ""  # 机器人 chat_id
   bot_token: ""  # Telegram Bot Token
-  allowed_users:
-    - ""  # 用户白名单列表 (Telegram 用户 ID)
+  allowed_users:  # 用户白名单列表 (Telegram 用户 ID)
+    - ""
   webhook_url: ""  # Webhook 地址 (mode=2 时必填)
   webhook_port: 9000  # Webhook 模式下监听端口
 
@@ -68,15 +68,15 @@ ai:
   api_key: ""  # AI 服务的 API Key
   system_prompt: ""  # 默认系统提示词
 
-# N8N配置  
+# N8N配置
 n8n_config:
   enable: false # 是否启用n8n
-  n8n_base_url:  # 自建n8n的地址
-  auth_token: # 端点认证密钥
-  empty_trash_endpoint:  # 清空回收站
-  ai_playlist_endpoint:  # AI智能歌单
-  tidy_playlist_endpoint:  # 歌单整理端点
-  playlist_assist: # 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
+  n8n_base_url: "" # 自建n8n的地址
+  auth_token: "" # 端点认证密钥
+  empty_trash_endpoint: "" # 清空回收站
+  ai_playlist_endpoint: "" # AI智能歌单
+  tidy_playlist_endpoint: "" # 歌单整理端点
+  playlist_assist: "" # 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
   tidy_playlist: #歌单,名称必须与navidrome中保持一致
     - name: 中文
       desc: 歌曲的主要演唱语言为中文(含普通话、粤语、闽南语等)
@@ -85,28 +85,28 @@ n8n_config:
 
 # qq音乐api配置
 qq_music_api:
-  enable: false #是否启用 
-  endpoint: "" #服务地址 如果需要proxy_url代理 必须填公网地址 否则无法访问 
-  proxy_url:  #代理地址 国外服务器需要配置以绕过地区限制
+  enable: false #是否启用
+  endpoint: "" #服务地址 如果需要proxy_url代理 必须填公网地址 否则无法访问
+  proxy_url: "" #代理地址 国外服务器需要配置以绕过地区限制
   vip_level: vip #qq会员级别,可选vip或者svip,影响音质
   login_type: 0 #登录方式: 0未登录 1微信 2QQ
-  refresh_key:  #用于刷新已失效的musickey musickey1小时会过期
-  refresh_token:  #用于刷新已失效的musickey musickey1小时会过期
-  access_token:   #用于刷新已失效的musickey musickey1小时会过期
-  music_id:  #用于刷新已失效的musickey musickey1小时会过期
-  str_music_id:  # 用于刷新已失效的musickey
-  open_id:  #用于刷新已失效的musickey musickey1小时会过期
-  union_id:  #用于刷新已失效的musickey musickey1小时会过期
-  music_key:  #用于刷新已失效的musickey musickey1小时会过期
-  expired_at:  #用于刷新已失效的musickey musickey1小时会过期
-  
+  refresh_key: "" #用于刷新已失效的musickey musickey1小时会过期
+  refresh_token: "" #用于刷新已失效的musickey musickey1小时会过期
+  access_token: "" #用于刷新已失效的musickey musickey1小时会过期
+  music_id: "" #用于刷新已失效的musickey musickey1小时会过期
+  str_music_id: "" # 用于刷新已失效的musickey
+  open_id: "" #用于刷新已失效的musickey musickey1小时会过期
+  union_id: "" #用于刷新已失效的musickey musickey1小时会过期
+  music_key: "" #用于刷新已失效的musickey musickey1小时会过期
+  expired_at: "" #用于刷新已失效的musickey musickey1小时会过期
+
 # 附加配置
 additional_config:
   enable_cron: false  # 是否启用定时任务功能 只有开启此配置才会尝试同步cookie文件(重要)
   enable_monitor: false  # 是否启用目录监听 开启后监听下载目录使用um cli自动解密
-  monitor_dirs:
-    - ""  # 监听的目录,下载器监控
-  music_mode: false  # 是否启用音乐模式 视频平台链接优先转为音频
+  monitor_dirs:  # 监听的目录,下载器监控
+    - ""
+  music_mode: false  # 是否启用音乐模式 视频平台链接优先转为音频(支持热加载)
 
 # 代理配置
 proxy:
