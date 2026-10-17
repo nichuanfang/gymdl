@@ -9,10 +9,6 @@
     <a href="#"><img src="https://img.shields.io/badge/Telegram-Bot-blue?logo=telegram" /></a>
 </p>
 
-<p align="center">
-    <b>中文</b> | <a href="readme_en.md">English</a>
-</p>
-
 ---
 
 ## 🧭 项目简介
