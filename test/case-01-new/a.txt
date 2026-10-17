@@ -1,3 +1,4 @@
 plain text file A
 second line
 third line added by case-02
+mod by case-04
