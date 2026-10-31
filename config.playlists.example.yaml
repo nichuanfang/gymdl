@@ -1,0 +1,10 @@
+# GYMDL 歌单配置
+# 与 config.yaml 放在同一目录，文件名固定为 config.playlists.yaml。
+# 该文件存在且包含 tidy_playlist 时优先于 config.yaml 中的内联 tidy_playlist。
+# 歌单 name 必须与 Navidrome 中保持一致；修改后需重启服务才会应用到 Bot。
+
+tidy_playlist:
+  - name: 中文
+    desc: 歌曲的主要演唱语言为中文(含普通话、粤语、闽南语等)
+  - name: 英文
+    desc: 歌曲的主要演唱语言为英文(若仅有少量英文采样且本质为纯音乐，请勿勾选此项)

@@ -29,32 +29,32 @@ endef
 
 darwin-amd64: webui
 	GOARCH=amd64 GOOS=darwin $(GOBUILD) -o $(RELEASE_DIR)/$(NAME)-$@
-	cp config.yaml.example requirements.txt $(RELEASE_DIR)/
+	cp config.yaml.example config.playlists.example.yaml requirements.txt $(RELEASE_DIR)/
 	$(call copy_skills)
 
 darwin-arm64: webui
 	GOARCH=arm64 GOOS=darwin $(GOBUILD) -o $(RELEASE_DIR)/$(NAME)-$@
-	cp config.yaml.example requirements.txt $(RELEASE_DIR)/
+	cp config.yaml.example config.playlists.example.yaml requirements.txt $(RELEASE_DIR)/
 	$(call copy_skills)
 
 linux-amd64: webui
 	GOARCH=amd64 GOOS=linux $(GOBUILD) -o $(RELEASE_DIR)/$(NAME)-$@
-	cp config.yaml.example requirements.txt $(RELEASE_DIR)/
+	cp config.yaml.example config.playlists.example.yaml requirements.txt $(RELEASE_DIR)/
 	$(call copy_skills)
 
 linux-arm64: webui
 	GOARCH=arm64 GOOS=linux $(GOBUILD) -o $(RELEASE_DIR)/$(NAME)-$@
-	cp config.yaml.example requirements.txt $(RELEASE_DIR)/
+	cp config.yaml.example config.playlists.example.yaml requirements.txt $(RELEASE_DIR)/
 	$(call copy_skills)
 
 linux-arm: webui
 	GOARCH=arm GOOS=linux $(GOBUILD) -o $(RELEASE_DIR)/$(NAME)-$@
-	cp config.yaml.example requirements.txt $(RELEASE_DIR)/
+	cp config.yaml.example config.playlists.example.yaml requirements.txt $(RELEASE_DIR)/
 	$(call copy_skills)
 
 windows-amd64: webui
 	GOOS=windows GOARCH=amd64 $(GOBUILD) -o $(RELEASE_DIR)/$(NAME)-$@.exe
-	cp config.yaml.example requirements.txt $(RELEASE_DIR)/
+	cp config.yaml.example config.playlists.example.yaml requirements.txt $(RELEASE_DIR)/
 	cp scripts/win/* $(RELEASE_DIR)/
 	$(call copy_skills)
 
@@ -63,12 +63,13 @@ zip_releases=$(addsuffix .zip, $(WINDOWS_ARCH_LIST))
 
 $(gz_releases): %.gz : %
 	chmod +x $(RELEASE_DIR)/$(NAME)-$(basename $@)
-	zip -m -j $(RELEASE_DIR)/$(NAME)-$(basename $@)-$(VERSION).zip $(RELEASE_DIR)/$(NAME)-$(basename $@) $(RELEASE_DIR)/config.yaml.example
+	zip -m -j $(RELEASE_DIR)/$(NAME)-$(basename $@)-$(VERSION).zip $(RELEASE_DIR)/$(NAME)-$(basename $@) $(RELEASE_DIR)/config.yaml.example $(RELEASE_DIR)/config.playlists.example.yaml
 
 $(zip_releases): %.zip : %
 	zip -m -j $(RELEASE_DIR)/$(NAME)-$(basename $@)-$(VERSION).zip \
 		$(RELEASE_DIR)/$(NAME)-$(basename $@).exe \
 		$(RELEASE_DIR)/config.yaml.example \
+		$(RELEASE_DIR)/config.playlists.example.yaml \
 		$(RELEASE_DIR)/requirements.txt \
 		$(RELEASE_DIR)/*.bat \
 		$(RELEASE_DIR)/*.ps1 \

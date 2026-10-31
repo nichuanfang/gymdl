@@ -101,12 +101,8 @@ n8n_config:
   empty_trash_endpoint: "" # 清空回收站
   ai_playlist_endpoint: "" # AI智能歌单
   tidy_playlist_endpoint: "" # 歌单整理端点
-  playlist_assist: "" # 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
-  tidy_playlist: #歌单,名称必须与navidrome中保持一致
-    - name: 中文
-      desc: 歌曲的主要演唱语言为中文(含普通话、粤语、闽南语等)
-    - name: 英文
-      desc: 歌曲的主要演唱语言为英文(若仅有少量英文采样且本质为纯音乐，请勿勾选此项)
+  playlist_assist: false # 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
+  # 歌单列表已拆分到同目录的 config.playlists.yaml，示例见 config.playlists.example.yaml
 
 # qq音乐api配置
 qq_music_api:
@@ -123,7 +119,7 @@ qq_music_api:
   open_id: "" #用于刷新已失效的musickey musickey1小时会过期
   union_id: "" #用于刷新已失效的musickey musickey1小时会过期
   music_key: "" #用于刷新已失效的musickey musickey1小时会过期
-  expired_at: "" #用于刷新已失效的musickey musickey1小时会过期
+  expired_at: 0 #用于刷新已失效的musickey musickey1小时会过期
 
 # 附加配置
 additional_config:

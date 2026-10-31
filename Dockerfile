@@ -20,6 +20,7 @@ FROM --platform=linux/amd64 ghcr.io/nichuanfang/gymdl-base
 WORKDIR /app
 COPY requirements.txt ./
 COPY config.yaml.example ./config.yaml.example
+COPY config.playlists.example.yaml ./config.playlists.example.yaml
 COPY skills ./skills
 COPY --from=builder /app/app ./app
 

@@ -258,12 +258,8 @@ n8n_config:
   empty_trash_endpoint: '' # 清空回收站
   ai_playlist_endpoint: '' # AI智能歌单
   tidy_playlist_endpoint: '' # 歌单整理端点
-  playlist_assist: '' # 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
-  tidy_playlist: #歌单,名称必须与navidrome中保持一致
-    - name: 中文
-      desc: 歌曲的主要演唱语言为中文(含普通话、粤语、闽南语等)
-    - name: 英文
-      desc: 歌曲的主要演唱语言为英文(若仅有少量英文采样且本质为纯音乐，请勿勾选此项)
+  playlist_assist: false # 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
+  # 歌单列表已拆分到同目录的 config.playlists.yaml，示例见 config.playlists.example.yaml
 
 # qq音乐api配置
 qq_music_api:
@@ -280,7 +276,7 @@ qq_music_api:
   open_id: '' #用于刷新已失效的musickey musickey1小时会过期
   union_id: '' #用于刷新已失效的musickey musickey1小时会过期
   music_key: '' #用于刷新已失效的musickey musickey1小时会过期
-  expired_at: '' #用于刷新已失效的musickey musickey1小时会过期
+  expired_at: 0 #用于刷新已失效的musickey musickey1小时会过期
 
 # 附加配置
 additional_config:
@@ -305,6 +301,8 @@ proxy:
 
 > ℹ️ **提示**：展开查看每个字段的详细注释说明，方便初学者直接修改配置。完整模板见仓库中的 [`config.yaml.example`](config.yaml.example)。
 
+> 📚 **歌单配置**：`n8n_config.tidy_playlist` 默认从同目录的 `config.playlists.yaml` 读取，格式见 [`config.playlists.example.yaml`](config.playlists.example.yaml)。该文件存在且包含 `tidy_playlist` 时优先于主配置；旧版内联歌单仍可用，首次在 WebUI 保存设置时会迁移到该文件。修改后需重启服务。
+
 ---
 
 ### 3️⃣ 运行 GYMDL
@@ -327,6 +325,7 @@ go run main.go
 ```bash
 # 1. 准备配置与目录
 cp config.yaml.example config.yaml
+cp config.playlists.example.yaml config.playlists.yaml
 mkdir -p data
 
 # 2. 准备 Compose 文件（需先创建外部网络 mynet）
@@ -338,7 +337,7 @@ docker compose up -d
 ```
 
 > 镜像：`ghcr.io/nichuanfang/gymdl:latest`。当前发布镜像目标平台为 `linux/amd64`，ARM 主机通过 Compose 示例中的 `platform: linux/amd64` 模拟运行。
-> Compose 示例必须挂载 `./config.yaml` 与 `./data`（SQLite、历史、下载目录、日志、临时文件等均在其中），否则将无法启动或丢失数据。
+> Compose 示例必须挂载 `./config.yaml`、`./config.playlists.yaml` 与 `./data`（SQLite、历史、下载目录、日志、临时文件等均在其中），否则将无法启动或丢失数据。歌单文件需先创建再启动容器，避免 Docker 把不存在的文件挂成目录。
 
 > [!TIP]
 > 推荐的三种运行模式
