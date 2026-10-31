@@ -42,10 +42,12 @@
       </div>
     </n-layout-sider>
     <n-layout-content class="content-shell">
-      <router-view v-slot="{ Component }">
-        <KeepAlive include="Search,History,Files,Settings">
-          <component :is="Component" />
-        </KeepAlive>
+      <router-view v-slot="{ Component, route }">
+        <transition name="page-fade" mode="out-in">
+          <KeepAlive include="Search,History,Files,Settings">
+            <component :is="Component" :key="route.path" />
+          </KeepAlive>
+        </transition>
       </router-view>
     </n-layout-content>
   </n-layout>
@@ -179,7 +181,14 @@ onUnmounted(() => {
 .sider-footer { position: absolute; right: 14px; bottom: 18px; left: 14px; display: grid; gap: 8px; color: #8b959c; font-size: 11px; }
 .session-indicator { display: flex; align-items: center; gap: 8px; padding: 8px; border-top: 1px solid rgba(255,255,255,.08); }
 .session-indicator span { width: 7px; height: 7px; border-radius: 50%; background: #63e2b7; box-shadow: 0 0 10px rgba(99,226,183,.7); }
-.content-shell { overflow: auto; padding: 30px clamp(20px, 3vw, 48px); }
+.content-shell { overflow: auto; padding: 30px clamp(20px, 3vw, 48px); background: radial-gradient(1100px 500px at 70% -10%, rgba(59,116,102,.10), transparent 60%), #0c0e12; }
+.page-fade-enter-active, .page-fade-leave-active { transition: opacity .22s ease, transform .22s cubic-bezier(.22,.8,.32,1); }
+.page-fade-enter-from { opacity: 0; transform: translateY(8px); }
+.page-fade-leave-to { opacity: 0; transform: translateY(-4px); }
+.app-sider :deep(.n-menu-item-content) { border-radius: 9px; transition: background .18s, color .18s; }
+.app-sider :deep(.n-menu-item-content:hover) { background: rgba(99,226,183,.08) !important; }
+.app-sider :deep(.n-menu-item-content--selected) { background: rgba(99,226,183,.12) !important; }
+.app-sider :deep(.n-menu-item-content-header) { letter-spacing: .02em; }
 .login-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 35%, rgba(44, 81, 73, .22), transparent 52%), #0a0c10; }
 .login-card { width: min(100%, 410px); padding: 36px; border: 1px solid rgba(141, 167, 160, .18); border-radius: 18px; background: rgba(20, 24, 30, .94); box-shadow: 0 30px 100px rgba(0,0,0,.45); }
 .login-mark { color: #edf2f3; font-size: 14px; font-weight: 700; letter-spacing: .2em; }

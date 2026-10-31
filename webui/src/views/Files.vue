@@ -26,6 +26,14 @@
         </div>
       </n-card>
 
+      <div class="quick-filters" role="toolbar" aria-label="文件库快速筛选">
+        <button v-for="item in quickFilters" :key="item.value" type="button" class="quick-filter"
+                :class="{ active: quickFilter === item.value }" @click="setQuickFilter(item.value)">
+          {{ item.label }}<span v-if="item.count !== undefined" class="quick-count">{{ item.count }}</span>
+        </button>
+        <span class="quick-summary">{{ summaryText }}</span>
+      </div>
+
       <n-alert v-if="truncated" type="warning" :show-icon="false">
         当前搜索结果过多，仅展示更新时间较新的前 {{ maxResults }} 个文件；可进入更具体的目录缩小范围。
       </n-alert>
@@ -55,8 +63,8 @@
         :row-key="(row: FileEntry) => row.path"
         :scroll-x="1120"
       />
-      <div v-if="entries.length > filePageSize" class="file-pagination">
-        <n-pagination v-model:page="filePage" :page-size="filePageSize" :item-count="entries.length" />
+      <div v-if="filteredEntries.length > filePageSize" class="file-pagination">
+        <n-pagination v-model:page="filePage" :page-size="filePageSize" :item-count="filteredEntries.length" />
       </div>
       <n-empty
         v-else-if="!loadError"
@@ -116,7 +124,7 @@ const filePage = ref(1)
 const filePageSize = 50
 const visibleEntries = computed(() => {
   const start = (filePage.value - 1) * filePageSize
-  return entries.value.slice(start, start + filePageSize)
+  return filteredEntries.value.slice(start, start + filePageSize)
 })
 const currentPath = ref('')
 const queryDraft = ref('')
@@ -127,6 +135,8 @@ const target = ref<'local' | 'webdav' | ''>('')
 const truncated = ref(false)
 const pendingUploads = ref<PendingWebDAVUpload[]>([])
 const maxResults = 5000
+const quickFilter = ref<'all' | 'recent' | 'lossless' | 'large'>('all')
+const lastPathKey = 'gymdl_files_path'
 const previewOpen = ref(false)
 const audioElement = ref<HTMLAudioElement | null>(null)
 const selectedFile = ref<FileEntry | null>(null)
@@ -138,6 +148,29 @@ const fieldOptions = [
   { label: '歌手', value: 'artist' },
   { label: '专辑', value: 'album' },
 ]
+const audioEntries = computed(() => entries.value.filter((entry) => !entry.is_dir))
+const quickFilters = computed(() => [
+  { label: '全部', value: 'all' as const, count: audioEntries.value.length },
+  { label: '最近 7 天', value: 'recent' as const, count: audioEntries.value.filter(isRecent).length },
+  { label: '无损', value: 'lossless' as const, count: audioEntries.value.filter(isLossless).length },
+  { label: '大于 30 MB', value: 'large' as const, count: audioEntries.value.filter((entry) => entry.size > 30 * 1024 * 1024).length },
+])
+const filteredEntries = computed(() => {
+  if (quickFilter.value === 'all') return entries.value
+  return entries.value.filter((entry) => {
+    if (entry.is_dir) return quickFilter.value === 'all'
+    if (quickFilter.value === 'recent') return isRecent(entry)
+    if (quickFilter.value === 'lossless') return isLossless(entry)
+    return entry.size > 30 * 1024 * 1024
+  })
+})
+const summaryText = computed(() => {
+  const total = audioEntries.value.length
+  if (!total) return '当前目录暂无音频'
+  const size = audioEntries.value.reduce((sum, entry) => sum + entry.size, 0)
+  return `${total} 首 · ${formatSize(size)}`
+})
+
 const parentPath = computed(() => {
   const parts = currentPath.value.split('/').filter(Boolean)
   parts.pop()
@@ -154,6 +187,17 @@ function formatTime(value?: string): string {
   if (!value) return '—'
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString('zh-CN', { hour12: false })
+}
+function isRecent(entry: FileEntry) {
+  const time = new Date(entry.mod_time).getTime()
+  return Number.isFinite(time) && Date.now() - time <= 7 * 24 * 60 * 60 * 1000
+}
+function isLossless(entry: FileEntry) {
+  return ['.flac', '.wav', '.alac', '.ape'].includes(entry.ext.toLowerCase())
+}
+function setQuickFilter(value: 'all' | 'recent' | 'lossless' | 'large') {
+  quickFilter.value = value
+  filePage.value = 1
 }
 function preview(entry: FileEntry) {
   selectedFile.value = entry
@@ -219,6 +263,7 @@ async function load(path = '/', options: { showPageLoading?: boolean; preserveEn
       entries.value = response.data.entries || []
       filePage.value = 1
       currentPath.value = (response.data.path || '').replace(/^\/+|\/+$/g, '')
+      localStorage.setItem(lastPathKey, currentPath.value || '/')
       target.value = response.data.target || 'local'
       truncated.value = !!response.data.truncated
       return true
@@ -293,7 +338,8 @@ async function refreshPending() {
 }
 
 onActivated(() => {
-  void load(currentPath.value || '/')
+  const remembered = currentPath.value || localStorage.getItem(lastPathKey) || '/'
+  void load(remembered)
   void refreshPending()
 })
 onDeactivated(deactivateFiles)
@@ -309,6 +355,13 @@ onDeactivated(deactivateFiles)
 .field-select { width: 130px; }
 .search-hint { margin-top: 10px; color: #788580; font-size: 11px; }
 .search-hint strong { color: #b8c8c1; font-weight: 500; }
+.quick-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 2px 0; }
+.quick-filter { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 11px; border: 1px solid rgba(171,190,184,.14); border-radius: 999px; color: #8c9a94; background: rgba(20,24,29,.7); font-size: 11px; cursor: pointer; transition: color .18s, border-color .18s, background .18s, transform .18s; }
+.quick-filter:hover { color: #d5e5df; border-color: rgba(99,226,183,.35); transform: translateY(-1px); }
+.quick-filter.active { color: #06140f; border-color: #63e2b7; background: #63e2b7; }
+.quick-count { min-width: 16px; padding: 0 5px; border-radius: 999px; background: rgba(255,255,255,.1); font-size: 9px; line-height: 16px; text-align: center; }
+.quick-filter.active .quick-count { background: rgba(6,20,15,.18); }
+.quick-summary { margin-left: auto; color: #65736d; font-size: 10px; }
 .pending-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .pending-list { margin: 8px 0 0; padding-left: 18px; color: #a7b2ad; font-size: 11px; }
 .pending-list li { margin-top: 4px; overflow-wrap: anywhere; }
