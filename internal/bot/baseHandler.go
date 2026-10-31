@@ -23,17 +23,21 @@ func (app *BotApp) HandleText(c tb.Context) error {
 	user := c.Sender()
 	b := c.Bot()
 
-	// 初始提示
-	msg, _ := b.Send(user, "🔍 正在识别链接...")
-
 	// Use a per-message config snapshot so safe WebUI hot-reload fields apply only
 	// to new tasks and never change a task while it is running.
 	taskConfig := config.WithLiveTaskOverrides(app.cfg)
 	link, executor := linkparser.ParseLinkWithConfig(taskConfig, text)
 	if link == "" {
-		_, _ = b.Edit(msg, "❌ 暂不支持该类型的链接")
-		return nil
+		// No link: this is a conversation, not a download. AI mode takes plain
+		// text; normal mode keeps the original "unsupported" behaviour.
+		if app.aiEnabled(c) {
+			return app.runAITurn(c, text)
+		}
+		return c.Send("❌ 暂不支持该类型的链接\n\n想找歌或提问可以发送 /ai <内容>，或使用 /mode 切换到 AI 模式。")
 	}
+	// Links always take priority over AI mode so sharing a track never starts a
+	// chat turn and never needs the user to leave the conversation first.
+	msg, _ := b.Send(user, "🔍 正在识别链接...")
 	utils.InfoWithFormat("[Telegram] 解析成功: %s", link)
 
 	// 创建会话对象

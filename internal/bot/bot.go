@@ -1,13 +1,13 @@
 package bot
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/url"
 	"sync"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/internal/aichat"
 	"github.com/nichuanfang/gymdl/internal/musicdedupe"
 	"github.com/nichuanfang/gymdl/utils"
 	"go.uber.org/zap"
@@ -28,6 +28,13 @@ type BotApp struct {
 	activeMusicKeys map[string]struct{}
 	musicActionMu   sync.Mutex
 	musicActions    map[string]pendingMusicAction
+	aiStore         *aichat.Store
+	aiSkills        *aichat.SkillRegistry
+	aiMCP           []*aichat.MCPClient
+	aiMCPTools      []aichat.Tool
+	aiTurnMu        sync.Mutex
+	aiTurnLocks     map[int64]*sync.Mutex
+	aiBatchRunning  map[int64]struct{}
 }
 
 // NewBotApp 创建机器人
@@ -66,13 +73,12 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 	}
 
 	if cfg.Telegram.Mode == 2 {
-		webhook := &tb.Webhook{
+		botSettings.Poller = &tb.Webhook{
 			Listen: ":" + fmt.Sprint(cfg.Telegram.WebhookPort),
 			Endpoint: &tb.WebhookEndpoint{
 				PublicURL: cfg.Telegram.WebhookURL,
 			},
 		}
-		botSettings.Poller = webhookPoller{webhook: webhook}
 	}
 
 	bot, err := tb.NewBot(botSettings)
@@ -91,46 +97,41 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 		pendingMusic:    make(map[string]pendingMusicDownload),
 		activeMusicKeys: make(map[string]struct{}),
 		musicActions:    make(map[string]pendingMusicAction),
+		aiTurnLocks:     make(map[int64]*sync.Mutex),
+		aiBatchRunning:  make(map[int64]struct{}),
 	}
+	app.initAI()
 	//注册处理器
 	app.registerHandlers()
+	// Publish the menu once at startup. Telegram stores it per bot, so doing it
+	// here means every deploy picks up the new order and wording without the
+	// user having to send /setCommands manually.
+	go app.syncCommandMenu()
 	//初始化notifier
 	InitBotNotifier(bot, cfg.Telegram.ChatID, app)
 	return app, nil
 }
 
-type webhookPoller struct {
-	webhook *tb.Webhook
-}
-
-// Poll owns the webhook HTTP server without calling Webhook.Poll: telebot
-// v4's Webhook.waitForStop closes the stop channel itself, and Bot.Start
-// closes the same channel afterwards, which panics during shutdown.
-func (p webhookPoller) Poll(b *tb.Bot, updates chan tb.Update, stop chan struct{}) {
-	if err := b.SetWebhook(p.webhook); err != nil {
-		b.OnError(err, nil)
-		return
-	}
-	server := &http.Server{
-		Addr:    p.webhook.Listen,
-		Handler: p.webhook,
-	}
-	go func() {
-		<-stop
-		_ = server.Shutdown(context.Background())
-	}()
-	if p.webhook.TLS != nil {
-		_ = server.ListenAndServeTLS(p.webhook.TLS.Cert, p.webhook.TLS.Key)
-		return
-	}
-	_ = server.ListenAndServe()
-}
-
 // Start 启动机器人
 func (app *BotApp) Start() {
-	//移除webhook
-	_ = app.bot.RemoveWebhook(true)
+	// In webhook mode telebot registers the webhook as part of Poll; removing it
+	// here would delete the endpoint we are about to serve. Polling mode still
+	// needs the removal so a stale webhook cannot swallow updates.
+	if app.cfg.Telegram.Mode != 2 {
+		_ = app.bot.RemoveWebhook(true)
+	}
 	app.bot.Start()
+}
+
+// syncCommandMenu publishes botCommands so the "/" menu always matches the
+// handlers registered above. It is best-effort: a Telegram hiccup must not stop
+// the bot from starting.
+func (app *BotApp) syncCommandMenu() {
+	if err := app.bot.SetCommands(botCommands()); err != nil {
+		utils.WarnWithFormat("[Telegram] 同步命令菜单失败: %v", err)
+		return
+	}
+	utils.InfoWithFormat("[Telegram] 命令菜单已同步（%d 条）", len(botCommands()))
 }
 
 // Stop 关闭机器人
@@ -138,5 +139,8 @@ func (app *BotApp) Stop() {
 	app.bot.Stop()
 	if app.musicDedupe != nil {
 		_ = app.musicDedupe.Close()
+	}
+	if app.aiStore != nil {
+		_ = app.aiStore.Close()
 	}
 }

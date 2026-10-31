@@ -78,11 +78,30 @@ type LrcAPIConfig struct {
 }
 
 type AIConfig struct {
-	Enable         bool   `yaml:"enable"`          // 是否开启AI
-	BaseUrl        string `yaml:"base_url"`        // baseurl
-	Model          string `yaml:"model"`           // 使用的模型
-	ApiKey         string `yaml:"api_key"`         // apiKey
-	SystemPrompt   string `yaml:"system_prompt"`   // 默认系统提示词
+	Enable                bool              `yaml:"enable"`                  // 是否开启AI
+	BaseUrl               string            `yaml:"base_url"`                // baseurl
+	Model                 string            `yaml:"model"`                   // 使用的模型
+	ApiKey                string            `yaml:"api_key"`                 // apiKey
+	SystemPrompt          string            `yaml:"system_prompt"`           // 默认系统提示词
+	DefaultMode           bool              `yaml:"default_mode"`            // 私聊是否默认进入AI模式
+	MaxToolRounds         int               `yaml:"max_tool_rounds"`         // 单轮对话最多工具调用轮数
+	RequestTimeoutSeconds int               `yaml:"request_timeout_seconds"` // 单次AI请求超时(秒)
+	HistoryWindowDays     int               `yaml:"history_window_days"`     // 收听历史画像窗口(天)
+	MaxSuggestions        int               `yaml:"max_suggestions"`         // 单次最多展示的候选数
+	SkillsDirs            []string          `yaml:"skills_dirs"`             // 本地技能目录
+	MCPServers            []MCPServerConfig `yaml:"mcp_servers"`             // MCP服务列表
+	HistoryDSN            string            `yaml:"history_dsn"`             // 收听历史Postgres只读DSN
+	HistoryTable          string            `yaml:"history_table"`           // 收听历史表名
+	EnabledSkills         []string          `yaml:"enabled_skills"`          // 允许AI模式使用的技能白名单
+}
+
+// MCPServerConfig 定义一个可选的MCP服务。AllowedTools为空时不会暴露任何工具。
+type MCPServerConfig struct {
+	Name           string   `yaml:"name"`            // 服务名，用于工具名前缀
+	URL            string   `yaml:"url"`             // MCP HTTP端点
+	Token          string   `yaml:"token"`           // Bearer Token，可选
+	AllowedTools   []string `yaml:"allowed_tools"`   // 允许调用的工具名白名单
+	TimeoutSeconds int      `yaml:"timeout_seconds"` // 单次调用超时(秒)
 }
 
 // PlaylistInfo 定义单个歌单及其描述

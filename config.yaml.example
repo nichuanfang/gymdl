@@ -67,6 +67,31 @@ ai:
   model: ""  # 使用的 AI 模型名称
   api_key: ""  # AI 服务的 API Key
   system_prompt: ""  # 默认系统提示词
+  default_mode: false  # 私聊是否默认进入AI模式
+  max_tool_rounds: 4  # 单轮对话最多工具调用轮数
+  request_timeout_seconds: 90  # 单次AI请求超时(秒)
+  history_window_days: 30  # 收听历史画像窗口(天)
+  max_suggestions: 10  # 单次最多展示的候选数
+  skills_dirs:  # 本地技能目录
+    - "skills"
+  enabled_skills:  # 允许AI模式使用的技能白名单
+    - "music-recommendation"
+    - "music-library-query"
+    - "music-download-failure"
+    - "music-playlist-curation"
+    - "music-discovery-by-artist"
+    - "music-lyrics-search"
+    - "music-metadata-normalize"
+    - "music-download-plan"
+  mcp_servers:  # MCP服务列表，只暴露 allowed_tools 中的工具
+    - name: ""
+      url: ""
+      token: ""
+      allowed_tools:  # 允许调用的工具名白名单
+        - ""
+      timeout_seconds: 20  # 单次调用超时(秒)
+  history_dsn: ""  # 收听历史Postgres只读DSN
+  history_table: "music_scrobble_records"  # 收听历史表名
 
 # N8N配置
 n8n_config:

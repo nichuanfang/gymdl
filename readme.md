@@ -114,6 +114,23 @@ cd webui && npm run dev
 
 **关于热加载**：目前仅 `tidy.dist_dir` 和 `additional_config.music_mode` 支持热加载，并应用于保存后的新任务；运行中的任务保留启动时快照，其余配置保存后需重启服务。
 
+### Telegram 智能体
+
+开启 `ai.enable` 后，Bot 有两种对话方式，按聊天分别记住模式：
+
+- 普通模式：和原来一样，发送链接直接下载；想和智能体对话时用 `/ai <内容>`，可以一直带 `/ai` 连续追问。
+- AI 模式：`/mode` 切换到 AI 后，直接发文字就会进入智能体；发链接仍然优先下载，不会打断上下文。
+- `/mode ai`、`/mode normal` 可直接切换；`/clear` 只清空上下文，不改变当前模式。
+- AI 模式没有固定工具优先级，由模型按意图选择内置工具、本地技能或 MCP 能力。需要具体歌曲时才回查真实平台，结果里带下载/试听按钮。
+- 已入库歌曲会标 `✅`；候选按钮 30 分钟后失效，重新提问即可。同一轮生成过结果后，早先几条回答的按钮仍然可用，不会因为继续聊天而失效。
+- 推荐多首时按钮下方会出现「下载前 3 首 / 全部下载」，按顺序逐首处理；每首仍然走同一套元数据预检与重复确认，不会绕过查重。
+- 处理过程中占位消息会显示当前阶段（检索曲目、查曲库、调用外部服务等）；单轮总时长有上限，超时会明确提示而不是一直转圈。
+- 同一聊天内的消息按顺序处理，快速连发不会出现两条回答互相覆盖；不同聊天互不阻塞。
+
+`ai.default_mode` 控制新聊天默认进入哪种模式。`ai.skills_dirs` 下每个子目录放一个 `SKILL.md` 即成为可调用技能；`ai.mcp_servers` 只有 `allowed_tools` 中列出的工具会暴露给模型。收听画像需要配置只读的 `ai.history_dsn`，不可用时自动跳过。
+
+默认挂载 8 个音乐技能：`music-recommendation`（按场景/情绪推荐并回查真实单曲）、`music-discovery-by-artist`（按艺人/单曲找相似）、`music-library-query`（查是否已入库、曲库内容）、`music-download-failure`（判断失败环节）、`music-download-plan`（批量下载顺序与风险）、`music-playlist-curation`（主题歌单整理）、`music-lyrics-search`（查歌词/按歌词找歌）、`music-metadata-normalize`（标签规范化）。`ai.enabled_skills` 为空时不会挂载任何技能；部署、运维类技能不要放进这个白名单。
+
 ---
 
 ## ⚙️ 快速开始
@@ -207,6 +224,31 @@ ai:
   model: '' # 使用的 AI 模型名称
   api_key: '' # AI 服务的 API Key
   system_prompt: '' # 默认系统提示词
+  default_mode: false # 私聊是否默认进入AI模式
+  max_tool_rounds: 4 # 单轮对话最多工具调用轮数
+  request_timeout_seconds: 90 # 单次AI请求超时(秒)
+  history_window_days: 30 # 收听历史画像窗口(天)
+  max_suggestions: 10 # 单次最多展示的候选数
+  skills_dirs: # 本地技能目录
+    - 'skills'
+  enabled_skills: # 允许AI模式使用的技能白名单
+    - 'music-recommendation'
+    - 'music-library-query'
+    - 'music-download-failure'
+    - 'music-playlist-curation'
+    - 'music-discovery-by-artist'
+    - 'music-lyrics-search'
+    - 'music-metadata-normalize'
+    - 'music-download-plan'
+  mcp_servers: # MCP服务列表，只暴露 allowed_tools 中的工具
+    - name: ''
+      url: ''
+      token: ''
+      allowed_tools: # 允许调用的工具名白名单
+        - ''
+      timeout_seconds: 20 # 单次调用超时(秒)
+  history_dsn: '' # 收听历史Postgres只读DSN
+  history_table: 'music_scrobble_records' # 收听历史表名
 
 # N8N配置
 n8n_config:

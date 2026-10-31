@@ -21,6 +21,13 @@ func SetTaskManager(tm *task.TaskManager) {
 	manager = tm
 }
 
+// GetTaskManager exposes the shared manager so non-HTTP callers (the Telegram
+// agent) read the same task list the WebUI shows instead of building a second,
+// permanently empty instance.
+func GetTaskManager() *task.TaskManager {
+	return manager
+}
+
 // SubmitTaskRequest 提交任务请求
 type SubmitTaskRequest struct {
 	URL           string `json:"url" binding:"required"`

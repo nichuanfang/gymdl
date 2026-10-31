@@ -32,7 +32,7 @@ var secretKeys = map[string]struct{}{
 	"bot_token": {}, "api_key": {}, "auth_token": {}, "webhook_url": {},
 	"proxy_pass": {}, "pass": {}, "password": {}, "token": {}, "secret": {}, "user": {}, "refresh_key": {}, "refresh_token": {},
 	"access_token": {}, "music_id": {}, "str_music_id": {}, "open_id": {},
-	"union_id": {}, "music_key": {},
+	"union_id": {}, "music_key": {}, "history_dsn": {},
 }
 
 // SetWebConfig installs a new immutable runtime snapshot.

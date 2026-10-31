@@ -130,10 +130,18 @@ func Sync() {
 
 // 获取 logger 实例
 func Logger() *zap.Logger {
+	if loggerInstance == nil {
+		// Callers such as the standalone agent smoke tool and unit tests may
+		// log before InitLogger; fall back to a no-op logger instead of panicking.
+		return zap.NewNop()
+	}
 	return loggerInstance
 }
 
 func SugaredLogger() *zap.SugaredLogger {
+	if sugaredLoggerInstance == nil {
+		return zap.NewNop().Sugar()
+	}
 	return sugaredLoggerInstance
 }
 

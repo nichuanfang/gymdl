@@ -154,9 +154,45 @@ func (c *Config) setDefaults() {
     }
     if c.AI == nil {
         c.AI = &AIConfig{
-            Enable:  false,
-            BaseUrl: "https://api.openai.com/v1",
-            Model:   "gpt-3.5-turbo",
+            Enable:                false,
+            BaseUrl:               "https://api.openai.com/v1",
+            Model:                 "gpt-3.5-turbo",
+            DefaultMode:           false,
+            MaxToolRounds:         4,
+            RequestTimeoutSeconds: 90,
+            HistoryWindowDays:     30,
+            MaxSuggestions:        10,
+            SkillsDirs:            []string{"skills"},
+            EnabledSkills:         defaultMusicSkills(),
+            MCPServers:            make([]MCPServerConfig, 0),
+            HistoryTable:          "music_scrobble_records",
+        }
+    } else {
+        if len(c.AI.SkillsDirs) == 0 {
+            c.AI.SkillsDirs = []string{"skills"}
+        }
+        if len(c.AI.EnabledSkills) == 0 {
+            c.AI.EnabledSkills = defaultMusicSkills()
+        }
+        if c.AI.MaxToolRounds <= 0 {
+            c.AI.MaxToolRounds = 4
+        }
+        if c.AI.RequestTimeoutSeconds <= 0 {
+            c.AI.RequestTimeoutSeconds = 90
+        }
+        if c.AI.HistoryWindowDays <= 0 {
+            c.AI.HistoryWindowDays = 30
+        }
+        if c.AI.MaxSuggestions <= 0 {
+            c.AI.MaxSuggestions = 10
+        }
+        if c.AI.HistoryTable == "" {
+            c.AI.HistoryTable = "music_scrobble_records"
+        }
+        for i := range c.AI.MCPServers {
+            if c.AI.MCPServers[i].TimeoutSeconds <= 0 {
+                c.AI.MCPServers[i].TimeoutSeconds = 20
+            }
         }
     }
     if c.LrcAPI==nil {
@@ -192,4 +228,25 @@ func (c *Config) setDefaults() {
             Enable: false,
         }
     }
+}
+
+// defaultMusicSkills is the Telegram-facing allow-list. Deployment and
+// host-control skills are deliberately excluded.
+func defaultMusicSkills() []string {
+	return []string{
+		"music-recommendation",
+		"music-library-query",
+		"music-download-failure",
+		"music-playlist-curation",
+		"music-discovery-by-artist",
+		"music-lyrics-search",
+		"music-metadata-normalize",
+		"music-download-plan",
+	}
+}
+
+// SetDefaultsForTest fills defaults without touching the loader cache. It is
+// used by tests that assert config defaults stay in sync with shipped skills.
+func (c *Config) SetDefaultsForTest() {
+	c.setDefaults()
 }

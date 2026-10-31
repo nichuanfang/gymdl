@@ -1,30 +1,33 @@
 package bot
 
 import (
-    "bytes"
-    "encoding/base64"
-    "encoding/json"
-    "fmt"
-    "net/http"
-    "strings"
-    "time"
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
 
-    "github.com/nichuanfang/gymdl/config"
-    "github.com/nichuanfang/gymdl/utils"
-    "go.uber.org/zap"
-    tb "gopkg.in/telebot.v4"
+	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/utils"
+	"go.uber.org/zap"
+	tb "gopkg.in/telebot.v4"
 )
 
 /* ------------------------ /start ------------------------ */
 
 // StartCommand 响应 /start 命令
 func StartCommand(c tb.Context) error {
-	msg := `👋 欢迎来到 GymDL Bot!
-我可以帮你分析并下载多种音乐链接 🏋️‍♂️
+	msg := `👋 欢迎使用 GymDL
 
-使用 /help 查看可用命令 📜`
+发链接：直接下载
+发问题：/ai 帮你找歌
+/mode 切换 AI 与普通模式
 
-	if err := c.Send(msg, &tb.SendOptions{ParseMode: tb.ModeMarkdown}); err != nil {
+完整说明：/help`
+
+	if err := c.Send(msg); err != nil {
 		logger.Error("Failed to send start message", zap.Error(err))
 		return err
 	}
@@ -32,30 +35,30 @@ func StartCommand(c tb.Context) error {
 }
 
 /* ------------------------ /help ------------------------ */
-// HelpCommand 响应 /help 命令，自动生成已注册命令说明
+
+// HelpCommand 给一份手机上能一屏看完的用法说明。命令菜单本身已经列出全部
+// 指令，这里只解释最常用的三条路径，不再重复堆一遍命令表。
 func HelpCommand(c tb.Context) error {
-	commands, err := c.Bot().Commands()
-	if err != nil {
-		logger.Error("Failed to get bot commands", zap.Error(err))
-		return c.Send("⚠️ 无法获取命令列表")
-	}
+	msg := `📖 <b>怎么用</b>
 
-	if len(commands) == 0 {
-		return c.Send("😅 当前没有可用命令")
-	}
+1. 发歌曲链接 → 直接下载入库
+2. 发 /ai 加一句话 → 找歌、推荐、查曲库
+3. /mode → 切换后可直接说话
 
-	helpMsg := "📖 *可用命令列表:*\n\n"
-	for _, cmd := range commands {
-		helpMsg += fmt.Sprintf("• `/%s` - %s\n", cmd.Text, cmd.Description)
-	}
+<b>常用</b>
+/mode 切换模式
+/clear 清空对话
+/help 看这条说明
 
-	helpMsg += "\n✨ *Tip:* 你可以直接在聊天中输入命令来体验功能!"
+<b>歌单</b>
+/assign_playlist 按标签整理
+/ai_playlist 生成新歌单
+/empty_trash 清空回收站`
 
-	if err := c.Send(helpMsg, &tb.SendOptions{ParseMode: tb.ModeMarkdown}); err != nil {
+	if err := c.Send(msg, tb.ModeHTML); err != nil {
 		logger.Error("Failed to send help message", zap.Error(err))
 		return err
 	}
-
 	return nil
 }
 
@@ -166,7 +169,7 @@ func (wrapper *QQMusicWrapper) fetchQRCode() (string, string, error) {
 
 // 检查二维码登录状态
 func (wrapper *QQMusicWrapper) checkQRCode(identifier string) (float64, interface{}, error) {
-	data, err := wrapper.client.Request(http.MethodGet, fmt.Sprintf("/login/qrcode/%s/status",wrapper.loginType), map[string]string{ "identifier": identifier}, nil)
+	data, err := wrapper.client.Request(http.MethodGet, fmt.Sprintf("/login/qrcode/%s/status", wrapper.loginType), map[string]string{"identifier": identifier}, nil)
 	if err != nil {
 		return -1, nil, err
 	}
@@ -196,18 +199,18 @@ func (wrapper *QQMusicWrapper) pollLoginStatus(msg *tb.Message, identifier strin
 			}
 
 			switch status {
-			case 1:  // SCAN
+			case 1: // SCAN
 				continue
 			case 2: // CONF
-                _, _ = app.bot.EditCaption(msg, "✅已扫码,请在手机上确认")
-			case 0:  // DONE
-                _, _ = app.bot.EditCaption(msg, "🎉 登录成功！")
+				_, _ = app.bot.EditCaption(msg, "✅已扫码,请在手机上确认")
+			case 0: // DONE
+				_, _ = app.bot.EditCaption(msg, "🎉 登录成功！")
 				cred := credential.(map[string]interface{})
 				expiredAtUnix := int64(cred["expired_at"].(float64))
 				authText := fmt.Sprintf(
 					"请复制以下凭证并妥善保存：\n\n"+
 						"🆔 *Music ID*\n`%.0f`\n\n"+
-                        "🏷️ *Str Music ID*\n`%s`\n\n"+
+						"🏷️ *Str Music ID*\n`%s`\n\n"+
 						"👤 *OpenID*\n`%s`\n\n"+
 						"🌐 *UnionID*\n`%s`\n\n"+
 						"🎫 *Login Type*\n`%.0f`\n\n"+
@@ -218,7 +221,7 @@ func (wrapper *QQMusicWrapper) pollLoginStatus(msg *tb.Message, identifier strin
 						"📅 *Expired At*\n`%d`\n\n"+
 						"⚠️ *注意：凭证信息请勿泄露给他人。*",
 					cred["musicid"].(float64),
-                    cred["str_musicid"].(string),
+					cred["str_musicid"].(string),
 					cred["openid"].(string),
 					cred["unionid"].(string),
 					cred["loginType"].(float64),
@@ -226,19 +229,19 @@ func (wrapper *QQMusicWrapper) pollLoginStatus(msg *tb.Message, identifier strin
 					cred["refresh_key"].(string),
 					cred["refresh_token"].(string),
 					cred["access_token"].(string),
-                    expiredAtUnix,
+					expiredAtUnix,
 				)
 
 				// 3. 推送给用户
-                _, _ = app.bot.Send(msg.Chat, authText, &tb.SendOptions{ParseMode: tb.ModeMarkdown})
+				_, _ = app.bot.Send(msg.Chat, authText, &tb.SendOptions{ParseMode: tb.ModeMarkdown})
 				return
 			case 3: // TIMEOUT
-                _, _ = app.bot.EditCaption(msg, "❌ 二维码已过期，请重新发起登录")
+				_, _ = app.bot.EditCaption(msg, "❌ 二维码已过期，请重新发起登录")
 				// 建议：此处可以删除过期图片
-                _ = app.bot.Delete(msg)
+				_ = app.bot.Delete(msg)
 				return
-			case 4: // REFUSE 
-                _, _ = app.bot.EditCaption(msg, "🚫 您拒绝了登录申请")
+			case 4: // REFUSE
+				_, _ = app.bot.EditCaption(msg, "🚫 您拒绝了登录申请")
 				return
 			}
 
@@ -250,23 +253,30 @@ func (wrapper *QQMusicWrapper) pollLoginStatus(msg *tb.Message, identifier strin
 }
 
 /* ------------------------ 初始化指令集 ------------------------ */
+
+// botCommands 是 / 菜单的唯一来源。顺序按手机上的使用频率排，描述控制在
+// 4-5 个汉字，避免在窄屏上换行或被截断；不加 emoji 和多余空格。
+// /start 不放进菜单（少数 7 条更好点），新用户点 Start 按钮仍会触发它。
+func botCommands() []tb.Command {
+	return []tb.Command{
+		{Text: "ai", Description: "对话找歌"},
+		{Text: "mode", Description: "切换模式"},
+		{Text: "clear", Description: "清空对话"},
+		{Text: "assign_playlist", Description: "整理歌单"},
+		{Text: "ai_playlist", Description: "生成歌单"},
+		{Text: "empty_trash", Description: "清空回收站"},
+		{Text: "help", Description: "使用帮助"},
+	}
+}
+
 // SetCommands 初始化 Telegram 命令列表
 func SetCommands(c tb.Context) error {
-	commands := []tb.Command{
-		{Text: "start", Description: " 启动 Bot👋"},
-		{Text: "help", Description: "获取帮助❔"},
-		// {Text: "qq_login", Description: "QQ 音乐登录 🎧"},
-		{Text: "assign_playlist", Description: "分配歌单🎵"},
-        {Text: "ai_playlist", Description: "智能歌单✨"},
-        {Text: "empty_trash", Description: "清空回收站🗑️"},
-	}
-
-	if err := c.Bot().SetCommands(commands); err != nil {
+	if err := c.Bot().SetCommands(botCommands()); err != nil {
 		logger.Error("Failed to set commands", zap.Error(err))
 		return err
 	}
 
-	const successMsg = "✅ 指令初始化成功，使用 /help 查看可用命令"
+	const successMsg = "✅ 命令菜单已更新"
 	if err := c.Send(successMsg); err != nil {
 		logger.Error("Failed to send confirmation message", zap.Error(err))
 		return err
@@ -277,77 +287,77 @@ func SetCommands(c tb.Context) error {
 
 /* ------------------------ /assign_playlist ------------------------ */
 func (app *BotApp) AssignPlaylistCommand(c tb.Context) error {
-    extra := map[string]interface{}{
-        "playlist_assist":app.cfg.N8NConfig.PlaylistAssist,
-        "tidy_playlist":   app.cfg.N8NConfig.TidyPlaylist,
-    }
-    return app.sendN8NTask(c, app.cfg.N8NConfig.TidyPlaylistEndpoint, extra)
+	extra := map[string]interface{}{
+		"playlist_assist": app.cfg.N8NConfig.PlaylistAssist,
+		"tidy_playlist":   app.cfg.N8NConfig.TidyPlaylist,
+	}
+	return app.sendN8NTask(c, app.cfg.N8NConfig.TidyPlaylistEndpoint, extra)
 }
 
 /* ------------------------ /ai_playlist ------------------------ */
 func (app *BotApp) AIPlaylistCommand(c tb.Context) error {
-    return app.sendN8NTask(c, app.cfg.N8NConfig.AIPlaylistEndpoint, nil)
+	return app.sendN8NTask(c, app.cfg.N8NConfig.AIPlaylistEndpoint, nil)
 }
 
 /* ------------------------ /empty_trash ------------------------ */
 func (app *BotApp) EmptyTrashCommand(c tb.Context) error {
-    return app.sendN8NTask(c, app.cfg.N8NConfig.EmptyTrashEndpoint, nil)
+	return app.sendN8NTask(c, app.cfg.N8NConfig.EmptyTrashEndpoint, nil)
 }
 
 /* ------------------------ 辅助方法 ------------------------ */
 
 // sendN8NTask 是一个通用的辅助函数，用于将任务转发给 n8n
 func (app *BotApp) sendN8NTask(c tb.Context, endpoint string, extraPayload map[string]interface{}) error {
-    if app.cfg.N8NConfig.Enable&&len(app.cfg.N8NConfig.N8NBaseUrl) == 0 {
-        return c.Send("请先配置启用n8n服务")
-    }
+	if app.cfg.N8NConfig.Enable && len(app.cfg.N8NConfig.N8NBaseUrl) == 0 {
+		return c.Send("请先配置启用n8n服务")
+	}
 
-    // 1. 发送初始状态消息
-    sentMsg, err := c.Bot().Send(c.Chat(), "🚀 任务已提交，后台处理中...")
-    if err != nil {
-        return err
-    }
+	// 1. 发送初始状态消息
+	sentMsg, err := c.Bot().Send(c.Chat(), "🚀 任务已提交，后台处理中...")
+	if err != nil {
+		return err
+	}
 
-    // 2. 拼接 URL
-    baseUrl, _ := strings.CutSuffix(app.cfg.N8NConfig.N8NBaseUrl, "/")
-    targetUrl := baseUrl + "/" + strings.TrimPrefix(endpoint, "/")
+	// 2. 拼接 URL
+	baseUrl, _ := strings.CutSuffix(app.cfg.N8NConfig.N8NBaseUrl, "/")
+	targetUrl := baseUrl + "/" + strings.TrimPrefix(endpoint, "/")
 
-    // 3. 构造基础 Payload
-    payload := map[string]interface{}{
-        "chat_id":    c.Chat().ID,
-        "message_id": sentMsg.ID,
-        "username":   c.Sender().Username,
-        "text":       c.Text(),
-        "timestamp":  time.Now().Unix(),
-    }
-    // 合并额外的 Payload
-    for k, v := range extraPayload {
-        payload[k] = v
-    }
+	// 3. 构造基础 Payload
+	payload := map[string]interface{}{
+		"chat_id":    c.Chat().ID,
+		"message_id": sentMsg.ID,
+		"username":   c.Sender().Username,
+		"text":       c.Text(),
+		"timestamp":  time.Now().Unix(),
+	}
+	// 合并额外的 Payload
+	for k, v := range extraPayload {
+		payload[k] = v
+	}
 
-    // 4. 发送请求
-    jsonData, _ := json.Marshal(payload)
-    req, err := http.NewRequest("POST", targetUrl, bytes.NewBuffer(jsonData))
-    if err != nil {
-        _, _ = c.Bot().Edit(sentMsg, "❌ 创建请求失败: "+err.Error())
-        return err
-    }
+	// 4. 发送请求
+	jsonData, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", targetUrl, bytes.NewBuffer(jsonData))
+	if err != nil {
+		_, _ = c.Bot().Edit(sentMsg, "❌ 创建请求失败: "+err.Error())
+		return err
+	}
 
-    if app.cfg.N8NConfig.AuthToken != "" {
-        req.Header.Set("Authorization", "Bearer "+app.cfg.N8NConfig.AuthToken)
-    }
-    req.Header.Set("Content-Type", "application/json")
+	if app.cfg.N8NConfig.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+app.cfg.N8NConfig.AuthToken)
+	}
+	req.Header.Set("Content-Type", "application/json")
 
-    client := &http.Client{Timeout: 5 * time.Second}
-    resp, err := client.Do(req)
-    if err != nil {
-        _, _ = c.Bot().Edit(sentMsg, "❌ 调用 n8n 失败: "+err.Error())
-        return err
-    }
-    defer resp.Body.Close()
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		_, _ = c.Bot().Edit(sentMsg, "❌ 调用 n8n 失败: "+err.Error())
+		return err
+	}
+	defer resp.Body.Close()
 
-    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-        _, _ = c.Bot().Edit(sentMsg, fmt.Sprintf("❌ n8n 接收失败，状态码: %d", resp.StatusCode))
-    }
-    return nil
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = c.Bot().Edit(sentMsg, fmt.Sprintf("❌ n8n 接收失败，状态码: %d", resp.StatusCode))
+	}
+	return nil
 }

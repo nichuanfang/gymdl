@@ -37,6 +37,14 @@ type Store struct {
 	db *sql.DB
 }
 
+// Stats summarises the persisted download records so the agent can answer
+// "how many songs do I have" from real data instead of guessing.
+type Stats struct {
+	Tracks    int
+	Artists   int
+	Platforms string
+}
+
 const DefaultDatabasePath = storage.DefaultDatabasePath
 
 func Open(path string) (*Store, error) {
@@ -148,6 +156,79 @@ func (s *Store) RecordSuccessfulDownload(ctx context.Context, track Track) error
 		return fmt.Errorf("record successful music download: %w", err)
 	}
 	return nil
+}
+
+// Stats aggregates the download store. Empty artist or platform values are
+// ignored so partial records do not inflate the counts.
+func (s *Store) Stats(ctx context.Context) (Stats, error) {
+	if s == nil || s.db == nil {
+		return Stats{}, errors.New("music dedupe store is not initialized")
+	}
+	var stats Stats
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM downloaded_tracks`).Scan(&stats.Tracks); err != nil {
+		return Stats{}, fmt.Errorf("count downloaded tracks: %w", err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(DISTINCT artist_key) FROM downloaded_tracks WHERE artist_key <> ''`).Scan(&stats.Artists); err != nil {
+		return Stats{}, fmt.Errorf("count artists: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT platform, count(*) FROM downloaded_tracks WHERE platform <> '' GROUP BY platform ORDER BY count(*) DESC`)
+	if err != nil {
+		return Stats{}, fmt.Errorf("count platforms: %w", err)
+	}
+	defer rows.Close()
+	parts := make([]string, 0, 4)
+	for rows.Next() {
+		var platform string
+		var count int
+		if err := rows.Scan(&platform, &count); err != nil {
+			return Stats{}, err
+		}
+		parts = append(parts, fmt.Sprintf(`%q:%d`, platform, count))
+	}
+	if err := rows.Err(); err != nil {
+		return Stats{}, err
+	}
+	stats.Platforms = "{" + strings.Join(parts, ",") + "}"
+	return stats, nil
+}
+
+// FindByTitle looks a track up by normalised title, optionally narrowed by
+// artist. It is the read-only lookup the agent uses for "do I already own this".
+func (s *Store) FindByTitle(ctx context.Context, title, artist string) (*Match, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("music dedupe store is not initialized")
+	}
+	titleKey := normalizeText(title)
+	if titleKey == "" {
+		return nil, errors.New("title is empty")
+	}
+	query := `SELECT platform, platform_track_id, source_url, title, artist, album, record_source, downloaded_at, recorded_at
+FROM downloaded_tracks WHERE title_key = ?`
+	args := []any{titleKey}
+	if artistKey := normalizeText(artist); artistKey != "" {
+		query += ` AND artist_key = ?`
+		args = append(args, artistKey)
+	}
+	query += ` ORDER BY id DESC LIMIT 1`
+
+	match := &Match{MatchedBy: "metadata"}
+	var downloadedAt, recordedAt sql.NullString
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(
+		&match.Platform, &match.PlatformTrackID, &match.SourceURL,
+		&match.Title, &match.Artist, &match.Album, &match.RecordSource, &downloadedAt, &recordedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lookup track by title: %w", err)
+	}
+	if downloadedAt.Valid {
+		match.Downloaded, _ = time.Parse(time.RFC3339Nano, downloadedAt.String)
+	}
+	if recordedAt.Valid {
+		match.Recorded, _ = time.Parse(time.RFC3339Nano, recordedAt.String)
+	}
+	return match, nil
 }
 
 func CanonicalURL(raw string) string {

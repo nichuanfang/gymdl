@@ -228,7 +228,7 @@ func extractUmTarGz(r io.Reader, destDir string) error {
 		}
 	}
 
-	return fmt.Errorf("未找到二进制文件: " + target)
+	return fmt.Errorf("未找到二进制文件: %s", target)
 }
 
 // extractUmZip 从 zip 文件中提取 Um
@@ -252,7 +252,7 @@ func extractUmZip(zipPath, destDir string) error {
 		}
 	}
 
-	return fmt.Errorf("未找到二进制文件: " + target)
+	return fmt.Errorf("未找到二进制文件: %s", target)
 }
 
 // umBinaryName 返回系统对应的 Um 文件名

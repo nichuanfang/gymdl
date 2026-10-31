@@ -35,6 +35,8 @@ data/dist/*
 !data/dist/.gitkeep
 data/temp/*
 !data/temp/.gitkeep
+data/webdav_pending/*
+!data/webdav_pending/.gitkeep
 data/logs/*
 !data/logs/.gitkeep
 data/gymdl.sqlite3
@@ -61,3 +63,13 @@ webui/dist/
 .playwright-cli/
 # Runtime configuration backups may contain credentials.
 config.yaml.bak
+
+# Local Codex instructions; skills stay tracked
+AGENTS.md
+.codex/*
+!.codex/skills/
+
+# Provider-failure dumps are written next to the working directory and contain
+# conversation text; never commit them.
+ai-request-failed.json
+internal/aichat/data/

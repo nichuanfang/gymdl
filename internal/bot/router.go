@@ -23,6 +23,12 @@ func (app *BotApp) registerHandlers() {
 	// AI智能歌单
 	app.bot.Handle("/ai_playlist", app.AIPlaylistCommand)
 
+	// AI 模式切换
+	app.bot.Handle("/mode", app.AIModeCommand)
+	app.bot.Handle("/ai", app.AICommand)
+	app.bot.Handle("/clear", app.AIClearCommand)
+	app.bot.Handle("/new", app.AIClearCommand)
+
 	// 清空回收站
 	app.bot.Handle("/empty_trash", app.EmptyTrashCommand)
 
@@ -38,6 +44,8 @@ func (app *BotApp) registerHandlers() {
 	// 处理Callback
 	app.bot.Handle(&duplicateCallbackEndpoint, app.HandleDuplicateMusicCallback)
 	app.bot.Handle(&musicActionCallbackEndpoint, app.HandleMusicActionCallback)
+	app.bot.Handle(&aiCandidateEndpoint, app.HandleAICandidateCallback)
+	app.bot.Handle(&aiModeSettingEndpoint, app.HandleAIModeCallback)
 	app.bot.Handle(tb.OnCallback, app.HandleCallBack)
 
 }

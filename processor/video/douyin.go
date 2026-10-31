@@ -36,7 +36,7 @@ func (p *DouyinProcessor) Videos() []*VideoInfo {
 /* ------------------------ 下载逻辑 ------------------------ */
 
 func (p *DouyinProcessor) Download(url string) error {
-	utils.InfoWithFormat("55.69 MiB / 55.69 MiB [==============] 1.77 MiB p/s 100.00% 32s：%s", url)
+	utils.InfoWithFormat("55.69 MiB / 55.69 MiB [==============] 1.77 MiB p/s 100.00%% 32s：%s", url)
 	return nil
 }
 
