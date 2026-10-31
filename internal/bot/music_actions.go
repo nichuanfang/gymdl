@@ -195,15 +195,29 @@ func (app *BotApp) sendMusicActionAudio(c tb.Context, action pendingMusicAction)
 		if core.GlobalWebDAV == nil {
 			return fmt.Errorf("WebDAV 未初始化")
 		}
+		remotePath := filepath.ToSlash(action.path)
+		if core.GlobalWebDAV.Config != nil {
+			baseDir := strings.Trim(core.GlobalWebDAV.Config.WebDAVDir, "/")
+			if baseDir != "" && !strings.HasPrefix(remotePath, baseDir+"/") {
+				remotePath = path.Join(baseDir, remotePath)
+			}
+		}
 		tempDir, err := os.MkdirTemp("", "gymdl-telegram-play-")
 		if err != nil {
 			return fmt.Errorf("创建播放临时目录失败: %w", err)
 		}
 		cleanup = func() { _ = os.RemoveAll(tempDir) }
-		filePath = filepath.Join(tempDir, filepath.Base(action.path))
-		if err := core.GlobalWebDAV.Download(action.path, filePath); err != nil {
-			cleanup()
-			return fmt.Errorf("从 WebDAV 读取歌曲失败: %w", err)
+		filePath = filepath.Join(tempDir, filepath.Base(remotePath))
+		downloadErr := core.GlobalWebDAV.Download(remotePath, filePath)
+		if downloadErr != nil {
+			// A staged song while NAS is offline is still playable from the
+			// durable outbox; never discard it just because the remote is down.
+			if staged := stagedMusicPath(remotePath); staged != "" {
+				filePath = staged
+			} else {
+				cleanup()
+				return fmt.Errorf("从 WebDAV 读取歌曲失败: %w", downloadErr)
+			}
 		}
 	}
 	defer cleanup()
@@ -220,6 +234,25 @@ func (app *BotApp) sendMusicActionAudio(c tb.Context, action pendingMusicAction)
 		return fmt.Errorf("发送 Telegram 音频失败: %w", err)
 	}
 	return nil
+}
+
+func stagedMusicPath(remotePath string) string {
+	if core.GlobalWebDAV == nil || core.GlobalWebDAV.Outbox == nil {
+		return ""
+	}
+	remotePath = strings.Trim(filepath.ToSlash(remotePath), "/")
+	remoteDir, fileName := path.Split(remotePath)
+	items, err := core.GlobalWebDAV.Outbox.List()
+	if err != nil {
+		return ""
+	}
+	remoteDir = strings.Trim(remoteDir, "/")
+	for _, item := range items {
+		if item.FileName == fileName && item.RemoteDir == remoteDir {
+			return item.PayloadPath
+		}
+	}
+	return ""
 }
 
 func (app *BotApp) confirmMusicActionDelete(c tb.Context, token string, action pendingMusicAction) error {
