@@ -31,6 +31,7 @@ export interface ServiceStatus {
 
 export interface SystemStatus {
   services: ServiceStatus[]
+  pending_webdav_uploads?: number
   version: string
   go_version: string
   uptime: number
@@ -54,6 +55,16 @@ export interface FileEntry {
   ext: string
   artist?: string
   album?: string
+}
+
+export interface PendingWebDAVUpload {
+  id: string
+  remote_dir: string
+  file_name: string
+  created_at: string
+  attempts: number
+  last_attempt?: string
+  last_error?: string
 }
 
 export interface CookieCloudStatus {

@@ -160,6 +160,11 @@ func HandleListFiles(c *gin.Context) {
 		entries, truncated, err = listLocalFiles(cfg.Tidy.DistDir, relPath, query, field)
 	}
 	if err != nil {
+		if cfg.Tidy.Mode == 2 && core.PendingWebDAVUploadCount() > 0 {
+			response.Fail(c, http.StatusBadGateway,
+				fmt.Sprintf("NAS 当前不可用，%d 个新文件已安全保存在本地，恢复后会自动补传。文件库暂时只能显示已上传内容。", core.PendingWebDAVUploadCount()))
+			return
+		}
 		status := http.StatusInternalServerError
 		if cfg.Tidy.Mode == 2 {
 			status = http.StatusBadGateway

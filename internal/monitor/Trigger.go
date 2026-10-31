@@ -123,11 +123,15 @@ func tidy(path string, cfg *config.Config) (*music.SongInfo, error) {
 		}
 	case 2:
 		songInfo.Tidy = "WEBDAV"
-		err = tidyToWebDAV(path, core.GlobalWebDAV, cfg)
+		deferred, tidyErr := tidyToWebDAV(path, core.GlobalWebDAV, cfg)
+		err = tidyErr
 		if err == nil {
 			// Watcher uploads go to the WebDAV root; keep the path relative to
 			// WebDAVDir because the WebDAV helpers add that configured prefix.
 			songInfo.MusicPath = filepath.Base(path)
+			if deferred {
+				songInfo.Tidy = "WEBDAV_PENDING"
+			}
 		}
 	default:
 		utils.WarnWithFormat("[Um] 未知的整理模式: %s", path)

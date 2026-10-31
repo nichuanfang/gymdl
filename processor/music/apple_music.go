@@ -183,23 +183,29 @@ func (am *AppleMusicProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.We
 		_ = processor.RemoveTempDir(am.tempDir)
 		return errors.New("WebDAV 未初始化")
 	}
-    songMap := make(map[string]*SongInfo)
-    for _, song := range am.songs {
-        songMap[utils.MakeSafeFileName(song.SongName)+ "." + strings.ToLower(song.FileExt)] = song
-    }
+	songMap := make(map[string]*SongInfo)
+	for _, song := range am.songs {
+		songMap[utils.MakeSafeFileName(song.SongName)+"."+strings.ToLower(song.FileExt)] = song
+	}
 	for _, f := range files {
-        songInfo, exists := songMap[f.Name()]
-        if !exists {
-            // 如果是不匹配的文件（比如过滤掉的封面，或者多余的临时文件），直接跳过
-            utils.DebugWithFormat("[AppleMusic] 跳过无需处理的文件: %s", f.Name())
-            continue
-        }
-        musicFilePath := filepath.Join(am.tempDir, f.Name())
-        remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
-        if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
-            utils.WarnWithFormat("[AppleMusic] ☁️ 上传失败 %s: %v", f.Name(), err)
-            return err
-        }
+		songInfo, exists := songMap[f.Name()]
+		if !exists {
+			// 如果是不匹配的文件（比如过滤掉的封面，或者多余的临时文件），直接跳过
+			utils.DebugWithFormat("[AppleMusic] 跳过无需处理的文件: %s", f.Name())
+			continue
+		}
+		musicFilePath := filepath.Join(am.tempDir, f.Name())
+		remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
+		pending, err := webdav.UploadOrStage(musicFilePath, remoteDir)
+		if err == core.ErrWebDAVDeferred {
+			songInfo.Tidy = "WEBDAV_PENDING"
+			webdav.Outbox.SetPendingUploadMetadata(pending.ID, songInfo.SongName, songInfo.SongArtists, songInfo.SongAlbum)
+			utils.WarnWithFormat("[AppleMusic] ☁️ 上传暂缓，已保存到本地队列: %s", f.Name())
+			continue
+		} else if err != nil {
+			utils.WarnWithFormat("[AppleMusic] ☁️ 上传失败 %s: %v", f.Name(), err)
+			return err
+		}
 		utils.InfoWithFormat("[AppleMusic] ☁️ 已上传: %s", f.Name())
 	}
 	// 清除临时目录

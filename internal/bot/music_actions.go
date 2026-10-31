@@ -3,6 +3,7 @@ package bot
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -245,7 +246,22 @@ func (app *BotApp) confirmMusicActionDelete(c tb.Context, token string, action p
 		if core.GlobalWebDAV == nil {
 			err = fmt.Errorf("WebDAV 未初始化")
 		} else {
-			err = core.GlobalWebDAV.Delete(action.path)
+			pendingRemoved := false
+			if core.GlobalWebDAV.Outbox != nil {
+				if removed, removeErr := core.GlobalWebDAV.Outbox.RemoveByRemote(
+					path.Dir(action.path), path.Base(action.path),
+				); removeErr != nil {
+					utils.WarnWithFormat("[Telegram] 清理待上传歌曲失败: %v", removeErr)
+				} else {
+					pendingRemoved = removed > 0
+				}
+			}
+			if deleteErr := core.GlobalWebDAV.Delete(action.path); deleteErr != nil && pendingRemoved {
+				// The song may exist only in the local outbox while NAS is offline.
+				err = nil
+			} else {
+				err = deleteErr
+			}
 		}
 	default:
 		err = fmt.Errorf("不支持的存储类型 %q", action.storage)

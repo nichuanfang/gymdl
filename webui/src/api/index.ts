@@ -1,8 +1,9 @@
 import { get, post, put, del } from './http'
-import type { SystemStatus, Task, FileEntry, CookieCloudStatus } from '../types'
+import type { SystemStatus, Task, FileEntry, CookieCloudStatus, PendingWebDAVUpload } from '../types'
 
 export const getSystemStatus = () => get<SystemStatus>('/system/status')
 export const getDashboardSummary = () => get<SystemStatus>('/dashboard/summary')
+export const getPendingWebDAVUploads = () => get<{ items: PendingWebDAVUpload[]; count: number }>('/webdav/pending')
 export const getAuthSession = () => get<AuthSession>('/auth/session')
 export const login = (username: string, password: string) => post<AuthSession>('/auth/login', { username, password })
 export const logout = () => post('/auth/logout')

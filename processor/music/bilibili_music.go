@@ -326,9 +326,15 @@ func (p *BilibiliMusicProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.
 		}
 		musicFilePath := filepath.Join(p.tempDir, f.Name())
 		remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
-		if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
+		pending, err := webdav.UploadOrStage(musicFilePath, remoteDir)
+		if err == core.ErrWebDAVDeferred {
+			songInfo.Tidy = "WEBDAV_PENDING"
+			webdav.Outbox.SetPendingUploadMetadata(pending.ID, songInfo.SongName, songInfo.SongArtists, songInfo.SongAlbum)
+			utils.WarnWithFormat("[BiliBiliMusic] ☁️ 上传暂缓，已保存到本地队列: %s", f.Name())
+			continue
+		} else if err != nil {
 			utils.WarnWithFormat("[BiliBiliMusic] ☁️ 上传失败 %s: %v", f.Name(), err)
-            return err
+			return err
 		}
 		utils.InfoWithFormat("[BiliBiliMusic] ☁️ 已上传: %s", f.Name())
 	}

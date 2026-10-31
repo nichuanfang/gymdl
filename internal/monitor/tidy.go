@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -89,12 +90,18 @@ func sameDrive(path1, path2 string) bool {
 	return false
 }
 
-// 整理到webdav
-func tidyToWebDAV(path string, webdav *core.WebDAV, cfg *config.Config) error {
-	if err := webdav.Upload(path); err != nil {
+// 整理到webdav；deferred 表示文件已进入待上传队列。
+func tidyToWebDAV(path string, webdav *core.WebDAV, cfg *config.Config) (bool, error) {
+	if webdav == nil {
+		return false, errors.New("WebDAV 未初始化")
+	}
+	if _, err := webdav.UploadOrStage(path, "/"); err == core.ErrWebDAVDeferred {
+		utils.WarnWithFormat("[Um] ☁️ 上传暂缓，已保存到本地队列: %s", utils.SanitizeFileName(filepath.Base(path)))
+		return true, nil
+	} else if err != nil {
 		utils.WarnWithFormat("[Um] ☁️ 上传失败 %s: %v", utils.SanitizeFileName(filepath.Base(path)), err)
-		return err
+		return false, err
 	}
 	utils.InfoWithFormat("[Um] ☁️ 已上传: %s", filepath.Base(path))
-	return nil
+	return false, nil
 }

@@ -1,21 +1,21 @@
 package music
 
 import (
-    "bufio"
-    "errors"
-    "fmt"
-    "io"
-    "os"
-    "os/exec"
-    "path/filepath"
-    "strings"
-    "sync"
-    "time"
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
-    "github.com/nichuanfang/gymdl/config"
-    "github.com/nichuanfang/gymdl/core"
-    "github.com/nichuanfang/gymdl/processor"
-    "github.com/nichuanfang/gymdl/utils"
+	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/processor"
+	"github.com/nichuanfang/gymdl/utils"
 )
 
 /* ---------------------- 结构体与构造方法 ---------------------- */
@@ -45,151 +45,151 @@ func (p *SoundCloudProcessor) Songs() []*SongInfo {
 
 /* ------------------------ 下载逻辑 ------------------------ */
 func (p *SoundCloudProcessor) DownloadMusic(
-    url string,
-    callback func(string),
+	url string,
+	callback func(string),
 ) error {
 
-    start := time.Now()
+	start := time.Now()
 
-    utils.InfoWithFormat("[SoundCloud] 🎵 开始下载: %s", url)
+	utils.InfoWithFormat("[SoundCloud] 🎵 开始下载: %s", url)
 
-    cmd := p.DownloadCommand(url)
-    if cmd == nil {
-        return errors.New("无法构建 yt-dlp 命令")
-    }
+	cmd := p.DownloadCommand(url)
+	if cmd == nil {
+		return errors.New("无法构建 yt-dlp 命令")
+	}
 
-    callback("命令构建完成，开始下载...")
+	callback("命令构建完成，开始下载...")
 
-    utils.DebugWithFormat(
-        "[SoundCloud] 执行命令: %s",
-        strings.Join(cmd.Args, " "),
-    )
+	utils.DebugWithFormat(
+		"[SoundCloud] 执行命令: %s",
+		strings.Join(cmd.Args, " "),
+	)
 
-    if err := processor.CreateOutputDir(p.tempDir); err != nil {
-        return err
-    }
+	if err := processor.CreateOutputDir(p.tempDir); err != nil {
+		return err
+	}
 
-    stdout, err := cmd.StdoutPipe()
-    if err != nil {
-        return err
-    }
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
 
-    stderr, err := cmd.StderrPipe()
-    if err != nil {
-        return err
-    }
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
 
-    if err := cmd.Start(); err != nil {
-        return err
-    }
+	if err := cmd.Start(); err != nil {
+		return err
+	}
 
-    var wg sync.WaitGroup
-    wg.Add(2)
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-    go func() {
-        defer wg.Done()
-        p.streamPipe(stdout, "stdout")
-    }()
+	go func() {
+		defer wg.Done()
+		p.streamPipe(stdout, "stdout")
+	}()
 
-    go func() {
-        defer wg.Done()
-        p.streamPipe(stderr, "stderr")
-    }()
+	go func() {
+		defer wg.Done()
+		p.streamPipe(stderr, "stderr")
+	}()
 
-    err = cmd.Wait()
-    wg.Wait()
+	err = cmd.Wait()
+	wg.Wait()
 
-    if err != nil {
-        _ = processor.RemoveTempDir(p.tempDir)
+	if err != nil {
+		_ = processor.RemoveTempDir(p.tempDir)
 
-        utils.ErrorWithFormat(
-            "[SoundCloud] ❌ 下载失败: %v",
-            err,
-        )
+		utils.ErrorWithFormat(
+			"[SoundCloud] ❌ 下载失败: %v",
+			err,
+		)
 
-        return fmt.Errorf("yt-dlp 下载失败: %w", err)
-    }
+		return fmt.Errorf("yt-dlp 下载失败: %w", err)
+	}
 
-    utils.InfoWithFormat(
-        "[SoundCloud] ✅ 下载完成（耗时 %v）",
-        time.Since(start).Truncate(time.Millisecond),
-    )
+	utils.InfoWithFormat(
+		"[SoundCloud] ✅ 下载完成（耗时 %v）",
+		time.Since(start).Truncate(time.Millisecond),
+	)
 
-    callback(
-        fmt.Sprintf(
-            "下载完成（耗时 %v）",
-            time.Since(start).Truncate(time.Millisecond),
-        ),
-    )
+	callback(
+		fmt.Sprintf(
+			"下载完成（耗时 %v）",
+			time.Since(start).Truncate(time.Millisecond),
+		),
+	)
 
-    return nil
+	return nil
 }
 
 func (p *SoundCloudProcessor) streamPipe(r io.ReadCloser, prefix string) {
-    defer r.Close()
+	defer r.Close()
 
-    reader := bufio.NewReaderSize(r, 64*1024)
+	reader := bufio.NewReaderSize(r, 64*1024)
 
-    for {
-        line, err := reader.ReadString('\n')
+	for {
+		line, err := reader.ReadString('\n')
 
-        if len(line) > 0 {
-            line = strings.TrimSpace(line)
-            if line != "" {
-                utils.DebugWithFormat("[%s] %s", prefix, line)
-            }
-        }
+		if len(line) > 0 {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				utils.DebugWithFormat("[%s] %s", prefix, line)
+			}
+		}
 
-        if err != nil {
-            return
-        }
-    }
+		if err != nil {
+			return
+		}
+	}
 }
 
 /* ------------------------ 命令生成 ------------------------ */
 
 func (p *SoundCloudProcessor) DownloadCommand(url string) *exec.Cmd {
 
-    cookiePath := filepath.Join(
-        p.cfg.CookieCloud.CookieFilePath,
-        p.cfg.CookieCloud.CookieFile,
-    )
+	cookiePath := filepath.Join(
+		p.cfg.CookieCloud.CookieFilePath,
+		p.cfg.CookieCloud.CookieFile,
+	)
 
-    if _, err := os.Stat(cookiePath); os.IsNotExist(err) {
-        utils.ErrorWithFormat("[SoundCloud] ❌ Cookie 不存在: %s", cookiePath)
-        return nil
-    }
+	if _, err := os.Stat(cookiePath); os.IsNotExist(err) {
+		utils.ErrorWithFormat("[SoundCloud] ❌ Cookie 不存在: %s", cookiePath)
+		return nil
+	}
 
-    args := []string{
-        "--cookies", cookiePath,
+	args := []string{
+		"--cookies", cookiePath,
 
-        "--no-playlist",
+		"--no-playlist",
 
-        // SoundCloud 不需要 format 探测
-        "-f", "hls_aac_160k",
+		// SoundCloud 不需要 format 探测
+		"-f", "hls_aac_160k",
 
-        "-x",
+		"-x",
 
-        "--embed-metadata",
-        "--embed-thumbnail",
+		"--embed-metadata",
+		"--embed-thumbnail",
 
-        "--concurrent-fragments", "8",
+		"--concurrent-fragments", "8",
 
-        "--extractor-retries", "3",
-        "--fragment-retries", "3",
+		"--extractor-retries", "3",
+		"--fragment-retries", "3",
 
-        "--retry-sleep", "1",
+		"--retry-sleep", "1",
 
-        "--no-warnings",
-        "--no-progress",
+		"--no-warnings",
+		"--no-progress",
 
-        "-o",
-        filepath.Join(p.tempDir, "%(title)s.%(ext)s"),
+		"-o",
+		filepath.Join(p.tempDir, "%(title)s.%(ext)s"),
 
-        url,
-    }
+		url,
+	}
 
-    return exec.Command("yt-dlp", args...)
+	return exec.Command("yt-dlp", args...)
 }
 
 /* ------------------------ 拓展方法 ------------------------ */
@@ -292,9 +292,15 @@ func (p *SoundCloudProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.Web
 		}
 		musicFilePath := filepath.Join(p.tempDir, f.Name())
 		remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
-		if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
+		pending, err := webdav.UploadOrStage(musicFilePath, remoteDir)
+		if err == core.ErrWebDAVDeferred {
+			songInfo.Tidy = "WEBDAV_PENDING"
+			webdav.Outbox.SetPendingUploadMetadata(pending.ID, songInfo.SongName, songInfo.SongArtists, songInfo.SongAlbum)
+			utils.WarnWithFormat("[SoundCloud] ☁️ 上传暂缓，已保存到本地队列: %s", f.Name())
+			continue
+		} else if err != nil {
 			utils.WarnWithFormat("[SoundCloud] ☁️ 上传失败 %s: %v", f.Name(), err)
-            return err
+			return err
 		}
 		utils.InfoWithFormat("[SoundCloud] ☁️ 已上传: %s", f.Name())
 	}

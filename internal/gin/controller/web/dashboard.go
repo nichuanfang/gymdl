@@ -24,6 +24,7 @@ type ServiceStatus struct {
 
 type SystemStatusResponse struct {
 	Services         []ServiceStatus       `json:"services"`
+	PendingWebDAV    int                   `json:"pending_webdav_uploads"`
 	Version          string                `json:"version"`
 	GoVer            string                `json:"go_version"`
 	Uptime           int64                 `json:"uptime"`
@@ -38,6 +39,7 @@ var (
 	statusCache      []ServiceStatus
 	statusCheckedAt  time.Time
 	statusRefreshing bool
+	lastPendingCount int
 )
 
 // HandleSystemStatus GET /api/web/system/status keeps the original system summary API.
@@ -50,11 +52,40 @@ func HandleDashboardSummary(c *gin.Context) {
 	response.Success(c, getSystemStatus(true))
 }
 
+// HandlePendingUploads exposes the retry queue for the file-library UI.
+func HandlePendingUploads(c *gin.Context) {
+	if core.GlobalWebDAV == nil || core.GlobalWebDAV.Outbox == nil {
+		response.Success(c, gin.H{"items": []any{}, "count": 0})
+		return
+	}
+	items, err := core.GlobalWebDAV.Outbox.List()
+	if err != nil {
+		response.Fail(c, http.StatusInternalServerError, "读取待上传队列失败: "+err.Error())
+		return
+	}
+	deferred := make([]gin.H, 0, len(items))
+	for _, item := range items {
+		deferred = append(deferred, gin.H{
+			"id":           item.ID,
+			"remote_dir":   item.RemoteDir,
+			"file_name":    item.FileName,
+			"title":        item.Title,
+			"artist":       item.Artist,
+			"album":        item.Album,
+			"created_at":   item.CreatedAt,
+			"attempts":     item.Attempts,
+			"last_attempt": item.LastAttempt,
+			"last_error":   item.LastError,
+		})
+	}
+	response.Success(c, gin.H{"items": deferred, "count": len(deferred)})
+}
+
 func getSystemStatus(withMetrics bool) SystemStatusResponse {
 	cfg := GetWebConfig()
 	if cfg != nil {
 		statusCacheMu.Lock()
-		if time.Since(statusCheckedAt) > 30*time.Second && !statusRefreshing {
+		if (time.Since(statusCheckedAt) > 30*time.Second || lastPendingCount != core.PendingWebDAVUploadCount()) && !statusRefreshing {
 			statusRefreshing = true
 			go refreshServiceStatus(cfg)
 		}
@@ -70,6 +101,7 @@ func getSystemStatus(withMetrics bool) SystemStatusResponse {
 	}
 	out := SystemStatusResponse{
 		Services:         services,
+		PendingWebDAV:    core.PendingWebDAVUploadCount(),
 		Version:          "dev-main",
 		GoVer:            runtime.Version(),
 		Uptime:           int64(time.Since(startTime).Seconds()),
@@ -107,6 +139,7 @@ func initialServiceStatuses(cfg *config.Config) []ServiceStatus {
 	add("AI", cfg.AI != nil && cfg.AI.Enable, "")
 	add("QQMusicApi", cfg.QQMusicApiConfig != nil && cfg.QQMusicApiConfig.Enable, "")
 	add("n8n", cfg.N8NConfig != nil && cfg.N8NConfig.Enable, "")
+	add("WebDAV待上传", cfg.Tidy != nil && cfg.Tidy.Mode == 2, "")
 	monitorEnabled := cfg.AdditionalConfig != nil && cfg.AdditionalConfig.EnableDirMonitor
 	monitorCount := 0
 	if cfg.AdditionalConfig != nil {
@@ -154,6 +187,10 @@ func refreshServiceStatus(cfg *config.Config) {
 			probes[i] = func() bool {
 				return utils.CheckHealth(utils.HealthCheckOption{URL: endpoint, Method: http.MethodGet, Timeout: 2 * time.Second}).OK
 			}
+		case "WebDAV待上传":
+			probes[i] = func() bool {
+				return core.PendingWebDAVUploadCount() == 0 && core.GlobalWebDAV != nil && core.GlobalWebDAV.CheckConnection()
+			}
 		}
 	}
 
@@ -179,6 +216,13 @@ func refreshServiceStatus(cfg *config.Config) {
 			} else {
 				services[result.index].Detail = "离线"
 			}
+			if services[result.index].Name == "WebDAV待上传" {
+				if count := core.PendingWebDAVUploadCount(); count > 0 {
+					services[result.index].Detail = fmt.Sprintf("待上传 %d 个", count)
+				} else if result.ok {
+					services[result.index].Detail = "队列为空"
+				}
+			}
 			pending--
 		case <-deadline.C:
 			for i, probe := range probes {
@@ -193,5 +237,6 @@ func refreshServiceStatus(cfg *config.Config) {
 	statusCacheMu.Lock()
 	statusCache = services
 	statusCheckedAt = time.Now()
+	lastPendingCount = core.PendingWebDAVUploadCount()
 	statusCacheMu.Unlock()
 }

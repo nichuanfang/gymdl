@@ -76,6 +76,7 @@ func (s *Session) sendMusicFeedback(p music.Processor) {
 	if count == 1 {
 		song := songs[0]
 		fileSizeMB := float64(song.MusicSize) / 1024.0 / 1024.0
+		storageLabel := tidyStorageLabel(song.Tidy)
 
 		successMsg := fmt.Sprintf(
 			"🎉 <b>入库成功！</b>\n\n"+
@@ -85,14 +86,14 @@ func (s *Session) sendMusicFeedback(p music.Processor) {
 				"🎧 <b>格式:</b> %s\n"+
 				"📊 <b>码率:</b> %s kbps\n"+
 				"📦 <b>大小:</b> %.2f MB\n"+
-				"☁️ <b>入库方式:</b> %s",
+				"☁️ <b>入库状态:</b> %s",
 			utils.EscapeHTML(utils.TruncateString(song.SongName, 80)),
 			utils.EscapeHTML(utils.TruncateString(song.SongArtists, 80)),
 			utils.EscapeHTML(utils.TruncateString(song.SongAlbum, 80)),
 			strings.ToUpper(song.FileExt),
 			song.Bitrate,
 			fileSizeMB,
-			strings.ToUpper(song.Tidy),
+			storageLabel,
 		)
 
 		s.editMusicSuccess(successMsg, songs)
@@ -126,14 +127,21 @@ func (s *Session) sendMusicFeedback(p music.Processor) {
 			"──────────────────\n"+
 			"%s──────────────────\n"+
 			"🎧 <b>格式:</b> %s\n"+
-			"☁️ <b>入库方式:</b> %s\n",
+			"☁️ <b>入库状态:</b> %s\n",
 		count,
 		listBuilder.String(),
 		strings.ToUpper(songs[0].FileExt),
-		strings.ToUpper(songs[0].Tidy),
+		tidyStorageLabel(songs[0].Tidy),
 	)
 
 	s.editMusicSuccess(successMsg, songs)
+}
+
+func tidyStorageLabel(tidy string) string {
+	if strings.EqualFold(strings.TrimSpace(tidy), "WEBDAV_PENDING") {
+		return "待上传（NAS 恢复后自动补传）"
+	}
+	return strings.ToUpper(tidy)
 }
 
 func (s *Session) editMusicSuccess(text string, songs []*music.SongInfo) {
@@ -183,6 +191,12 @@ func (s *Session) setStoredMusicPaths(songs []*music.SongInfo) {
 		case 1:
 			song.MusicPath = filepath.Join(s.Cfg.Tidy.DistDir, utils.SanitizeFileName(fileName))
 		case 2:
+			if strings.EqualFold(song.Tidy, "WEBDAV_PENDING") {
+				// 尚未上传成功时不能暴露一个 NAS 上不存在的路径，
+				// 否则播放/删除按钮会误操作。
+				song.MusicPath = ""
+				continue
+			}
 			song.MusicPath = path.Join(
 				utils.SanitizeFileName(song.SongArtists),
 				utils.SanitizeFileName(song.SongAlbum),

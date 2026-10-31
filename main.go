@@ -57,16 +57,16 @@ func printBanner() {
 }
 
 // 通用服务初始化
-func initService(targetURL string,serviceName string) {
-    result := utils.CheckHealth(utils.HealthCheckOption{
-        URL:    targetURL,
-        Method: http.MethodGet,
-    })
+func initService(targetURL string, serviceName string) {
+	result := utils.CheckHealth(utils.HealthCheckOption{
+		URL:    targetURL,
+		Method: http.MethodGet,
+	})
 
-    if !result.OK {
-        utils.Warningf("%s 服务不可用，请检查配置或网络连接", serviceName)
-    }
-    utils.ServiceIsOnf("%s 服务已加载",serviceName)
+	if !result.OK {
+		utils.Warningf("%s 服务不可用，请检查配置或网络连接", serviceName)
+	}
+	utils.ServiceIsOnf("%s 服务已加载", serviceName)
 }
 
 // 初始化 WebDAV 服务
@@ -75,20 +75,19 @@ func initWebDAV(c *config.WebDAVConfig) {
 	if core.GlobalWebDAV.CheckConnection() {
 		utils.ServiceIsOn("WebDAV 服务已加载")
 	} else {
-		utils.Warning("WebDAV 服务不可用，请检查配置或网络连接")
+		utils.Warning("WebDAV 服务暂不可用，新文件将暂存本地并在恢复后自动补传")
 	}
 }
 
 // 初始化 LrcApi 服务
 func initLrcApi(c *config.LrcAPIConfig) {
-    core.InitLrcAPI(c)
-    if core.GlobalLrcAPI.CheckConnection() {
-        utils.ServiceIsOn("LrcApi 服务已加载")
-    } else {
-        utils.Warning("LrcApi 服务不可用，请检查配置或网络连接")
-    }
+	core.InitLrcAPI(c)
+	if core.GlobalLrcAPI.CheckConnection() {
+		utils.ServiceIsOn("LrcApi 服务已加载")
+	} else {
+		utils.Warning("LrcApi 服务不可用，请检查配置或网络连接")
+	}
 }
-
 
 // 初始化 CookieCloud 服务
 func initCookieCloud(cfg *config.CookieCloudConfig) {
@@ -117,37 +116,37 @@ func initAI(c *config.AIConfig) {
 }
 
 // 初始化各服务,执行健康检查
-func initServices(c *config.Config){
-    
-    // cookiecloud
-    if c.AdditionalConfig.EnableCron {
-        initCookieCloud(c.CookieCloud)
-    }
+func initServices(c *config.Config) {
 
-    // ai服务
-    if c.AI.Enable {
-        initAI(c.AI)
-    }
-    
-    // webdav服务
-    if c.Tidy.Mode == 2 {
-        initWebDAV(c.WebDAV)
-    }
-    
-    // lrcapi服务
-    if c.LrcAPI.Enable {
-        initLrcApi(c.LrcAPI)
-    }
+	// cookiecloud
+	if c.AdditionalConfig.EnableCron {
+		initCookieCloud(c.CookieCloud)
+	}
 
-    // QQMusicApi服务
-    if c.QQMusicApiConfig.Enable {
-        initService(c.QQMusicApiConfig.Endpoint,"QQMusicApi")
-    }
-    
-    // n8n服务
-    if c.N8NConfig.Enable {
-        initService(c.N8NConfig.N8NBaseUrl,"n8n")
-    }
+	// ai服务
+	if c.AI.Enable {
+		initAI(c.AI)
+	}
+
+	// webdav服务
+	if c.Tidy.Mode == 2 {
+		initWebDAV(c.WebDAV)
+	}
+
+	// lrcapi服务
+	if c.LrcAPI.Enable {
+		initLrcApi(c.LrcAPI)
+	}
+
+	// QQMusicApi服务
+	if c.QQMusicApiConfig.Enable {
+		initService(c.QQMusicApiConfig.Endpoint, "QQMusicApi")
+	}
+
+	// n8n服务
+	if c.N8NConfig.Enable {
+		initService(c.N8NConfig.N8NBaseUrl, "n8n")
+	}
 }
 
 // 启动定时任务
@@ -177,7 +176,7 @@ func initMonitor(ctx context.Context, c *config.Config) {
 		utils.Success("目录监控已启动")
 		wm.StartWorkerPool(runtime.NumCPU())
 	}()
-    
+
 	<-ctx.Done()
 	wm.Stop()
 	utils.Stop("目录监控已关闭")
@@ -274,9 +273,9 @@ func main() {
 	defer utils.Sync()
 
 	// 初始化各基础服务
-    initServices(c)
-    
-    // 初始化核心进程
+	initServices(c)
+
+	// 初始化核心进程
 	ctx, cancel := context.WithCancel(context.Background())
 	wg := &sync.WaitGroup{}
 
@@ -303,6 +302,12 @@ func main() {
 		services["telegram"] = initBot
 	}
 
+	// WebDAV 待上传队列需要在 web/monitor/bot 之前启动，
+	// 这样 NAS 恢复后即使没有新下载也会持续补传。
+	if c.Tidy.Mode == 2 && core.GlobalWebDAV != nil {
+		services["webdav-outbox"] = startWebDAVOutbox
+	}
+
 	// 启动所有服务
 	for name, start := range services {
 		wg.Add(1)
@@ -323,4 +328,11 @@ func main() {
 
 	_ = utils.ClearTempDirs("data/temp")
 	utils.Logger().Info("所有服务已正常退出，程序结束")
+}
+
+func startWebDAVOutbox(ctx context.Context, _ *config.Config) {
+	if core.GlobalWebDAV == nil {
+		return
+	}
+	core.GlobalWebDAV.StartPendingUploader(ctx, time.Minute)
 }

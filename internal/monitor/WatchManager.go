@@ -15,6 +15,13 @@ import (
 	"github.com/nichuanfang/gymdl/utils"
 )
 
+func tidyStorageLabel(tidy string) string {
+	if strings.EqualFold(strings.TrimSpace(tidy), "WEBDAV_PENDING") {
+		return "待上传（NAS 恢复后自动补传）"
+	}
+	return strings.ToUpper(tidy)
+}
+
 // WatchManager 监听管理器
 type WatchManager struct {
 	watchers   map[string]*fsnotify.Watcher
@@ -171,14 +178,14 @@ func SendTelegram(songInfo *music.SongInfo) {
 🎧 *格式:* %s  
 📊 *码率:* %s kbps  
 📦 *大小:* %.2f MB  
-☁️ *入库方式:* %s`,
+☁️ *入库状态:* %s`,
 			utils.TruncateString(songInfo.SongName, 80),
 			utils.TruncateString(songInfo.SongArtists, 80),
 			utils.TruncateString(songInfo.SongAlbum, 80),
 			strings.ToUpper(songInfo.FileExt),
 			songInfo.Bitrate,
 			fileSizeMB,
-			strings.ToUpper(songInfo.Tidy),
+			tidyStorageLabel(songInfo.Tidy),
 		)
 
 		// 发送消息

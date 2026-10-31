@@ -29,6 +29,18 @@
       <n-alert v-if="truncated" type="warning" :show-icon="false">
         当前搜索结果过多，仅展示更新时间较新的前 {{ maxResults }} 个文件；可进入更具体的目录缩小范围。
       </n-alert>
+      <n-alert v-if="pendingUploads.length > 0" type="warning" :show-icon="false">
+        <div class="pending-heading">
+          <span>NAS 暂不可用，{{ pendingUploads.length }} 个文件已安全保存在本地，网络恢复后会自动补传。</span>
+          <n-button size="tiny" @click="refreshPending">刷新</n-button>
+        </div>
+        <ul class="pending-list">
+          <li v-for="item in pendingUploads.slice(0, 5)" :key="item.id">
+            {{ item.file_name }} · {{ item.attempts }} 次尝试
+            <span v-if="item.last_error" class="pending-error">{{ item.last_error }}</span>
+          </li>
+        </ul>
+      </n-alert>
       <n-alert v-if="loadError" type="error" :show-icon="false">
         <n-space justify="space-between" align="center">
           <span>{{ loadError }}</span>
@@ -91,9 +103,9 @@ import {
   NDataTable, NPagination, NButton, NSpace, NInput, NInputGroup, NSelect, NEmpty, NTag, NModal, NAlert, NPopconfirm, NCard, NTooltip, useMessage,
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
-import { listFiles, getFileStreamUrl, deleteFile } from '../api'
+import { listFiles, getFileStreamUrl, deleteFile, getPendingWebDAVUploads } from '../api'
 import PageHeading from '../components/PageHeading.vue'
-import type { FileEntry } from '../types'
+import type { FileEntry, PendingWebDAVUpload } from '../types'
 
 const message = useMessage()
 const loading = ref(true)
@@ -113,6 +125,7 @@ const appliedQuery = ref('')
 const appliedField = ref('all')
 const target = ref<'local' | 'webdav' | ''>('')
 const truncated = ref(false)
+const pendingUploads = ref<PendingWebDAVUpload[]>([])
 const maxResults = 5000
 const previewOpen = ref(false)
 const audioElement = ref<HTMLAudioElement | null>(null)
@@ -270,7 +283,19 @@ async function handleDelete(row: FileEntry) {
   }
 }
 
-onActivated(() => void load(currentPath.value || '/'))
+async function refreshPending() {
+  try {
+    const response = await getPendingWebDAVUploads()
+    if (response.code === 200 && response.data) pendingUploads.value = response.data.items || []
+  } catch {
+    // 文件库本身仍可正常浏览，队列状态失败不覆盖当前错误提示。
+  }
+}
+
+onActivated(() => {
+  void load(currentPath.value || '/')
+  void refreshPending()
+})
 onDeactivated(deactivateFiles)
 </script>
 
@@ -284,6 +309,10 @@ onDeactivated(deactivateFiles)
 .field-select { width: 130px; }
 .search-hint { margin-top: 10px; color: #788580; font-size: 11px; }
 .search-hint strong { color: #b8c8c1; font-weight: 500; }
+.pending-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.pending-list { margin: 8px 0 0; padding-left: 18px; color: #a7b2ad; font-size: 11px; }
+.pending-list li { margin-top: 4px; overflow-wrap: anywhere; }
+.pending-error { color: #c98f76; }
 :global(.files-page .directory-link) { appearance: none; padding: 0; border: 0; background: transparent; color: #75d8b4; cursor: pointer; font: inherit; text-align: left; }
 :global(.files-page .directory-link:hover) { color: #a4f5d6; }
 :global(.files-page .directory-link:focus-visible) { border-radius: 2px; outline: 2px solid #63e2b7; outline-offset: 3px; }

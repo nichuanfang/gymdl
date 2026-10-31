@@ -174,6 +174,8 @@ webdav:
   webdav_dir: '' # WebDAV 目标路径
   webdav_host: '' # webdav主机名 需要容器名+frp访问才需要设置
 
+> NAS 断网或 WebDAV 暂时不可用时，文件会先移入 `data/webdav_pending`，下载任务照常完成并显示“待上传”。服务每分钟探测一次 NAS，恢复后自动补传并删除本地副本；无需重新下载。该目录必须随 `./data` 一起持久化。
+
 # 日志配置
 log:
   mode: 1 # 日志模式: 1=标准输出, 2=日志文件, 3=标准输出+文件
@@ -339,6 +341,7 @@ docker compose up -d
 | `data/gymdl.sqlite3` | WebUI 历史 / 任务持久化数据库                          |
 | `data/dist`          | `tidy.mode=1` 时的本地整理目录                         |
 | `data/temp`          | 下载临时目录（启动时清理）                             |
+| `data/webdav_pending` | WebDAV 待上传队列（NAS 恢复后自动补传；不要手动清理） |
 | `data/logs`          | 日志文件目录（`log.mode` 含文件时）                    |
 | `data/temp/musickey.json` | QQ 音乐运行时凭证缓存（不会随每次登录改写 `config.yaml`） |
 

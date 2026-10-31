@@ -598,7 +598,13 @@ func (ncm *NetEaseProcessor) tidyToWebDAV(files []os.DirEntry, webdav *core.WebD
 		}
 		musicFilePath := filepath.Join(ncm.tempDir, f.Name())
 		remoteDir := "/" + utils.SanitizeFileName(songInfo.SongArtists) + "/" + utils.SanitizeFileName(songInfo.SongAlbum)
-		if err := webdav.UploadTo(musicFilePath, remoteDir); err != nil {
+		pending, err := webdav.UploadOrStage(musicFilePath, remoteDir)
+		if err == core.ErrWebDAVDeferred {
+			songInfo.Tidy = "WEBDAV_PENDING"
+			webdav.Outbox.SetPendingUploadMetadata(pending.ID, songInfo.SongName, songInfo.SongArtists, songInfo.SongAlbum)
+			utils.WarnWithFormat("[NCM] ☁️ 上传暂缓，已保存到本地队列: %s", f.Name())
+			continue
+		} else if err != nil {
 			utils.WarnWithFormat("[NCM] ☁️ 上传失败 %s: %v", f.Name(), err)
 			return err
 		}
