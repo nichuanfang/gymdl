@@ -108,11 +108,11 @@ func tidy(path string, cfg *config.Config) (*music.SongInfo, error) {
 	}
 	// 读取元数据
 	songInfo, err := music.ReadTags(path)
-	// 嵌入默认标签
-	music.FillDefaultTags(path, songInfo)
 	if err != nil {
 		return nil, err
 	}
+	// 嵌入默认标签
+	music.FillDefaultTags(path, songInfo)
 	utils.InfoWithFormat("[Um] 开始整理文件: %s", path)
 	switch cfg.Tidy.Mode {
 	case 1:
