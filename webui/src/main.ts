@@ -13,6 +13,7 @@ const router = createRouter({
     { path: '/logs', component: () => import('./views/Logs.vue') },
     { path: '/qqlogin', component: () => import('./views/QQLogin.vue') },
     { path: '/search', component: () => import('./views/Search.vue') },
+    { path: '/listening', component: () => import('./views/Listening.vue') },
   ],
 })
 

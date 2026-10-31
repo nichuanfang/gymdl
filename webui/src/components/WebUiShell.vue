@@ -61,7 +61,7 @@ import {
 import type { MenuOption } from 'naive-ui'
 import {
   HomeOutline, DownloadOutline, TimeOutline, FolderOpenOutline, SettingsOutline,
-  DocumentTextOutline, ChatboxEllipsesOutline, SearchOutline,
+  DocumentTextOutline, ChatboxEllipsesOutline, SearchOutline, MusicalNotesOutline,
 } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
 import { getAuthSession, login, logout } from '../api'
@@ -91,6 +91,7 @@ function renderIcon(icon: any) {
 const menuOptions: MenuOption[] = [
   { label: '仪表盘', key: '/', icon: renderIcon(HomeOutline) },
   { label: '搜索', key: '/search', icon: renderIcon(SearchOutline) },
+  { label: '听歌报告', key: '/listening', icon: renderIcon(MusicalNotesOutline) },
   { label: '下载', key: '/download', icon: renderIcon(DownloadOutline) },
   { label: '历史', key: '/history', icon: renderIcon(TimeOutline) },
   { label: '文件库', key: '/files', icon: renderIcon(FolderOpenOutline) },

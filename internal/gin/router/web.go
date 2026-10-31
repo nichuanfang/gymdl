@@ -34,6 +34,7 @@ func SetupWebRoutesWithTaskManager(rg *gin.RouterGroup, c *config.Config, tm *ta
 	group.GET("/system/status", web.HandleSystemStatus)
 	group.GET("/dashboard/summary", web.HandleDashboardSummary)
 	group.GET("/webdav/pending", web.HandlePendingUploads)
+	group.GET("/listening/report", web.HandleListeningReport)
 	group.GET("/system/config", web.HandleSystemConfig)
 	group.PUT("/system/config", web.HandleUpdateConfig)
 	group.POST("/system/restart", web.HandleRestart)

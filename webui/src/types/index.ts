@@ -75,3 +75,62 @@ export interface CookieCloudStatus {
   file_exists: boolean
   file_mod_time?: string
 }
+
+export interface ListeningArtist {
+  name: string
+  image?: string
+  plays: number
+  minutes: number
+}
+
+export interface ListeningTrack {
+  name: string
+  artist: string
+  album?: string
+  image?: string
+  plays: number
+  minutes: number
+}
+
+export interface ListeningAlbum {
+  name: string
+  artist: string
+  image?: string
+  plays: number
+}
+
+export interface ListeningMonthPoint {
+  month: string
+  plays: number
+  artists: number
+}
+
+export interface ListeningDay {
+  date: string
+  plays: number
+}
+
+export interface ListeningHour {
+  hour: number
+  plays: number
+}
+
+export interface ListeningReport {
+  available: boolean
+  month: string
+  month_label: string
+  scrobbles: number
+  prev_scrobbles: number
+  artists: number
+  tracks: number
+  albums: number
+  minutes: number
+  top_artists: ListeningArtist[]
+  top_tracks: ListeningTrack[]
+  top_albums: ListeningAlbum[]
+  trend: ListeningMonthPoint[]
+  heatmap: ListeningDay[]
+  hours: ListeningHour[]
+  first_scrobble?: string
+  last_scrobble?: string
+}
