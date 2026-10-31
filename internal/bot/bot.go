@@ -73,12 +73,16 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 	}
 
 	if cfg.Telegram.Mode == 2 {
-		botSettings.Poller = &tb.Webhook{
+		webhook := &tb.Webhook{
 			Listen: ":" + fmt.Sprint(cfg.Telegram.WebhookPort),
 			Endpoint: &tb.WebhookEndpoint{
 				PublicURL: cfg.Telegram.WebhookURL,
 			},
 		}
+		// Keep telebot's handler (it owns the update channel fields), but
+		// isolate its stop channel: Webhook.Poll closes the channel it is
+		// given, while Bot.Start closes the same channel again on shutdown.
+		botSettings.Poller = webhookPoller{webhook: webhook}
 	}
 
 	bot, err := tb.NewBot(botSettings)
@@ -110,6 +114,37 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 	//初始化notifier
 	InitBotNotifier(bot, cfg.Telegram.ChatID, app)
 	return app, nil
+}
+
+type webhookPoller struct {
+	webhook *tb.Webhook
+}
+
+// Poll delegates webhook serving to telebot so its private dest/update fields
+// are initialized, but gives it a child stop channel. The parent stop channel
+// belongs to Bot.Start, which closes it after Poll returns; closing that same
+// channel twice is what caused "close of closed channel".
+func (p webhookPoller) Poll(b *tb.Bot, updates chan tb.Update, stop chan struct{}) {
+	child := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		p.webhook.Poll(b, updates, child)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-stop:
+		signalWebhookStop(child)
+		<-done
+	}
+}
+
+// signalWebhookStop unblocks telebot's waitForStop with a value, not a close.
+// If Poll has already closed the child channel (for example SetWebhook failed),
+// the send panics; recover keeps shutdown idempotent.
+func signalWebhookStop(stop chan struct{}) {
+	defer func() { _ = recover() }()
+	stop <- struct{}{}
 }
 
 // Start 启动机器人
