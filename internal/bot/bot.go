@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -65,12 +66,13 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 	}
 
 	if cfg.Telegram.Mode == 2 {
-		botSettings.Poller = &tb.Webhook{
+		webhook := &tb.Webhook{
 			Listen: ":" + fmt.Sprint(cfg.Telegram.WebhookPort),
 			Endpoint: &tb.WebhookEndpoint{
 				PublicURL: cfg.Telegram.WebhookURL,
 			},
 		}
+		botSettings.Poller = webhookPoller{webhook: webhook}
 	}
 
 	bot, err := tb.NewBot(botSettings)
@@ -95,6 +97,33 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 	//初始化notifier
 	InitBotNotifier(bot, cfg.Telegram.ChatID, app)
 	return app, nil
+}
+
+type webhookPoller struct {
+	webhook *tb.Webhook
+}
+
+// Poll owns the webhook HTTP server without calling Webhook.Poll: telebot
+// v4's Webhook.waitForStop closes the stop channel itself, and Bot.Start
+// closes the same channel afterwards, which panics during shutdown.
+func (p webhookPoller) Poll(b *tb.Bot, updates chan tb.Update, stop chan struct{}) {
+	if err := b.SetWebhook(p.webhook); err != nil {
+		b.OnError(err, nil)
+		return
+	}
+	server := &http.Server{
+		Addr:    p.webhook.Listen,
+		Handler: p.webhook,
+	}
+	go func() {
+		<-stop
+		_ = server.Shutdown(context.Background())
+	}()
+	if p.webhook.TLS != nil {
+		_ = server.ListenAndServeTLS(p.webhook.TLS.Cert, p.webhook.TLS.Key)
+		return
+	}
+	_ = server.ListenAndServe()
 }
 
 // Start 启动机器人
