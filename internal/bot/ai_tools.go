@@ -6,10 +6,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/internal/aichat"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
+	"github.com/nichuanfang/gymdl/internal/gin/task"
 	"github.com/nichuanfang/gymdl/internal/musicdedupe"
+	"github.com/nichuanfang/gymdl/utils"
 )
 
 // aiTools builds the whitelist exposed to the model. Write actions are
@@ -36,7 +40,13 @@ func (app *BotApp) aiTools() []aichat.Tool {
 				},
 			},
 			Run: func(ctx context.Context, args map[string]any) (string, error) {
-				queries := make([]string, 0, 5)
+				const (
+					maxQueries    = 5
+					maxSingles    = 8
+					maxOthers     = 3
+					maxToolResult = 6000
+				)
+				queries := make([]string, 0, maxQueries)
 				if keyword, _ := args["keyword"].(string); strings.TrimSpace(keyword) != "" {
 					queries = append(queries, keyword)
 				}
@@ -50,16 +60,16 @@ func (app *BotApp) aiTools() []aichat.Tool {
 				if len(queries) == 0 {
 					return `{"error":"需要 keyword 或 titles"}`, nil
 				}
-				if len(queries) > 5 {
-					queries = queries[:5]
+				if len(queries) > maxQueries {
+					queries = queries[:maxQueries]
 				}
 				platforms := splitPlatforms(args["platform"])
-				limit := intArg(args["limit"], 10)
+				limit := intArg(args["limit"], 6)
 				if limit < 1 {
-					limit = 10
+					limit = 6
 				}
-				if limit > 10 {
-					limit = 10
+				if limit > maxSingles {
+					limit = maxSingles
 				}
 
 				var b strings.Builder
@@ -80,6 +90,14 @@ func (app *BotApp) aiTools() []aichat.Tool {
 						b.WriteString("[检索失败] " + err.Error() + "\n")
 						continue
 					}
+					remaining := maxSingles - collected
+					if remaining <= 0 {
+						b.WriteString("[预算] 已达到本轮单曲结果上限，停止继续检索。\n")
+						break
+					}
+					if len(singles) > remaining {
+						singles = singles[:remaining]
+					}
 					for _, hit := range singles {
 						item := hit.SearchResultItem
 						collected++
@@ -95,6 +113,9 @@ func (app *BotApp) aiTools() []aichat.Tool {
 								DurationSec: item.DurationSec, URL: item.URL, IsVIP: item.IsVIP,
 							}})
 						}
+					}
+					if len(others) > maxOthers {
+						others = others[:maxOthers]
 					}
 					for _, hit := range others {
 						item := hit.SearchResultItem
@@ -113,7 +134,7 @@ func (app *BotApp) aiTools() []aichat.Tool {
 					}
 					return `{"results":[],"hint":"没有搜到单曲；先自己给出具体歌名再查，不要用场景词反复搜"}`, nil
 				}
-				return strings.TrimSpace(b.String()), nil
+				return truncateToolResult(strings.TrimSpace(b.String()), maxToolResult), nil
 			},
 		},
 		{
@@ -195,8 +216,120 @@ func (app *BotApp) aiTools() []aichat.Tool {
 					match.Title, match.Artist, match.Platform), nil
 			},
 		},
+		{
+			Name:        "get_lyrics",
+			Description: "按歌名和艺人查询歌词。用户问歌词、根据歌词找歌时使用；不要凭记忆补全歌词。",
+			Parameters: map[string]any{
+				"type":     "object",
+				"required": []string{"title"},
+				"properties": map[string]any{
+					"title":  map[string]any{"type": "string", "description": "歌名"},
+					"artist": map[string]any{"type": "string", "description": "艺人，可选"},
+					"album":  map[string]any{"type": "string", "description": "专辑，可选"},
+				},
+			},
+			Run: func(ctx context.Context, args map[string]any) (string, error) {
+				title, _ := args["title"].(string)
+				artist, _ := args["artist"].(string)
+				album, _ := args["album"].(string)
+				if strings.TrimSpace(title) == "" {
+					return `{"error":"歌名不能为空"}`, nil
+				}
+				if core.GlobalLrcAPI == nil {
+					return `{"available":false,"reason":"歌词服务未配置"}`, nil
+				}
+				lyrics, err := core.GlobalLrcAPI.GetLyrics(strings.TrimSpace(title), strings.TrimSpace(artist), strings.TrimSpace(album))
+				if err != nil {
+					return fmt.Sprintf(`{"available":true,"found":false,"reason":%q}`, utils.TruncateString(err.Error(), 200)), nil
+				}
+				return fmt.Sprintf(`{"available":true,"found":true,"title":%q,"artist":%q,"lyrics":%q}`,
+					title, artist, lyrics), nil
+			},
+		},
+		{
+			Name:        "recent_downloads",
+			Description: "查看最近的下载任务记录，包括失败任务和错误原因。用户问某次下载为什么失败、最近下了什么时使用。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"status":   map[string]any{"type": "string", "description": "可选：completed/failed/cancelled"},
+					"platform": map[string]any{"type": "string", "description": "可选：netease/qq/youtube/bilibili 等"},
+					"limit":    map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
+				},
+			},
+			Run: func(_ context.Context, args map[string]any) (string, error) {
+				tm := web.GetTaskManager()
+				if tm == nil {
+					return `{"available":false,"reason":"下载历史不可用"}`, nil
+				}
+				limit := intArg(args["limit"], 5)
+				if limit < 1 {
+					limit = 5
+				}
+				if limit > 20 {
+					limit = 20
+				}
+				status, _ := args["status"].(string)
+				platform, _ := args["platform"].(string)
+				items, total := tm.GetFilteredHistory(0, limit, task.HistoryFilter{
+					Status: strings.TrimSpace(status), Platform: strings.TrimSpace(platform),
+				})
+				lines := make([]string, 0, len(items))
+				for _, item := range items {
+					line := fmt.Sprintf("%s | %s | %s | %s", item.UpdatedAt.Format("2006-01-02 15:04"), item.Platform, item.Status, item.Progress)
+					if item.Error != "" {
+						line += " | " + utils.TruncateString(item.Error, 160)
+					}
+					if len(item.SongInfo) > 0 && item.SongInfo[0] != nil {
+						line += " | " + item.SongInfo[0].SongName + " — " + item.SongInfo[0].SongArtists
+					}
+					lines = append(lines, line)
+				}
+				if len(lines) == 0 {
+					return fmt.Sprintf(`{"available":true,"total":%d,"items":[]}`, total), nil
+				}
+				return fmt.Sprintf(`{"available":true,"total":%d,"items":%q}`, total, lines), nil
+			},
+		},
+		{
+			Name:        "pending_uploads",
+			Description: "查看 WebDAV 待上传队列。用户问为什么还没入库、NAS 恢复没有时使用。",
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+			Run: func(_ context.Context, _ map[string]any) (string, error) {
+				if core.GlobalWebDAV == nil || core.GlobalWebDAV.Outbox == nil {
+					return `{"available":false,"reason":"WebDAV 未启用"}`, nil
+				}
+				items, err := core.GlobalWebDAV.Outbox.List()
+				if err != nil {
+					return `{"available":false,"reason":"读取待上传队列失败"}`, nil
+				}
+				lines := make([]string, 0, len(items))
+				for _, item := range items {
+					line := fmt.Sprintf("%s | %s/%s | 尝试 %d 次", item.CreatedAt.Format("01-02 15:04"), item.RemoteDir, item.FileName, item.Attempts)
+					if item.LastError != "" {
+						line += " | " + utils.TruncateString(item.LastError, 120)
+					}
+					lines = append(lines, line)
+				}
+				return fmt.Sprintf(`{"available":true,"count":%d,"items":%q}`, len(lines), lines), nil
+			},
+		},
 	}
 	return tools
+}
+
+// truncateToolResult bounds what a tool returns to the model. The marker tells
+// the model the data is incomplete so it narrows the next query instead of
+// treating a truncated list as exhaustive.
+func truncateToolResult(result string, maxBytes int) string {
+	if maxBytes <= 0 || len(result) <= maxBytes {
+		return result
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(result[cut]) {
+		cut--
+	}
+	return result[:cut] + "\n[结果已截断，请减少一次查询的歌名数量]"
 }
 
 func (app *BotApp) ownedChecker(ctx context.Context, title, artist, url string) (bool, error) {
