@@ -1,6 +1,6 @@
 # GYMDL 歌单配置
 # 与 config.yaml 放在同一目录，文件名固定为 config.playlists.yaml。
-# 该文件存在且包含 tidy_playlist 时优先于 config.yaml 中的内联 tidy_playlist。
+# 该文件存在且包含 tidy_playlist 时优先于 playlist_organizer 中的内联列表。
 # 歌单 name 必须与 Navidrome 中保持一致；修改后需重启服务才会应用到 Bot。
 
 tidy_playlist:

@@ -30,6 +30,7 @@ var (
 var secretKeys = map[string]struct{}{
 	"webdav_pass": {}, "cookiecloud_uuid": {}, "cookiecloud_key": {},
 	"bot_token": {}, "api_key": {}, "auth_token": {}, "webhook_url": {},
+	"olivetin_password": {}, "navidrome_password": {}, "pinecone_api_key": {}, "embedding_api_key": {},
 	"proxy_pass": {}, "pass": {}, "password": {}, "token": {}, "secret": {}, "user": {}, "refresh_key": {}, "refresh_token": {},
 	"access_token": {}, "music_id": {}, "str_music_id": {}, "open_id": {},
 	"union_id": {}, "music_key": {}, "history_dsn": {},
@@ -84,6 +85,7 @@ func SetConfigFilePath(path string) {
 	if data, err := os.ReadFile(path); err == nil {
 		var doc map[string]any
 		if yaml.Unmarshal(data, &doc) == nil && doc != nil {
+			doc = removeMigratedN8NWorkflowFields(doc)
 			doc = withPlaylistSidecar(doc, path)
 			doc = withConfigDefaults(doc)
 			savedConfigMu.Lock()
@@ -104,6 +106,33 @@ func SetConfigFilePath(path string) {
 	}
 }
 
+func removeMigratedN8NWorkflowFields(doc map[string]any) map[string]any {
+	if doc == nil {
+		return nil
+	}
+	n8n, ok := doc["n8n_config"].(map[string]any)
+	if !ok {
+		return doc
+	}
+	playlist, _ := doc["playlist_organizer"].(map[string]any)
+	for _, key := range []string{"playlist_assist", "tidy_playlist"} {
+		if value, exists := n8n[key]; exists {
+			if playlist == nil {
+				playlist = make(map[string]any)
+				doc["playlist_organizer"] = playlist
+			}
+			if _, alreadyMoved := playlist[key]; !alreadyMoved {
+				playlist[key] = value
+			}
+			delete(n8n, key)
+		}
+	}
+	for _, key := range []string{"auth_token", "empty_trash_endpoint", "ai_playlist_endpoint", "tidy_playlist_endpoint"} {
+		delete(n8n, key)
+	}
+	return doc
+}
+
 func withPlaylistSidecar(doc map[string]any, configPath string) map[string]any {
 	entries, present, err := config.LoadPlaylistFile(config.PlaylistFilePath(configPath))
 	if err != nil {
@@ -118,10 +147,10 @@ func withPlaylistSidecar(doc map[string]any, configPath string) map[string]any {
 	if out == nil {
 		out = make(map[string]any)
 	}
-	n8n, _ := out["n8n_config"].(map[string]any)
-	if n8n == nil {
-		n8n = make(map[string]any)
-		out["n8n_config"] = n8n
+	playlist, _ := out["playlist_organizer"].(map[string]any)
+	if playlist == nil {
+		playlist = make(map[string]any)
+		out["playlist_organizer"] = playlist
 	}
 	encoded, err := yaml.Marshal(entries)
 	if err != nil {
@@ -134,7 +163,7 @@ func withPlaylistSidecar(doc map[string]any, configPath string) map[string]any {
 	if list == nil {
 		list = []any{}
 	}
-	n8n["tidy_playlist"] = list
+	playlist["tidy_playlist"] = list
 	return out
 }
 
@@ -189,6 +218,7 @@ func HandleUpdateConfig(c *gin.Context) {
 		return
 	}
 	incoming := stripConfigMetadata(request.Config)
+	incoming = removeMigratedN8NWorkflowFields(incoming)
 	merged := mergeConfigMaps(before, incoming, nil)
 	for _, path := range request.ClearSecret {
 		if !isSecretPath(path) {
@@ -197,6 +227,7 @@ func HandleUpdateConfig(c *gin.Context) {
 		}
 		setConfigPath(merged, strings.Split(path, "."), "")
 	}
+	merged = removeMigratedN8NWorkflowFields(merged)
 
 	encoded, err := yaml.Marshal(merged)
 	if err != nil {
@@ -395,8 +426,8 @@ func detachTidyPlaylist(doc map[string]any) ([]config.PlaylistInfo, map[string]a
 		main = make(map[string]any)
 	}
 	rawPlaylists := []any{}
-	if n8n, ok := main["n8n_config"].(map[string]any); ok {
-		if value, exists := n8n["tidy_playlist"]; exists {
+	if playlist, ok := main["playlist_organizer"].(map[string]any); ok {
+		if value, exists := playlist["tidy_playlist"]; exists {
 			list, ok := value.([]any)
 			if !ok && value != nil {
 				return nil, nil, errors.New("tidy_playlist 必须是数组")
@@ -404,7 +435,7 @@ func detachTidyPlaylist(doc map[string]any) ([]config.PlaylistInfo, map[string]a
 			if ok {
 				rawPlaylists = list
 			}
-			delete(n8n, "tidy_playlist")
+			delete(playlist, "tidy_playlist")
 		}
 	}
 	encoded, err := yaml.Marshal(rawPlaylists)

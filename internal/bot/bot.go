@@ -20,21 +20,28 @@ var (
 )
 
 type BotApp struct {
-	bot             *tb.Bot
-	cfg             *config.Config
-	musicDedupe     *musicdedupe.Store
-	pendingMu       sync.Mutex
-	pendingMusic    map[string]pendingMusicDownload
-	activeMusicKeys map[string]struct{}
-	musicActionMu   sync.Mutex
-	musicActions    map[string]pendingMusicAction
-	aiStore         *aichat.Store
-	aiSkills        *aichat.SkillRegistry
-	aiMCP           []*aichat.MCPClient
-	aiMCPTools      []aichat.Tool
-	aiTurnMu        sync.Mutex
-	aiTurnLocks     map[int64]*sync.Mutex
-	aiBatchRunning  map[int64]struct{}
+	bot                      *tb.Bot
+	cfg                      *config.Config
+	musicDedupe              *musicdedupe.Store
+	pendingMu                sync.Mutex
+	pendingMusic             map[string]pendingMusicDownload
+	activeMusicKeys          map[string]struct{}
+	musicActionMu            sync.Mutex
+	musicActions             map[string]pendingMusicAction
+	playlistAssignmentMu     sync.Mutex
+	playlistAssignments      map[string]pendingPlaylistAssignment
+	playlistAssignmentBySong map[string]string
+	aiStore                  *aichat.Store
+	aiSkills                 *aichat.SkillRegistry
+	aiMCP                    []*aichat.MCPClient
+	aiMCPTools               []aichat.Tool
+	aiTurnMu                 sync.Mutex
+	aiTurnLocks              map[int64]*sync.Mutex
+	aiBatchRunning           map[int64]struct{}
+	aiPlaylistMu             sync.Mutex
+	aiPlaylistRunning        map[int64]struct{}
+	emptyTrashMu             sync.Mutex
+	emptyTrashRunning        map[int64]struct{}
 }
 
 // NewBotApp 创建机器人
@@ -95,14 +102,18 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 	}
 
 	app = &BotApp{
-		bot:             bot,
-		cfg:             cfg,
-		musicDedupe:     musicDedupe,
-		pendingMusic:    make(map[string]pendingMusicDownload),
-		activeMusicKeys: make(map[string]struct{}),
-		musicActions:    make(map[string]pendingMusicAction),
-		aiTurnLocks:     make(map[int64]*sync.Mutex),
-		aiBatchRunning:  make(map[int64]struct{}),
+		bot:                      bot,
+		cfg:                      cfg,
+		musicDedupe:              musicDedupe,
+		pendingMusic:             make(map[string]pendingMusicDownload),
+		activeMusicKeys:          make(map[string]struct{}),
+		musicActions:             make(map[string]pendingMusicAction),
+		playlistAssignments:      make(map[string]pendingPlaylistAssignment),
+		playlistAssignmentBySong: make(map[string]string),
+		aiTurnLocks:              make(map[int64]*sync.Mutex),
+		aiBatchRunning:           make(map[int64]struct{}),
+		aiPlaylistRunning:        make(map[int64]struct{}),
+		emptyTrashRunning:        make(map[int64]struct{}),
 	}
 	app.initAI()
 	//注册处理器

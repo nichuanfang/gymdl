@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
@@ -287,77 +286,17 @@ func SetCommands(c tb.Context) error {
 
 /* ------------------------ /assign_playlist ------------------------ */
 func (app *BotApp) AssignPlaylistCommand(c tb.Context) error {
-	extra := map[string]interface{}{
-		"playlist_assist": app.cfg.N8NConfig.PlaylistAssist,
-		"tidy_playlist":   app.cfg.N8NConfig.TidyPlaylist,
-	}
-	return app.sendN8NTask(c, app.cfg.N8NConfig.TidyPlaylistEndpoint, extra)
+	return app.startPlaylistAssignment(c)
 }
 
 /* ------------------------ /ai_playlist ------------------------ */
 func (app *BotApp) AIPlaylistCommand(c tb.Context) error {
-	return app.sendN8NTask(c, app.cfg.N8NConfig.AIPlaylistEndpoint, nil)
+	return app.startAIPlaylist(c)
 }
 
 /* ------------------------ /empty_trash ------------------------ */
 func (app *BotApp) EmptyTrashCommand(c tb.Context) error {
-	return app.sendN8NTask(c, app.cfg.N8NConfig.EmptyTrashEndpoint, nil)
+	return app.startEmptyTrash(c)
 }
 
 /* ------------------------ 辅助方法 ------------------------ */
-
-// sendN8NTask 是一个通用的辅助函数，用于将任务转发给 n8n
-func (app *BotApp) sendN8NTask(c tb.Context, endpoint string, extraPayload map[string]interface{}) error {
-	if app.cfg.N8NConfig.Enable && len(app.cfg.N8NConfig.N8NBaseUrl) == 0 {
-		return c.Send("请先配置启用n8n服务")
-	}
-
-	// 1. 发送初始状态消息
-	sentMsg, err := c.Bot().Send(c.Chat(), "🚀 任务已提交，后台处理中...")
-	if err != nil {
-		return err
-	}
-
-	// 2. 拼接 URL
-	baseUrl, _ := strings.CutSuffix(app.cfg.N8NConfig.N8NBaseUrl, "/")
-	targetUrl := baseUrl + "/" + strings.TrimPrefix(endpoint, "/")
-
-	// 3. 构造基础 Payload
-	payload := map[string]interface{}{
-		"chat_id":    c.Chat().ID,
-		"message_id": sentMsg.ID,
-		"username":   c.Sender().Username,
-		"text":       c.Text(),
-		"timestamp":  time.Now().Unix(),
-	}
-	// 合并额外的 Payload
-	for k, v := range extraPayload {
-		payload[k] = v
-	}
-
-	// 4. 发送请求
-	jsonData, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", targetUrl, bytes.NewBuffer(jsonData))
-	if err != nil {
-		_, _ = c.Bot().Edit(sentMsg, "❌ 创建请求失败: "+err.Error())
-		return err
-	}
-
-	if app.cfg.N8NConfig.AuthToken != "" {
-		req.Header.Set("Authorization", "Bearer "+app.cfg.N8NConfig.AuthToken)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		_, _ = c.Bot().Edit(sentMsg, "❌ 调用 n8n 失败: "+err.Error())
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_, _ = c.Bot().Edit(sentMsg, fmt.Sprintf("❌ n8n 接收失败，状态码: %d", resp.StatusCode))
-	}
-	return nil
-}

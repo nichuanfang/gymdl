@@ -10,7 +10,7 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
-// PlaylistFileName is the sidecar document that holds the n8n tidy playlist.
+// PlaylistFileName is the sidecar document that holds the playlist organizer's options.
 // It lives next to the main configuration file and is optional for compatibility
 // with deployments that still keep tidy_playlist inline.
 const PlaylistFileName = "config.playlists.yaml"
@@ -85,10 +85,10 @@ func ApplyPlaylistFile(c *Config, configPath string) error {
 	if !present {
 		return nil
 	}
-	if c.N8NConfig == nil {
-		c.N8NConfig = &N8NConfig{TidyPlaylist: []PlaylistInfo{}}
+	if c.PlaylistOrganizer == nil {
+		c.PlaylistOrganizer = &PlaylistOrganizerConfig{TidyPlaylist: []PlaylistInfo{}}
 	}
-	c.N8NConfig.TidyPlaylist = append([]PlaylistInfo(nil), entries...)
+	c.PlaylistOrganizer.TidyPlaylist = append([]PlaylistInfo(nil), entries...)
 	return nil
 }
 

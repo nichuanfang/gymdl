@@ -87,13 +87,20 @@ const activeSection = ref('web_config')
 const restartFields = ref<string[]>([])
 const hotReloadFields = ref<string[]>([])
 const sectionOrder = [
-  'web_config', 'tidy', 'webdav', 'cookie_cloud', 'additional_config', 'proxy',
-  'log', 'telegram', 'lrc_api', 'ai', 'n8n_config', 'qq_music_api',
+  'web_config', 'log', 'proxy',
+  'additional_config',
+  'telegram', 'qq_music_api', 'lrc_api', 'cookie_cloud',
+  'tidy', 'webdav', 'playlist_organizer',
+  'ai', 'ai_playlist', 'n8n_config',
 ]
 const sectionLabels: Record<string, string> = {
-  web_config: 'Web 服务', tidy: '资源整理', webdav: 'WebDAV', cookie_cloud: 'CookieCloud',
-  additional_config: '附加功能', proxy: '代理', log: '日志', telegram: 'Telegram',
-  lrc_api: 'LrcAPI', ai: 'AI', n8n_config: 'n8n', qq_music_api: 'QQ 音乐 API',
+  web_config: '运行 · Web 服务', log: '运行 · 日志', proxy: '网络 · 代理',
+  additional_config: '运行 · 下载与后台任务',
+  telegram: '平台 · Telegram', qq_music_api: '平台 · QQ 音乐 API',
+  lrc_api: '平台 · LrcAPI', cookie_cloud: '账号 · CookieCloud',
+  tidy: '曲库 · 资源整理', webdav: '曲库 · WebDAV',
+  playlist_organizer: '歌单 · 整理与服务',
+  ai: 'AI · 助手', ai_playlist: 'AI · 智能歌单', n8n_config: '数据 · MusicRAG 桥接',
 }
 const sectionKeys = computed(() => sectionOrder.filter((key) => !!config.value && config.value[key] && typeof config.value[key] === 'object'))
 function sectionLabel(key: string) { return sectionLabels[key] || key }

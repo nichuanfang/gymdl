@@ -30,48 +30,48 @@ func TestApplyPlaylistFilePrecedenceAndFallback(t *testing.T) {
 		}
 	}
 
-	c := &Config{N8NConfig: &N8NConfig{TidyPlaylist: append([]PlaylistInfo(nil), inline...)}}
+	c := &Config{PlaylistOrganizer: &PlaylistOrganizerConfig{TidyPlaylist: append([]PlaylistInfo(nil), inline...)}}
 	if err := ApplyPlaylistFile(c, configPath); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.N8NConfig.TidyPlaylist) != 1 || c.N8NConfig.TidyPlaylist[0].Name != "inline" {
-		t.Fatalf("missing sidecar should keep inline list: %#v", c.N8NConfig.TidyPlaylist)
+	if len(c.PlaylistOrganizer.TidyPlaylist) != 1 || c.PlaylistOrganizer.TidyPlaylist[0].Name != "inline" {
+		t.Fatalf("missing sidecar should keep inline list: %#v", c.PlaylistOrganizer.TidyPlaylist)
 	}
 
 	write("tidy_playlist:\n  - name: sidecar\n    desc: new\n")
-	c = &Config{N8NConfig: &N8NConfig{TidyPlaylist: append([]PlaylistInfo(nil), inline...)}}
+	c = &Config{PlaylistOrganizer: &PlaylistOrganizerConfig{TidyPlaylist: append([]PlaylistInfo(nil), inline...)}}
 	if err := ApplyPlaylistFile(c, configPath); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.N8NConfig.TidyPlaylist) != 1 || c.N8NConfig.TidyPlaylist[0].Name != "sidecar" {
-		t.Fatalf("sidecar should win: %#v", c.N8NConfig.TidyPlaylist)
+	if len(c.PlaylistOrganizer.TidyPlaylist) != 1 || c.PlaylistOrganizer.TidyPlaylist[0].Name != "sidecar" {
+		t.Fatalf("sidecar should win: %#v", c.PlaylistOrganizer.TidyPlaylist)
 	}
 
 	write("tidy_playlist: []\n")
-	c = &Config{N8NConfig: &N8NConfig{TidyPlaylist: append([]PlaylistInfo(nil), inline...)}}
+	c = &Config{PlaylistOrganizer: &PlaylistOrganizerConfig{TidyPlaylist: append([]PlaylistInfo(nil), inline...)}}
 	if err := ApplyPlaylistFile(c, configPath); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.N8NConfig.TidyPlaylist) != 0 {
-		t.Fatalf("explicit empty sidecar must override inline: %#v", c.N8NConfig.TidyPlaylist)
+	if len(c.PlaylistOrganizer.TidyPlaylist) != 0 {
+		t.Fatalf("explicit empty sidecar must override inline: %#v", c.PlaylistOrganizer.TidyPlaylist)
 	}
 
 	write("other_key: true\n")
-	c = &Config{N8NConfig: &N8NConfig{TidyPlaylist: append([]PlaylistInfo(nil), inline...)}}
+	c = &Config{PlaylistOrganizer: &PlaylistOrganizerConfig{TidyPlaylist: append([]PlaylistInfo(nil), inline...)}}
 	if err := ApplyPlaylistFile(c, configPath); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.N8NConfig.TidyPlaylist) != 1 || c.N8NConfig.TidyPlaylist[0].Name != "inline" {
-		t.Fatalf("sidecar without tidy_playlist must not clear inline: %#v", c.N8NConfig.TidyPlaylist)
+	if len(c.PlaylistOrganizer.TidyPlaylist) != 1 || c.PlaylistOrganizer.TidyPlaylist[0].Name != "inline" {
+		t.Fatalf("sidecar without tidy_playlist must not clear inline: %#v", c.PlaylistOrganizer.TidyPlaylist)
 	}
 
 	write("tidy_playlist: [\n")
-	c = &Config{N8NConfig: &N8NConfig{TidyPlaylist: append([]PlaylistInfo(nil), inline...)}}
+	c = &Config{PlaylistOrganizer: &PlaylistOrganizerConfig{TidyPlaylist: append([]PlaylistInfo(nil), inline...)}}
 	if err := ApplyPlaylistFile(c, configPath); err == nil {
 		t.Fatal("broken sidecar should return an error")
 	}
-	if len(c.N8NConfig.TidyPlaylist) != 1 || c.N8NConfig.TidyPlaylist[0].Name != "inline" {
-		t.Fatalf("broken sidecar must keep inline list: %#v", c.N8NConfig.TidyPlaylist)
+	if len(c.PlaylistOrganizer.TidyPlaylist) != 1 || c.PlaylistOrganizer.TidyPlaylist[0].Name != "inline" {
+		t.Fatalf("broken sidecar must keep inline list: %#v", c.PlaylistOrganizer.TidyPlaylist)
 	}
 }
 
@@ -114,8 +114,11 @@ func TestShippedConfigExamplesParse(t *testing.T) {
 	if err := unmarshalFile("../config.yaml.example", &main); err != nil {
 		t.Fatalf("config.yaml.example does not parse: %v", err)
 	}
-	if main.N8NConfig == nil || main.N8NConfig.PlaylistAssist {
-		t.Fatalf("unexpected n8n example defaults: %#v", main.N8NConfig)
+	if main.N8NConfig == nil {
+		t.Fatalf("missing n8n bridge settings: %#v", main.N8NConfig)
+	}
+	if main.PlaylistOrganizer == nil || main.PlaylistOrganizer.PlaylistAssist {
+		t.Fatalf("unexpected playlist organizer defaults: %#v", main.PlaylistOrganizer)
 	}
 	if main.QQMusicApiConfig == nil || main.QQMusicApiConfig.ExpiredAt != 0 {
 		t.Fatalf("unexpected qq music example defaults: %#v", main.QQMusicApiConfig)
@@ -124,6 +127,51 @@ func TestShippedConfigExamplesParse(t *testing.T) {
 	entries, present, err := LoadPlaylistFile("../config.playlists.example.yaml")
 	if err != nil || !present || len(entries) < 2 {
 		t.Fatalf("playlist example invalid: entries=%d present=%v err=%v", len(entries), present, err)
+	}
+}
+
+func TestSetDefaultsMovesLegacyPlaylistSettingsOutOfN8N(t *testing.T) {
+	c := &Config{N8NConfig: &N8NConfig{
+		PlaylistAssist: true,
+		TidyPlaylist:   []PlaylistInfo{{Name: "legacy", Desc: "old config"}},
+	}}
+	c.SetDefaultsForTest()
+	if c.PlaylistOrganizer == nil || !c.PlaylistOrganizer.PlaylistAssist || len(c.PlaylistOrganizer.TidyPlaylist) != 1 || c.PlaylistOrganizer.TidyPlaylist[0].Name != "legacy" {
+		t.Fatalf("legacy playlist config was not migrated: %#v", c.PlaylistOrganizer)
+	}
+	if c.N8NConfig.PlaylistAssist || len(c.N8NConfig.TidyPlaylist) != 0 {
+		t.Fatalf("legacy fields were not cleared from the n8n group: %#v", c.N8NConfig)
+	}
+
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	n8n := doc["n8n_config"].(map[string]any)
+	if _, exists := n8n["playlist_assist"]; exists {
+		t.Fatal("marshaled n8n settings still contain playlist_assist")
+	}
+	if _, exists := n8n["tidy_playlist"]; exists {
+		t.Fatal("marshaled n8n settings still contain tidy_playlist")
+	}
+}
+
+func TestPreferExplicitPlaylistSettingsOverLegacyN8NValues(t *testing.T) {
+	c := &Config{
+		N8NConfig: &N8NConfig{
+			PlaylistAssist: true,
+			TidyPlaylist:   []PlaylistInfo{{Name: "legacy"}},
+		},
+		PlaylistOrganizer: &PlaylistOrganizerConfig{TidyPlaylist: []PlaylistInfo{}},
+	}
+	preferExplicitPlaylistConfig([]byte("playlist_organizer:\n  playlist_assist: false\n  tidy_playlist: []\n"), c)
+	c.SetDefaultsForTest()
+	if c.PlaylistOrganizer.PlaylistAssist || len(c.PlaylistOrganizer.TidyPlaylist) != 0 {
+		t.Fatalf("explicit playlist settings were replaced by legacy values: %#v", c.PlaylistOrganizer)
 	}
 }
 
@@ -144,9 +192,9 @@ func TestEnsurePlaylistFileCreatesPlaceholderWithoutOverwriting(t *testing.T) {
 	if err != nil || present || len(entries) != 0 {
 		t.Fatalf("placeholder must not contain tidy_playlist: %#v present=%v err=%v", entries, present, err)
 	}
-	inline := &Config{N8NConfig: &N8NConfig{TidyPlaylist: []PlaylistInfo{{Name: "inline"}}}}
-	if err := ApplyPlaylistFile(inline, configPath); err != nil || len(inline.N8NConfig.TidyPlaylist) != 1 {
-		t.Fatalf("placeholder must preserve inline fallback: %#v err=%v", inline.N8NConfig.TidyPlaylist, err)
+	inline := &Config{PlaylistOrganizer: &PlaylistOrganizerConfig{TidyPlaylist: []PlaylistInfo{{Name: "inline"}}}}
+	if err := ApplyPlaylistFile(inline, configPath); err != nil || len(inline.PlaylistOrganizer.TidyPlaylist) != 1 {
+		t.Fatalf("placeholder must preserve inline fallback: %#v err=%v", inline.PlaylistOrganizer.TidyPlaylist, err)
 	}
 	if err := os.WriteFile(path, []byte("tidy_playlist:\n  - name: keep\n    desc: existing\n"), 0o600); err != nil {
 		t.Fatal(err)

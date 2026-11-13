@@ -1,19 +1,33 @@
 package config
 
 type Config struct {
-	ConfigFile      string             `yaml:"-"`             // 配置文件路径（非 YAML 字段）
-	WebConfig        *WebConfig         `yaml:"web_config"`   // web配置
-	CookieCloud      *CookieCloudConfig `yaml:"cookie_cloud"` // cookiecloud配置
-	Tidy             *TidyConfig        `yaml:"tidy"`         // 资源整理配置
-	WebDAV           *WebDAVConfig      `yaml:"webdav"`       // webdav配置
-	Log              *LogConfig         `yaml:"log"`               // 日志配置
-	Telegram         *TelegramConfig    `yaml:"telegram"`          // telegram配置
-    LrcAPI           *LrcAPIConfig      `yaml:"lrc_api"`        // lrcapi配置
-	AI               *AIConfig          `yaml:"ai"`                // AI配置
-	N8NConfig        *N8NConfig         `yaml:"n8n_config"`        // n8n配置
-	QQMusicApiConfig *QQMusicApiConfig  `yaml:"qq_music_api"`      // qq-music-api服务配置
-	AdditionalConfig *AdditionalConfig  `yaml:"additional_config"` // 附属配置
-	ProxyConfig      *ProxyConfig       `yaml:"proxy"`             // 代理配置
+	ConfigFile string `yaml:"-"` // 配置文件路径（非 YAML 字段）
+
+	// 服务运行与网络
+	WebConfig        *WebConfig        `yaml:"web_config"`        // Web 服务配置
+	Log              *LogConfig        `yaml:"log"`               // 日志配置
+	ProxyConfig      *ProxyConfig      `yaml:"proxy"`             // 代理配置
+	AdditionalConfig *AdditionalConfig `yaml:"additional_config"` // 下载、监听和定时任务
+
+	// 外部服务接入
+	Telegram         *TelegramConfig    `yaml:"telegram"`     // Telegram 配置
+	QQMusicApiConfig *QQMusicApiConfig  `yaml:"qq_music_api"` // QQ 音乐 API 配置
+	LrcAPI           *LrcAPIConfig      `yaml:"lrc_api"`      // LrcAPI 配置
+	CookieCloud      *CookieCloudConfig `yaml:"cookie_cloud"` // CookieCloud 配置
+
+	// 曲库与文件存储
+	Tidy   *TidyConfig   `yaml:"tidy"`   // 资源整理配置
+	WebDAV *WebDAVConfig `yaml:"webdav"` // WebDAV 配置
+
+	// 歌单整理
+	PlaylistOrganizer *PlaylistOrganizerConfig `yaml:"playlist_organizer"` // 歌单整理与 Navidrome / OliveTin 连接
+
+	// AI 功能
+	AI         *AIConfig         `yaml:"ai"`          // AI 助手配置
+	AIPlaylist *AIPlaylistConfig `yaml:"ai_playlist"` // AI 智能歌单配置
+
+	// n8n 数据桥接：保留 MusicRAG 状态同步等仍在使用的接口
+	N8NConfig *N8NConfig `yaml:"n8n_config"` // n8n 配置
 }
 
 type WebConfig struct {
@@ -71,10 +85,10 @@ type TelegramConfig struct {
 }
 
 type LrcAPIConfig struct {
-    Enable     bool   `yaml:"enable"`      // 是否启用lrcapi歌词服务
-    LrcApiUrl  string `yaml:"lrc_api_url"` // lrcapi服务url
-    LrcApiKey  string `yaml:"api_key"`     // 认证key
-    LrcApiHost string `yaml:"lrc_api_host"`   // lrcapi服务主机名 需要容器名+frp访问才需要设置
+	Enable     bool   `yaml:"enable"`       // 是否启用lrcapi歌词服务
+	LrcApiUrl  string `yaml:"lrc_api_url"`  // lrcapi服务url
+	LrcApiKey  string `yaml:"api_key"`      // 认证key
+	LrcApiHost string `yaml:"lrc_api_host"` // lrcapi服务主机名 需要容器名+frp访问才需要设置
 }
 
 type AIConfig struct {
@@ -95,6 +109,20 @@ type AIConfig struct {
 	EnabledSkills         []string          `yaml:"enabled_skills"`          // 允许AI模式使用的技能白名单
 }
 
+// AIPlaylistConfig configures the direct Pinecone-backed AI playlist flow.
+type AIPlaylistConfig struct {
+	PineconeHost      string `yaml:"pinecone_host"`      // Pinecone index host, e.g. https://index-name.svc.region.pinecone.io
+	PineconeAPIKey    string `yaml:"pinecone_api_key"`   // Pinecone API key
+	PineconeNamespace string `yaml:"pinecone_namespace"` // Existing vector namespace
+	EmbeddingBaseURL  string `yaml:"embedding_base_url"` // Optional embedding API base URL; defaults to ai.base_url
+	EmbeddingAPIKey   string `yaml:"embedding_api_key"`  // Optional embedding API key; defaults to ai.api_key
+	EmbeddingModel    string `yaml:"embedding_model"`    // Must match the model used to populate the index
+	QueryModel        string `yaml:"query_model"`        // Optional intent extraction model; defaults to ai.model
+	PlaylistModel     string `yaml:"playlist_model"`     // Optional playlist planning model; defaults to ai.model
+	PlaylistSize      int    `yaml:"playlist_size"`      // Desired number of songs per generated playlist
+	CandidateCount    int    `yaml:"candidate_count"`    // Maximum Pinecone candidates to rank
+}
+
 // MCPServerConfig 定义一个可选的MCP服务。AllowedTools为空时不会暴露任何工具。
 type MCPServerConfig struct {
 	Name           string   `yaml:"name"`            // 服务名，用于工具名前缀
@@ -111,14 +139,26 @@ type PlaylistInfo struct {
 }
 
 type N8NConfig struct {
-    Enable         bool   `yaml:"enable"` // 是否启用n8n
-	N8NBaseUrl           string         `yaml:"n8n_base_url"`           // 自建n8n的地址
-	AuthToken            string         `yaml:"auth_token"`             // 端点认证密钥
-	EmptyTrashEndpoint   string         `yaml:"empty_trash_endpoint"`   // 清空回收站
-	AIPlaylistEndpoint   string         `yaml:"ai_playlist_endpoint"`   // AI智能歌单
-	TidyPlaylistEndpoint string         `yaml:"tidy_playlist_endpoint"` // 歌单整理端点
-    PlaylistAssist bool   `yaml:"playlist_assist"` // 是否开启歌单分类AI增强 开启后ai会辅助歌单分类
-	TidyPlaylist         []PlaylistInfo `yaml:"tidy_playlist"`          // 歌单名列表
+	Enable          bool   `yaml:"enable"`             // 是否启用n8n
+	N8NBaseUrl      string `yaml:"n8n_base_url"`       // 自建n8n的地址
+	APIKey          string `yaml:"api_key"`            // n8n Public API密钥，用于MusicRAG状态表读取、新增和清理
+	MusicRAGTableID string `yaml:"music_rag_table_id"` // n8n music_rag数据表ID
+
+	// Deprecated: moved to PlaylistOrganizerConfig; retained to load old config files.
+	PlaylistAssist bool           `yaml:"playlist_assist,omitempty"`
+	TidyPlaylist   []PlaylistInfo `yaml:"tidy_playlist,omitempty"`
+}
+
+// PlaylistOrganizerConfig 配置歌单整理直接访问的服务。
+type PlaylistOrganizerConfig struct {
+	OliveTinURL       string         `yaml:"olivetin_url"`            // OliveTin服务地址（不含 /api/StartActionAndWait）
+	OliveTinUsername  string         `yaml:"olivetin_username"`       // 可选的 OliveTin Basic Auth 用户名
+	OliveTinPassword  string         `yaml:"olivetin_password"`       // 可选的 OliveTin Basic Auth 密码
+	NavidromeURL      string         `yaml:"navidrome_url"`           // Navidrome服务地址
+	NavidromeUsername string         `yaml:"navidrome_username"`      // Navidrome用户名
+	NavidromePassword string         `yaml:"navidrome_password"`      // Navidrome密码
+	PlaylistAssist    bool           `yaml:"playlist_assist"`         // 是否使用AI预选歌单
+	TidyPlaylist      []PlaylistInfo `yaml:"tidy_playlist,omitempty"` // 歌单整理选项（实际保存在 config.playlists.yaml）
 }
 
 type QQMusicApiConfig struct {

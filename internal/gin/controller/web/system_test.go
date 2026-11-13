@@ -27,6 +27,91 @@ func TestRedactSecretsMasksWebUIAuthPassword(t *testing.T) {
 	}
 }
 
+func TestRedactSecretsMasksN8NDataTableAPIKey(t *testing.T) {
+	input := map[string]any{
+		"n8n_config": map[string]any{
+			"api_key":            "private-n8n-key",
+			"music_rag_table_id": "table-id",
+		},
+	}
+	redacted := redactSecrets(input).(map[string]any)
+	n8n := redacted["n8n_config"].(map[string]any)
+	if n8n["api_key"] != "" || n8n["api_key_configured"] != true {
+		t.Fatalf("n8n API key should be masked: %#v", n8n)
+	}
+	if n8n["music_rag_table_id"] != "table-id" {
+		t.Fatalf("table ID should remain visible: %#v", n8n)
+	}
+}
+
+func TestRedactSecretsMasksPlaylistOrganizerPasswords(t *testing.T) {
+	input := map[string]any{
+		"playlist_organizer": map[string]any{
+			"olivetin_password":  "olive-secret",
+			"navidrome_password": "navidrome-secret",
+			"navidrome_username": "music-admin",
+		},
+	}
+	redacted := redactSecrets(input).(map[string]any)
+	organizer := redacted["playlist_organizer"].(map[string]any)
+	for _, key := range []string{"olivetin_password", "navidrome_password"} {
+		if organizer[key] != "" || organizer[key+"_configured"] != true {
+			t.Errorf("%s should be masked while retaining configured status: %#v", key, organizer)
+		}
+	}
+	if organizer["navidrome_username"] != "music-admin" {
+		t.Fatalf("Navidrome username should remain visible: %#v", organizer)
+	}
+}
+
+func TestRedactSecretsMasksAIPlaylistAPIKeys(t *testing.T) {
+	input := map[string]any{
+		"ai_playlist": map[string]any{
+			"pinecone_api_key":  "pinecone-secret",
+			"embedding_api_key": "embedding-secret",
+			"pinecone_host":     "https://index.example",
+		},
+	}
+	redacted := redactSecrets(input).(map[string]any)["ai_playlist"].(map[string]any)
+	for _, key := range []string{"pinecone_api_key", "embedding_api_key"} {
+		if redacted[key] != "" || redacted[key+"_configured"] != true {
+			t.Errorf("%s should be masked while retaining configured status: %#v", key, redacted)
+		}
+	}
+	if redacted["pinecone_host"] != "https://index.example" {
+		t.Fatalf("Pinecone host should remain visible: %#v", redacted)
+	}
+}
+
+func TestRemoveMigratedN8NWorkflowFields(t *testing.T) {
+	doc := map[string]any{
+		"n8n_config": map[string]any{
+			"auth_token":             "legacy-secret",
+			"tidy_playlist_endpoint": "https://n8n.example/webhook/tidy",
+			"ai_playlist_endpoint":   "https://n8n.example/webhook/ai",
+			"empty_trash_endpoint":   "https://n8n.example/webhook/trash",
+			"n8n_base_url":           "https://n8n.example",
+			"music_rag_table_id":     "table-id",
+			"playlist_assist":        true,
+			"tidy_playlist":          []any{map[string]any{"name": "legacy"}},
+		},
+	}
+	cleaned := removeMigratedN8NWorkflowFields(doc)
+	n8n := cleaned["n8n_config"].(map[string]any)
+	for _, key := range []string{"auth_token", "tidy_playlist_endpoint", "ai_playlist_endpoint", "empty_trash_endpoint"} {
+		if _, exists := n8n[key]; exists {
+			t.Errorf("legacy n8n field %q should be removed from WebUI config", key)
+		}
+	}
+	if n8n["n8n_base_url"] != "https://n8n.example" || n8n["music_rag_table_id"] != "table-id" {
+		t.Fatalf("MusicRAG bridge configuration was removed: %#v", n8n)
+	}
+	playlist := cleaned["playlist_organizer"].(map[string]any)
+	if playlist["playlist_assist"] != true || playlist["tidy_playlist"].([]any)[0].(map[string]any)["name"] != "legacy" {
+		t.Fatalf("legacy playlist settings were not moved: %#v", playlist)
+	}
+}
+
 func TestSystemConfigRedactsSecretsPersistsAndReportsReload(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -175,7 +260,6 @@ tidy:
   dist_dir: data/dist
 n8n_config:
   enable: true
-  tidy_playlist_endpoint: https://n8n.example/webhook/tidy
   playlist_assist: false
   tidy_playlist:
     - name: 中文
@@ -185,18 +269,19 @@ n8n_config:
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
-		ConfigFile:       configPath,
-		WebConfig:        &config.WebConfig{Enable: true, AppDomain: "localhost", AppPort: 8080, GinMode: "release"},
-		Tidy:             &config.TidyConfig{Mode: 1, DistDir: "data/dist"},
-		WebDAV:           &config.WebDAVConfig{},
-		Log:              &config.LogConfig{Mode: 1, Level: 2, File: "data/logs/run.log"},
-		Telegram:         &config.TelegramConfig{Mode: 1},
-		LrcAPI:           &config.LrcAPIConfig{},
-		AI:               &config.AIConfig{},
-		N8NConfig:        &config.N8NConfig{Enable: true, TidyPlaylistEndpoint: "https://n8n.example/webhook/tidy", TidyPlaylist: []config.PlaylistInfo{{Name: "中文", Desc: "inline copy"}}},
-		QQMusicApiConfig: &config.QQMusicApiConfig{},
-		AdditionalConfig: &config.AdditionalConfig{MonitorDirs: []string{}},
-		ProxyConfig:      &config.ProxyConfig{},
+		ConfigFile:        configPath,
+		WebConfig:         &config.WebConfig{Enable: true, AppDomain: "localhost", AppPort: 8080, GinMode: "release"},
+		Tidy:              &config.TidyConfig{Mode: 1, DistDir: "data/dist"},
+		WebDAV:            &config.WebDAVConfig{},
+		Log:               &config.LogConfig{Mode: 1, Level: 2, File: "data/logs/run.log"},
+		Telegram:          &config.TelegramConfig{Mode: 1},
+		LrcAPI:            &config.LrcAPIConfig{},
+		AI:                &config.AIConfig{},
+		N8NConfig:         &config.N8NConfig{Enable: true},
+		PlaylistOrganizer: &config.PlaylistOrganizerConfig{TidyPlaylist: []config.PlaylistInfo{{Name: "中文", Desc: "inline copy"}}},
+		QQMusicApiConfig:  &config.QQMusicApiConfig{},
+		AdditionalConfig:  &config.AdditionalConfig{MonitorDirs: []string{}},
+		ProxyConfig:       &config.ProxyConfig{},
 	}
 	SetWebConfig(cfg)
 	SetConfigFilePath(configPath)
@@ -205,8 +290,8 @@ n8n_config:
 	defer restore()
 
 	payload := saveCurrentConfigPayload(t, func(cfg map[string]any) {
-		n8n := cfg["n8n_config"].(map[string]any)
-		n8n["tidy_playlist"] = []any{
+		playlist := cfg["playlist_organizer"].(map[string]any)
+		playlist["tidy_playlist"] = []any{
 			map[string]any{"name": "sidecar one", "desc": "first"},
 			map[string]any{"name": "sidecar two", "desc": "second"},
 		}
@@ -231,7 +316,13 @@ n8n_config:
 	}
 	mainDoc := readMainConfigMap(t, configPath)
 	if _, exists := mainDoc["n8n_config"].(map[string]any)["tidy_playlist"]; exists {
-		t.Fatal("inline tidy_playlist must be removed after the first save")
+		t.Fatal("legacy inline tidy_playlist must be removed after the first save")
+	}
+	if _, exists := mainDoc["playlist_organizer"].(map[string]any)["tidy_playlist"]; exists {
+		t.Fatal("playlist options must stay in the sidecar after the first save")
+	}
+	if mainDoc["playlist_organizer"].(map[string]any)["playlist_assist"] != false {
+		t.Fatal("legacy playlist_assist must move under playlist_organizer")
 	}
 	if _, err := os.Stat(configPath + ".bak"); err != nil {
 		t.Fatalf("expected main config backup: %v", err)
@@ -250,14 +341,14 @@ n8n_config:
 	if err := json.Unmarshal(getRecorder.Body.Bytes(), &getResult); err != nil {
 		t.Fatal(err)
 	}
-	loaded := getResult.Data.Config["n8n_config"].(map[string]any)["tidy_playlist"].([]any)
+	loaded := getResult.Data.Config["playlist_organizer"].(map[string]any)["tidy_playlist"].([]any)
 	if len(loaded) != 2 || loaded[1].(map[string]any)["name"] != "sidecar two" {
 		t.Fatalf("reloaded config should show sidecar playlists: %#v", loaded)
 	}
 
 	payload = saveCurrentConfigPayload(t, func(cfg map[string]any) {
-		n8n := cfg["n8n_config"].(map[string]any)
-		n8n["tidy_playlist"] = []any{map[string]any{"name": "only", "desc": "second save"}}
+		playlist := cfg["playlist_organizer"].(map[string]any)
+		playlist["tidy_playlist"] = []any{map[string]any{"name": "only", "desc": "second save"}}
 	})
 	putRecorder = httptest.NewRecorder()
 	putContext, _ = gin.CreateTestContext(putRecorder)
@@ -271,7 +362,7 @@ n8n_config:
 	if err != nil || len(entries) != 1 || entries[0].Name != "only" {
 		t.Fatalf("second save did not replace sidecar: %#v err=%v", entries, err)
 	}
-	if mainDoc = readMainConfigMap(t, configPath); mainDoc["n8n_config"].(map[string]any)["tidy_playlist"] != nil {
+	if mainDoc = readMainConfigMap(t, configPath); mainDoc["playlist_organizer"].(map[string]any)["tidy_playlist"] != nil {
 		t.Fatal("repeated saves must not reintroduce inline playlists")
 	}
 }
@@ -289,18 +380,18 @@ func TestSystemConfigRollsBackSidecarWhenMainConfigWriteFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
-		ConfigFile:       configPath,
-		WebConfig:        &config.WebConfig{Enable: true, AppDomain: "localhost", AppPort: 8080, GinMode: "release"},
-		Tidy:             &config.TidyConfig{Mode: 1, DistDir: "data/dist"},
-		WebDAV:           &config.WebDAVConfig{},
-		Log:              &config.LogConfig{Mode: 1, Level: 2, File: "data/logs/run.log"},
-		Telegram:         &config.TelegramConfig{Mode: 1},
-		LrcAPI:           &config.LrcAPIConfig{},
-		AI:               &config.AIConfig{},
-		N8NConfig:        &config.N8NConfig{TidyPlaylist: []config.PlaylistInfo{{Name: "previous", Desc: "keep"}}},
-		QQMusicApiConfig: &config.QQMusicApiConfig{},
-		AdditionalConfig: &config.AdditionalConfig{MonitorDirs: []string{}},
-		ProxyConfig:      &config.ProxyConfig{},
+		ConfigFile:        configPath,
+		WebConfig:         &config.WebConfig{Enable: true, AppDomain: "localhost", AppPort: 8080, GinMode: "release"},
+		Tidy:              &config.TidyConfig{Mode: 1, DistDir: "data/dist"},
+		WebDAV:            &config.WebDAVConfig{},
+		Log:               &config.LogConfig{Mode: 1, Level: 2, File: "data/logs/run.log"},
+		Telegram:          &config.TelegramConfig{Mode: 1},
+		LrcAPI:            &config.LrcAPIConfig{},
+		AI:                &config.AIConfig{},
+		PlaylistOrganizer: &config.PlaylistOrganizerConfig{TidyPlaylist: []config.PlaylistInfo{{Name: "previous", Desc: "keep"}}},
+		QQMusicApiConfig:  &config.QQMusicApiConfig{},
+		AdditionalConfig:  &config.AdditionalConfig{MonitorDirs: []string{}},
+		ProxyConfig:       &config.ProxyConfig{},
 	}
 	SetWebConfig(cfg)
 	SetConfigFilePath(configPath)
@@ -309,7 +400,7 @@ func TestSystemConfigRollsBackSidecarWhenMainConfigWriteFails(t *testing.T) {
 	defer restore()
 
 	payload := saveCurrentConfigPayload(t, func(doc map[string]any) {
-		doc["n8n_config"] = map[string]any{"tidy_playlist": []any{map[string]any{"name": "replacement", "desc": "new"}}}
+		doc["playlist_organizer"] = map[string]any{"tidy_playlist": []any{map[string]any{"name": "replacement", "desc": "new"}}}
 	})
 	putRecorder := httptest.NewRecorder()
 	putContext, _ := gin.CreateTestContext(putRecorder)
@@ -412,7 +503,7 @@ func TestSystemConfigRemovesNewSidecarOnFailedFirstSave(t *testing.T) {
 	defer restore()
 
 	payload := saveCurrentConfigPayload(t, func(doc map[string]any) {
-		doc["n8n_config"] = map[string]any{"tidy_playlist": []any{map[string]any{"name": "new"}}}
+		doc["playlist_organizer"] = map[string]any{"tidy_playlist": []any{map[string]any{"name": "new"}}}
 	})
 	putRecorder := httptest.NewRecorder()
 	putContext, _ := gin.CreateTestContext(putRecorder)

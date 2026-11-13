@@ -97,6 +97,8 @@ const emit = defineEmits<{
 
 const secretKeys = new Set([
   'webdav_pass', 'cookiecloud_uuid', 'cookiecloud_key', 'bot_token', 'api_key',
+  'olivetin_password', 'navidrome_password',
+  'pinecone_api_key', 'embedding_api_key',
   'auth_token', 'webhook_url', 'proxy_pass', 'pass', 'password', 'token', 'secret', 'user', 'refresh_key', 'refresh_token',
   'access_token', 'music_id', 'str_music_id', 'open_id', 'union_id', 'music_key', 'history_dsn',
 ])
@@ -109,11 +111,17 @@ const labels: Record<string, string> = {
   music_mode: '视频链接转音乐', scheme: '代理协议', host: '代理主机', port: '代理端口', user: '代理用户名', pass: '代理密码', proxy: '代理',
   web_config: 'Web 服务', auth: 'WebUI 管理登录', username: '管理员用户名', password: '管理员密码',
   cookie_cloud: 'CookieCloud', webdav: 'WebDAV', log: '日志', telegram: 'Telegram',
-  lrc_api: 'LrcAPI', ai: 'AI', n8n_config: 'n8n', qq_music_api: 'QQ 音乐 API', additional_config: '附加功能',
+  lrc_api: 'LrcAPI', ai: 'AI', ai_playlist: 'AI 智能歌单生成', n8n_config: 'n8n', qq_music_api: 'QQ 音乐 API', additional_config: '附加功能',
   file: '日志文件', level: '日志等级', chat_id: 'Chat ID', allowed_users: '允许的用户', webhook_url: 'Webhook 地址',
   webhook_port: 'Webhook 端口', lrc_api_url: 'LrcAPI 地址', lrc_api_host: 'LrcAPI Host', base_url: '服务地址',
-  model: '模型', system_prompt: '系统提示词', n8n_base_url: 'n8n 地址', empty_trash_endpoint: '清空回收站端点',
-  ai_playlist_endpoint: 'AI 歌单端点', tidy_playlist_endpoint: '歌单整理端点', playlist_assist: '歌单分类增强',
+  model: '模型', system_prompt: '系统提示词', n8n_base_url: 'n8n 地址', playlist_assist: 'AI 预选分类',
+  api_key: 'API Key', music_rag_table_id: 'MusicRAG 数据表 ID',
+  playlist_organizer: '歌单整理服务', olivetin_url: 'OliveTin 地址', olivetin_username: 'OliveTin 用户名',
+  olivetin_password: 'OliveTin 密码', navidrome_url: 'Navidrome 地址', navidrome_username: 'Navidrome 用户名',
+  navidrome_password: 'Navidrome 密码', pinecone_host: 'Pinecone Index 地址', pinecone_api_key: 'Pinecone API Key',
+  pinecone_namespace: 'Pinecone Namespace', embedding_base_url: 'Embedding API 地址', embedding_api_key: 'Embedding API Key',
+  embedding_model: 'Embedding 模型', query_model: '检索意图模型', playlist_model: '歌单编排模型',
+  playlist_size: '歌单歌曲目标数', candidate_count: '检索候选数',
   tidy_playlist: '整理歌单', endpoint: 'API 地址', proxy_url: '下载代理', vip_level: '音质等级', login_type: '登录方式',
 }
 

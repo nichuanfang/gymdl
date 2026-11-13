@@ -17,6 +17,15 @@ func TestAISetDefaultsFillsAgentFields(t *testing.T) {
 	if c.AI.DefaultMode {
 		t.Fatal("AI mode must not default on")
 	}
+	if c.PlaylistOrganizer == nil || c.PlaylistOrganizer.OliveTinURL != "" || c.PlaylistOrganizer.NavidromeURL != "" {
+		t.Fatalf("unexpected playlist organizer defaults: %#v", c.PlaylistOrganizer)
+	}
+	if c.N8NConfig.APIKey != "" || c.N8NConfig.MusicRAGTableID != "" {
+		t.Fatalf("MusicRAG bridge must remain opt-in: %#v", c.N8NConfig)
+	}
+	if c.AIPlaylist == nil || c.AIPlaylist.PineconeNamespace != "data-music" || c.AIPlaylist.EmbeddingModel != "text-embedding-3-small" || c.AIPlaylist.PlaylistSize != 80 || c.AIPlaylist.CandidateCount != 150 {
+		t.Fatalf("unexpected AI playlist defaults: %#v", c.AIPlaylist)
+	}
 }
 
 func TestAISetDefaultsPreservesExplicitValues(t *testing.T) {
@@ -39,5 +48,20 @@ func TestAISetDefaultsPreservesExplicitValues(t *testing.T) {
 	}
 	if c.AI.MCPServers[0].TimeoutSeconds != 20 {
 		t.Fatalf("MCP timeout default = %d, want 20", c.AI.MCPServers[0].TimeoutSeconds)
+	}
+}
+
+func TestAIPlaylistSetDefaultsPreservesSecretsAndFillsLimits(t *testing.T) {
+	c := &Config{AIPlaylist: &AIPlaylistConfig{
+		PineconeHost:   "https://index.example",
+		PineconeAPIKey: "configured-secret",
+		PlaylistSize:   40,
+	}}
+	c.setDefaults()
+	if c.AIPlaylist.PineconeHost != "https://index.example" || c.AIPlaylist.PineconeAPIKey != "configured-secret" || c.AIPlaylist.PlaylistSize != 40 {
+		t.Fatalf("explicit AI playlist values overwritten: %#v", c.AIPlaylist)
+	}
+	if c.AIPlaylist.PineconeNamespace != "data-music" || c.AIPlaylist.EmbeddingModel != "text-embedding-3-small" || c.AIPlaylist.CandidateCount != 150 {
+		t.Fatalf("missing AI playlist defaults not filled: %#v", c.AIPlaylist)
 	}
 }

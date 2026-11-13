@@ -47,12 +47,30 @@ func LoadConfig(file string) *Config {
 			return
 		}
 
+		preferExplicitPlaylistConfig(bytes, c)
 		c.setDefaults()
 		applyPlaylistSidecar(file, c)
 		configCache = c
 	})
 
 	return configCache
+}
+
+func preferExplicitPlaylistConfig(data []byte, c *Config) {
+	if c == nil || c.N8NConfig == nil {
+		return
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(data, &doc); err != nil || doc == nil {
+		return
+	}
+	playlist, _ := doc["playlist_organizer"].(map[string]any)
+	if _, exists := playlist["playlist_assist"]; exists {
+		c.N8NConfig.PlaylistAssist = false
+	}
+	if _, exists := playlist["tidy_playlist"]; exists {
+		c.N8NConfig.TidyPlaylist = nil
+	}
 }
 
 // applyPlaylistSidecar overlays config.playlists.yaml when it is present.
@@ -217,17 +235,66 @@ func (c *Config) setDefaults() {
 			LrcApiHost: "",
 		}
 	}
+	if c.AIPlaylist == nil {
+		c.AIPlaylist = &AIPlaylistConfig{
+			PineconeHost:      "",
+			PineconeAPIKey:    "",
+			PineconeNamespace: "data-music",
+			EmbeddingBaseURL:  "",
+			EmbeddingAPIKey:   "",
+			EmbeddingModel:    "text-embedding-3-small",
+			QueryModel:        "",
+			PlaylistModel:     "",
+			PlaylistSize:      80,
+			CandidateCount:    150,
+		}
+	} else {
+		if c.AIPlaylist.PineconeNamespace == "" {
+			c.AIPlaylist.PineconeNamespace = "data-music"
+		}
+		if c.AIPlaylist.EmbeddingModel == "" {
+			c.AIPlaylist.EmbeddingModel = "text-embedding-3-small"
+		}
+		if c.AIPlaylist.PlaylistSize <= 0 {
+			c.AIPlaylist.PlaylistSize = 80
+		}
+		if c.AIPlaylist.CandidateCount <= 0 {
+			c.AIPlaylist.CandidateCount = 150
+		}
+	}
 	if c.N8NConfig == nil {
 		c.N8NConfig = &N8NConfig{
-			Enable:               false,
-			N8NBaseUrl:           "",
-			AuthToken:            "",
-			EmptyTrashEndpoint:   "",
-			AIPlaylistEndpoint:   "",
-			TidyPlaylistEndpoint: "",
-			PlaylistAssist:       false,
-			TidyPlaylist:         make([]PlaylistInfo, 0),
+			Enable:          false,
+			N8NBaseUrl:      "",
+			APIKey:          "",
+			MusicRAGTableID: "",
+			PlaylistAssist:  false,
+			TidyPlaylist:    make([]PlaylistInfo, 0),
 		}
+	}
+	if c.PlaylistOrganizer == nil {
+		c.PlaylistOrganizer = &PlaylistOrganizerConfig{
+			OliveTinURL:       "",
+			OliveTinUsername:  "",
+			OliveTinPassword:  "",
+			NavidromeURL:      "",
+			NavidromeUsername: "",
+			NavidromePassword: "",
+			PlaylistAssist:    false,
+			TidyPlaylist:      make([]PlaylistInfo, 0),
+		}
+	} else if c.PlaylistOrganizer.TidyPlaylist == nil {
+		c.PlaylistOrganizer.TidyPlaylist = make([]PlaylistInfo, 0)
+	}
+	if c.N8NConfig != nil {
+		if !c.PlaylistOrganizer.PlaylistAssist && c.N8NConfig.PlaylistAssist {
+			c.PlaylistOrganizer.PlaylistAssist = true
+		}
+		if len(c.PlaylistOrganizer.TidyPlaylist) == 0 && len(c.N8NConfig.TidyPlaylist) > 0 {
+			c.PlaylistOrganizer.TidyPlaylist = append([]PlaylistInfo(nil), c.N8NConfig.TidyPlaylist...)
+		}
+		c.N8NConfig.PlaylistAssist = false
+		c.N8NConfig.TidyPlaylist = nil
 	}
 	if c.AdditionalConfig == nil {
 		c.AdditionalConfig = &AdditionalConfig{
