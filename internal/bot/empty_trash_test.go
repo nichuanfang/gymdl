@@ -8,9 +8,36 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nichuanfang/gymdl/config"
+	tb "gopkg.in/telebot.v4"
 )
+
+type emptyTrashCallbackTestContext struct {
+	tb.Context
+	args     []string
+	sender   *tb.User
+	callback *tb.Callback
+	response int
+	edited   interface{}
+}
+
+func (c *emptyTrashCallbackTestContext) Args() []string { return c.args }
+
+func (c *emptyTrashCallbackTestContext) Sender() *tb.User { return c.sender }
+
+func (c *emptyTrashCallbackTestContext) Callback() *tb.Callback { return c.callback }
+
+func (c *emptyTrashCallbackTestContext) Respond(...*tb.CallbackResponse) error {
+	c.response++
+	return nil
+}
+
+func (c *emptyTrashCallbackTestContext) Edit(what interface{}, _ ...interface{}) error {
+	c.edited = what
+	return nil
+}
 
 func TestEmptyTrashDeletesFilesStateRowsAndVectors(t *testing.T) {
 	deletedFiles := make([]string, 0, 2)
@@ -108,7 +135,11 @@ func TestEmptyTrashDeletesFilesStateRowsAndVectors(t *testing.T) {
 	defer server.Close()
 
 	service := testEmptyTrashService(t, server)
-	result := service.run(t.Context(), nil)
+	approvedPlan, err := service.prepare(t.Context())
+	if err != nil {
+		t.Fatalf("prepare confirmation preview: %v", err)
+	}
+	result := service.runConfirmed(t.Context(), approvedPlan, nil)
 	if result.FileError != nil || result.StateError != nil || result.VectorError != nil {
 		t.Fatalf("unexpected cleanup failure: %#v", result)
 	}
@@ -118,7 +149,7 @@ func TestEmptyTrashDeletesFilesStateRowsAndVectors(t *testing.T) {
 	if !reflect.DeepEqual(deletedFiles, []string{"album/one.flac", "album/two.flac"}) {
 		t.Fatalf("unexpected deleted paths: %#v", deletedFiles)
 	}
-	if statePreflightCalls != 1 || pineconePreflightCalls != 1 || !reflect.DeepEqual(stateIDs, []string{"song1", "song2"}) || !reflect.DeepEqual(vectorIDs, []string{"song1", "song2"}) {
+	if statePreflightCalls != 2 || pineconePreflightCalls != 2 || !reflect.DeepEqual(stateIDs, []string{"song1", "song2"}) || !reflect.DeepEqual(vectorIDs, []string{"song1", "song2"}) {
 		t.Fatalf("unexpected cleanup IDs: state=%#v vectors=%#v", stateIDs, vectorIDs)
 	}
 	if !strings.Contains(formatEmptyTrashResult(result), "共删除 2 首歌曲") {
@@ -164,15 +195,24 @@ func TestEmptyTrashReportsFileFailureAfterCleaningIndexes(t *testing.T) {
 	}))
 	defer server.Close()
 
-	result := testEmptyTrashService(t, server).run(t.Context(), nil)
-	if result.FileError == nil || result.FilesDeleted != 1 {
-		t.Fatalf("expected one deleted file and a fatal file error: %#v", result)
+	service := testEmptyTrashService(t, server)
+	firstResult := service.run(t.Context(), nil)
+	if firstResult.FileError == nil || firstResult.FilesDeleted != 1 {
+		t.Fatalf("expected one deleted file and a fatal file error: %#v", firstResult)
 	}
-	if actualCleanupCalls != 2 || !result.StateRowsClean || !result.VectorsDeleted {
-		t.Fatalf("indexes should be cleared before physical file deletion: calls=%d result=%#v", actualCleanupCalls, result)
+	if actualCleanupCalls != 2 || !firstResult.StateRowsClean || !firstResult.VectorsDeleted {
+		t.Fatalf("indexes should be cleared before physical file deletion: calls=%d result=%#v", actualCleanupCalls, firstResult)
 	}
-	if !strings.Contains(formatEmptyTrashResult(result), "已删除 1/2 个文件") || !strings.Contains(formatEmptyTrashResult(result), "状态和 Pinecone 已清理") {
-		t.Fatalf("partial deletion must be reported: %q", formatEmptyTrashResult(result))
+	if !strings.Contains(formatEmptyTrashResult(firstResult), "已删除 1/2 个文件") || !strings.Contains(formatEmptyTrashResult(firstResult), "状态和 Pinecone 已清理") || !strings.Contains(formatEmptyTrashResult(firstResult), "可安全重试") {
+		t.Fatalf("partial deletion must be reported as retryable: %q", formatEmptyTrashResult(firstResult))
+	}
+
+	secondResult := service.run(t.Context(), nil)
+	if secondResult.FileError != nil || secondResult.FilesDeleted != 2 || !secondResult.StateRowsClean || !secondResult.VectorsDeleted {
+		t.Fatalf("retry after a partial file deletion should finish safely: %#v", secondResult)
+	}
+	if actualCleanupCalls != 4 {
+		t.Fatalf("retry should repeat the idempotent index cleanup, got %d mutation calls", actualCleanupCalls)
 	}
 }
 
@@ -237,6 +277,64 @@ func TestEmptyTrashPreflightStopsBeforeFileDeletionWhenPineconeUnavailable(t *te
 	result := testEmptyTrashService(t, server).run(t.Context(), nil)
 	if result.PreflightError == nil || fileDeleteCalls != 0 || actualStateDeletes != 0 {
 		t.Fatalf("Pinecone preflight failure should prevent mutations: result=%#v files=%d rows=%d", result, fileDeleteCalls, actualStateDeletes)
+	}
+}
+
+func TestEmptyTrashConfirmationStopsWhenQueueChanges(t *testing.T) {
+	stateDryRuns := 0
+	stateDeletes := 0
+	vectorDeletes := 0
+	fileDeletes := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/StartActionAndWait":
+			var request oliveTinActionRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode OliveTin request: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			switch request.ActionID {
+			case "playlist_tracks":
+				writeJSON(t, w, map[string]any{"logEntry": map[string]any{"exitCode": 0, "stdout": `[{"playlist_name":"回收站","track_ids":["new-song"],"file_paths":["album/new.flac"],"track_count":1}]`, "timedOut": false}})
+			case "delete_music_file":
+				fileDeletes++
+				writeJSON(t, w, map[string]any{"logEntry": map[string]any{"exitCode": 0, "stdout": "", "timedOut": false}})
+			default:
+				t.Errorf("unexpected OliveTin action: %q", request.ActionID)
+				w.WriteHeader(http.StatusBadRequest)
+			}
+		case "/api/v1/data-tables/table123/rows/delete":
+			if r.URL.Query().Get("dryRun") == "true" {
+				stateDryRuns++
+			} else {
+				stateDeletes++
+			}
+			writeJSON(t, w, map[string]any{"success": true})
+		case "/describe_index_stats":
+			writeJSON(t, w, map[string]any{"dimension": vectorDimensions, "namespaces": map[string]any{}})
+		case "/vectors/delete":
+			vectorDeletes++
+			writeJSON(t, w, map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	service := testEmptyTrashService(t, server)
+	approvedPlan := emptyTrashPlan{
+		snapshot: emptyTrashSnapshot{PlaylistName: "回收站", TrackCount: 1},
+		ids:      []string{"old-song"},
+		paths:    []string{"album/old.flac"},
+	}
+	result := service.runConfirmed(t.Context(), approvedPlan, nil)
+	if result.PreflightError == nil || !strings.Contains(result.PreflightError.Error(), "内容发生变化") {
+		t.Fatalf("changed trash contents should invalidate confirmation: %#v", result)
+	}
+	if stateDryRuns != 1 || stateDeletes != 0 || vectorDeletes != 0 || fileDeletes != 0 {
+		t.Fatalf("changed queue caused deletion: dryRuns=%d state=%d vectors=%d files=%d", stateDryRuns, stateDeletes, vectorDeletes, fileDeletes)
 	}
 }
 
@@ -329,15 +427,144 @@ func TestEmptyTrashMetadataCleanupFailuresStopBeforeFileDeletion(t *testing.T) {
 			}
 			switch failurePoint {
 			case "state-delete":
-				if result.StateError == nil || result.VectorError != nil || stateDeleteCalls != 1 || vectorDeleteCalls != 0 {
+				if result.StateError == nil || result.VectorError != nil || stateDeleteCalls != 1 || vectorDeleteCalls != 1 || !result.VectorsDeleted {
 					t.Fatalf("unexpected MusicRAG delete failure state: %#v state=%d vectors=%d", result, stateDeleteCalls, vectorDeleteCalls)
 				}
 			case "vector-delete":
-				if result.StateError != nil || result.VectorError == nil || stateDeleteCalls != 1 || vectorDeleteCalls != 1 {
+				if result.StateError != nil || result.VectorError == nil || stateDeleteCalls != 0 || vectorDeleteCalls != 1 || result.VectorsDeleted {
 					t.Fatalf("unexpected Pinecone delete failure state: %#v state=%d vectors=%d", result, stateDeleteCalls, vectorDeleteCalls)
 				}
 			}
 		})
+	}
+}
+
+func TestEmptyTrashConfirmationMarkupAndPlanMatching(t *testing.T) {
+	const token = "1234567890abcdef1234567890abcdef"
+	markup := emptyTrashConfirmationMarkup(token)
+	if len(markup.InlineKeyboard) != 1 || len(markup.InlineKeyboard[0]) != 2 {
+		t.Fatalf("confirmation markup = %#v, want confirm and cancel buttons", markup.InlineKeyboard)
+	}
+	for _, button := range markup.InlineKeyboard[0] {
+		if callbackLength := len(button.Unique) + 1 + len(button.Data); callbackLength > 64 {
+			t.Errorf("callback payload is %d bytes; Telegram allows at most 64", callbackLength)
+		}
+	}
+	if markup.InlineKeyboard[0][0].Unique != emptyTrashCallbackUnique || !strings.HasPrefix(markup.InlineKeyboard[0][0].Data, "confirm|") {
+		t.Fatalf("unexpected confirm callback: %#v", markup.InlineKeyboard[0][0])
+	}
+	if markup.InlineKeyboard[0][1].Unique != emptyTrashCallbackUnique || !strings.HasPrefix(markup.InlineKeyboard[0][1].Data, "cancel|") {
+		t.Fatalf("unexpected cancel callback: %#v", markup.InlineKeyboard[0][1])
+	}
+
+	first := emptyTrashPlan{snapshot: emptyTrashSnapshot{TrackCount: 2}, ids: []string{"a", "b"}, paths: []string{"a.flac", "b.flac"}}
+	sameContentDifferentOrder := emptyTrashPlan{snapshot: emptyTrashSnapshot{TrackCount: 2}, ids: []string{"b", "a"}, paths: []string{"b.flac", "a.flac"}}
+	changedPath := emptyTrashPlan{snapshot: emptyTrashSnapshot{TrackCount: 2}, ids: []string{"a", "b"}, paths: []string{"changed.flac", "b.flac"}}
+	if !sameEmptyTrashPlan(first, sameContentDifferentOrder) {
+		t.Fatal("song order changes must not invalidate an otherwise identical confirmation")
+	}
+	if sameEmptyTrashPlan(first, changedPath) {
+		t.Fatal("changed song paths must invalidate the confirmation")
+	}
+}
+
+func TestEmptyTrashCallbackMustMatchOriginatingMessage(t *testing.T) {
+	pending := pendingEmptyTrash{
+		chatID:  10,
+		message: &tb.Message{ID: 42, Chat: &tb.Chat{ID: 10}},
+	}
+	valid := &tb.Callback{Message: &tb.Message{ID: 42, Chat: &tb.Chat{ID: 10}}}
+	wrongMessage := &tb.Callback{Message: &tb.Message{ID: 43, Chat: &tb.Chat{ID: 10}}}
+	wrongChat := &tb.Callback{Message: &tb.Message{ID: 42, Chat: &tb.Chat{ID: 11}}}
+	if !emptyTrashCallbackMatches(valid, pending) {
+		t.Fatal("callback from the preview message should match")
+	}
+	if emptyTrashCallbackMatches(wrongMessage, pending) || emptyTrashCallbackMatches(wrongChat, pending) || emptyTrashCallbackMatches(nil, pending) {
+		t.Fatal("callback from another message or chat must be rejected")
+	}
+}
+
+func TestEmptyTrashCallbackCancelDoesNotStartDeletion(t *testing.T) {
+	app := &BotApp{}
+	message := &tb.Message{ID: 42, Chat: &tb.Chat{ID: 10}}
+	pending := pendingEmptyTrash{token: "token", chatID: 10, userID: 20, message: message, expiresAt: time.Now().Add(time.Minute)}
+	if !app.registerPendingEmptyTrash(pending) {
+		t.Fatal("failed to register pending confirmation")
+	}
+	ctx := &emptyTrashCallbackTestContext{
+		args:     []string{"cancel", "token"},
+		sender:   &tb.User{ID: 20},
+		callback: &tb.Callback{Message: message},
+	}
+	if err := app.HandleEmptyTrashCallback(ctx); err != nil {
+		t.Fatalf("cancel callback failed: %v", err)
+	}
+	if _, ok := app.getPendingEmptyTrash("token"); ok {
+		t.Fatal("cancelled confirmation remained pending")
+	}
+	if len(app.emptyTrashRunning) != 0 {
+		t.Fatal("cancel callback started an empty-trash run")
+	}
+	if ctx.edited != "已取消清空回收站。" || ctx.response != 1 {
+		t.Fatalf("unexpected cancel response/edit: response=%d edited=%v", ctx.response, ctx.edited)
+	}
+}
+
+func TestEmptyTrashCallbackRejectsAnotherUser(t *testing.T) {
+	app := &BotApp{}
+	message := &tb.Message{ID: 42, Chat: &tb.Chat{ID: 10}}
+	if !app.registerPendingEmptyTrash(pendingEmptyTrash{token: "token", chatID: 10, userID: 20, message: message, expiresAt: time.Now().Add(time.Minute)}) {
+		t.Fatal("failed to register pending confirmation")
+	}
+	ctx := &emptyTrashCallbackTestContext{
+		args:     []string{"confirm", "token"},
+		sender:   &tb.User{ID: 99},
+		callback: &tb.Callback{Message: message},
+	}
+	if err := app.HandleEmptyTrashCallback(ctx); err != nil {
+		t.Fatalf("unauthorized callback handling failed: %v", err)
+	}
+	if ctx.response != 1 || ctx.edited != nil || len(app.emptyTrashRunning) != 0 {
+		t.Fatalf("unauthorized callback changed state: response=%d edited=%v running=%v", ctx.response, ctx.edited, app.emptyTrashRunning)
+	}
+	if _, ok := app.getPendingEmptyTrash("token"); !ok {
+		t.Fatal("unauthorized callback consumed the pending confirmation")
+	}
+}
+
+func TestPendingEmptyTrashIsScopedAndExpires(t *testing.T) {
+	app := &BotApp{}
+	now := time.Now()
+	first := pendingEmptyTrash{token: "first", chatID: 10, userID: 20, expiresAt: now.Add(time.Minute)}
+	if !app.registerPendingEmptyTrash(first) {
+		t.Fatal("expected first pending confirmation to register")
+	}
+	if !app.claimPendingEmptyTrash("first") {
+		t.Fatal("first confirmation claim should succeed")
+	}
+	if app.claimPendingEmptyTrash("first") {
+		t.Fatal("duplicate confirmation claim must not succeed")
+	}
+	if _, ok := app.takePendingEmptyTrash("first"); ok {
+		t.Fatal("processing confirmation must not be cancelled")
+	}
+	app.releasePendingEmptyTrash("first")
+	if app.registerPendingEmptyTrash(pendingEmptyTrash{token: "second", chatID: 10, expiresAt: now.Add(time.Minute)}) {
+		t.Fatal("same chat should not have multiple pending confirmations")
+	}
+	if !app.registerPendingEmptyTrash(pendingEmptyTrash{token: "third", chatID: 11, expiresAt: now.Add(time.Minute)}) {
+		t.Fatal("different chats should have independent pending confirmations")
+	}
+	if !app.hasPendingEmptyTrash(10) || !app.hasPendingEmptyTrash(11) {
+		t.Fatal("registered confirmations were not found")
+	}
+	app.emptyTrashMu.Lock()
+	pending := app.emptyTrashPending["first"]
+	pending.expiresAt = now.Add(-time.Second)
+	app.emptyTrashPending["first"] = pending
+	app.emptyTrashMu.Unlock()
+	if app.hasPendingEmptyTrash(10) {
+		t.Fatal("expired confirmation must not block a new request")
 	}
 }
 

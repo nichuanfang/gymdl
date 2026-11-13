@@ -42,6 +42,7 @@ type BotApp struct {
 	aiPlaylistRunning        map[int64]struct{}
 	emptyTrashMu             sync.Mutex
 	emptyTrashRunning        map[int64]struct{}
+	emptyTrashPending        map[string]pendingEmptyTrash
 }
 
 // NewBotApp 创建机器人
@@ -114,6 +115,7 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 		aiBatchRunning:           make(map[int64]struct{}),
 		aiPlaylistRunning:        make(map[int64]struct{}),
 		emptyTrashRunning:        make(map[int64]struct{}),
+		emptyTrashPending:        make(map[string]pendingEmptyTrash),
 	}
 	app.initAI()
 	//注册处理器

@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	aiPlaylistRunTimeout = 10 * time.Minute
-	vectorDimensions     = 1536
+	aiPlaylistRunTimeout       = 10 * time.Minute
+	vectorDimensions           = 1536
+	staleVectorDeleteBatchSize = 1000
 )
 
 type aiPlaylist struct {
@@ -63,6 +64,7 @@ type aiPlaylistRunResult struct {
 type aiPlaylistResult struct {
 	Name         string
 	Count        int
+	Preserved    int
 	Intro        string
 	UsedFallback bool
 }
@@ -76,6 +78,7 @@ type aiPlaylistService struct {
 	config          *config.AIPlaylistConfig
 	aiConfig        *config.AIConfig
 	organizer       *playlistOrganizerService
+	resumeStore     aiPlaylistResumeStore
 	stateTable      *musicRAGSink
 	chatClient      *openai.Client
 	embeddingClient *openai.Client
@@ -129,6 +132,10 @@ func newAIPlaylistService(cfg *config.Config) (*aiPlaylistService, error) {
 		return nil, err
 	}
 	service.stateTable = newMusicRAGSink(cfg.N8NConfig, client)
+	service.resumeStore, err = openAIPlaylistResumeStore("data/gymdl.sqlite3")
+	if err != nil {
+		return nil, fmt.Errorf("AI 歌单续跑存储初始化失败: %w", err)
+	}
 	return service, nil
 }
 
@@ -182,6 +189,10 @@ func validatePineconeHost(raw string) (string, error) {
 
 func (s *aiPlaylistService) run(ctx context.Context, progress func(string)) aiPlaylistRunResult {
 	result := aiPlaylistRunResult{}
+	if s.resumeStore == nil {
+		result.Failed = append(result.Failed, aiPlaylistFailure{Name: "AI 歌单恢复状态", Err: errors.New("续跑状态存储未初始化")})
+		return result
+	}
 	playlists, err := s.organizer.aiPlaylists(ctx)
 	if err != nil {
 		result.Failed = append(result.Failed, aiPlaylistFailure{Name: "读取 [AI] 歌单", Err: err})
@@ -191,66 +202,211 @@ func (s *aiPlaylistService) run(ctx context.Context, progress func(string)) aiPl
 		result.NoPlaylists = true
 		return result
 	}
-	empty := make([]aiPlaylist, 0, len(playlists))
+	work := make([]aiPlaylist, 0, len(playlists))
+	pending := make(map[string]*aiPlaylistResumePlan, len(playlists))
 	for _, playlist := range playlists {
-		if playlist.SongCount == 0 {
-			empty = append(empty, playlist)
+		plan, err := s.resumeStore.Load(ctx, playlist.ID)
+		if err != nil {
+			result.Failed = append(result.Failed, aiPlaylistFailure{Name: playlist.Name, Err: fmt.Errorf("读取续跑状态失败: %w", err)})
+			return result
+		}
+		if plan != nil || playlist.SongCount == 0 {
+			work = append(work, playlist)
+			pending[playlist.ID] = plan
 		}
 	}
-	if len(empty) == 0 {
+	if len(work) == 0 {
 		result.NoEmpty = true
 		return result
 	}
 
-	for index, playlist := range empty {
+	for index, playlist := range work {
 		if progress != nil {
-			progress(fmt.Sprintf("🤖 AI 智能歌单（%d/%d）\n正在整理「%s」…", index+1, len(empty), playlist.Name))
+			progress(fmt.Sprintf("🤖 AI 智能歌单（%d/%d）\n正在整理「%s」…", index+1, len(work), playlist.Name))
 		}
-		if strings.TrimSpace(playlist.Description) == "" {
-			result.Failed = append(result.Failed, aiPlaylistFailure{Name: playlist.Name, Err: errors.New("歌单备注为空，请写明希望生成的音乐主题")})
-			continue
-		}
-		candidates, err := s.retrieveCandidates(ctx, playlist.Description)
+		playlistResult, err := s.processAIPlaylist(ctx, playlist, pending[playlist.ID])
 		if err != nil {
 			result.Failed = append(result.Failed, aiPlaylistFailure{Name: playlist.Name, Err: err})
 			continue
 		}
-		if len(candidates) == 0 {
-			result.Failed = append(result.Failed, aiPlaylistFailure{Name: playlist.Name, Err: errors.New("Pinecone 没有返回可用的在库歌曲")})
-			continue
-		}
-		plan, usedFallback, err := s.planPlaylistOrFallback(ctx, playlist.Description, candidates)
-		if err != nil {
-			result.Failed = append(result.Failed, aiPlaylistFailure{Name: playlist.Name, Err: err})
-			continue
-		}
-		ids := make([]string, 0, len(plan.Playlist))
-		for _, item := range plan.Playlist {
-			ids = append(ids, item.ID)
-		}
-		if err := s.organizer.addSongsToAIPlaylist(ctx, playlist.ID, ids); err != nil {
-			result.Failed = append(result.Failed, aiPlaylistFailure{Name: playlist.Name, Err: err})
-			continue
-		}
-		updated, err := s.organizer.aiPlaylists(ctx)
-		if err != nil {
-			result.Failed = append(result.Failed, aiPlaylistFailure{Name: playlist.Name, Err: fmt.Errorf("歌单已写入，但无法复核结果: %w", err)})
-			continue
-		}
-		verified := false
-		for _, current := range updated {
-			if current.ID == playlist.ID && current.SongCount == len(ids) {
-				verified = true
-				break
-			}
-		}
-		if !verified {
-			result.Failed = append(result.Failed, aiPlaylistFailure{Name: playlist.Name, Err: fmt.Errorf("Navidrome 歌曲数复核不一致，期望 %d 首", len(ids))})
-			continue
-		}
-		result.Succeeded = append(result.Succeeded, aiPlaylistResult{Name: playlist.Name, Count: len(ids), Intro: plan.Intro, UsedFallback: usedFallback})
+		result.Succeeded = append(result.Succeeded, playlistResult)
 	}
 	return result
+}
+
+func (s *aiPlaylistService) close() error {
+	if s == nil || s.resumeStore == nil {
+		return nil
+	}
+	return s.resumeStore.Close()
+}
+
+type aiPlaylistTrackSnapshot struct {
+	IDs   []string
+	Count int
+}
+
+func (s *aiPlaylistService) processAIPlaylist(ctx context.Context, playlist aiPlaylist, saved *aiPlaylistResumePlan) (aiPlaylistResult, error) {
+	var before *aiPlaylistTrackSnapshot
+	if saved != nil {
+		snapshot, err := s.readAIPlaylistTracks(ctx, playlist)
+		if err != nil {
+			return aiPlaylistResult{}, fmt.Errorf("读取现有歌单歌曲失败: %w", err)
+		}
+		before = &snapshot
+		if strings.TrimSpace(saved.Description) != strings.TrimSpace(playlist.Description) {
+			if snapshot.Count > 0 {
+				return aiPlaylistResult{}, errors.New("歌单备注已变更，旧计划未执行；请先清空该歌单中的曲目后再重新生成，以避免混入旧主题歌曲")
+			}
+			if err := s.resumeStore.Delete(ctx, playlist.ID); err != nil {
+				return aiPlaylistResult{}, fmt.Errorf("删除已过期的续跑计划失败: %w", err)
+			}
+			saved = nil
+			before = nil
+		}
+	}
+
+	plan := saved
+	if plan == nil {
+		description := strings.TrimSpace(playlist.Description)
+		if description == "" {
+			return aiPlaylistResult{}, errors.New("歌单备注为空，请写明希望生成的音乐主题")
+		}
+		candidates, err := s.retrieveCandidates(ctx, description)
+		if err != nil {
+			return aiPlaylistResult{}, err
+		}
+		if len(candidates) == 0 {
+			return aiPlaylistResult{}, errors.New("Pinecone 没有返回可用的在库歌曲")
+		}
+		playlistPlan, usedFallback, err := s.planPlaylistOrFallback(ctx, description, candidates)
+		if err != nil {
+			return aiPlaylistResult{}, err
+		}
+		ids := make([]string, 0, len(playlistPlan.Playlist))
+		for _, item := range playlistPlan.Playlist {
+			ids = append(ids, item.ID)
+		}
+		plan = &aiPlaylistResumePlan{
+			PlaylistID:   playlist.ID,
+			Description:  description,
+			SongIDs:      ids,
+			Intro:        playlistPlan.Intro,
+			UsedFallback: usedFallback,
+		}
+		if err := s.resumeStore.Create(ctx, *plan); err != nil {
+			return aiPlaylistResult{}, fmt.Errorf("保存续跑计划失败，未修改歌单: %w", err)
+		}
+	}
+
+	toAdd := plan.SongIDs
+	if before != nil {
+		toAdd = missingAIPlaylistSongIDs(plan.SongIDs, before.IDs)
+	}
+	var addErr error
+	if len(toAdd) > 0 {
+		addErr = s.organizer.addSongsToAIPlaylist(ctx, playlist.ID, toAdd)
+	}
+	verified, err := s.readAIPlaylistTracks(ctx, playlist)
+	if err != nil {
+		if addErr != nil {
+			return aiPlaylistResult{}, fmt.Errorf("Navidrome 写入结果无法复核（%v）；续跑计划已保留: %w", addErr, err)
+		}
+		return aiPlaylistResult{}, fmt.Errorf("Navidrome 歌曲写入后无法复核；续跑计划已保留: %w", err)
+	}
+	missing := missingAIPlaylistSongIDs(plan.SongIDs, verified.IDs)
+	if len(missing) > 0 {
+		if addErr != nil {
+			return aiPlaylistResult{}, fmt.Errorf("添加歌曲失败，仍缺少 %d 首；续跑计划已保存，可重试: %w", len(missing), addErr)
+		}
+		return aiPlaylistResult{}, fmt.Errorf("Navidrome 歌曲写入复核不完整，仍缺少 %d 首；续跑计划已保存", len(missing))
+	}
+	if err := s.resumeStore.Delete(ctx, playlist.ID); err != nil {
+		return aiPlaylistResult{}, fmt.Errorf("歌单已写入并复核，但删除续跑计划失败；再次运行可安全确认: %w", err)
+	}
+
+	plannedIDs := make(map[string]struct{}, len(plan.SongIDs))
+	for _, id := range plan.SongIDs {
+		plannedIDs[id] = struct{}{}
+	}
+	preserved := 0
+	for _, id := range verified.IDs {
+		if _, generated := plannedIDs[id]; !generated {
+			preserved++
+		}
+	}
+	return aiPlaylistResult{
+		Name:         playlist.Name,
+		Count:        len(plan.SongIDs),
+		Preserved:    preserved,
+		Intro:        plan.Intro,
+		UsedFallback: plan.UsedFallback,
+	}, nil
+}
+
+func (s *aiPlaylistService) readAIPlaylistTracks(ctx context.Context, playlist aiPlaylist) (aiPlaylistTrackSnapshot, error) {
+	output, err := s.organizer.runOliveTinAction(ctx, oliveTinActionRequest{
+		ActionID:  "playlist_tracks",
+		Arguments: []oliveTinArgument{{Name: "playlistName", Value: escapeOliveTinSQLiteString(playlist.Name)}},
+	})
+	if err != nil {
+		return aiPlaylistTrackSnapshot{}, err
+	}
+	output = strings.TrimSpace(output)
+	if output == "" || output == "[]" || output == "null" {
+		return aiPlaylistTrackSnapshot{}, errors.New("OliveTin 未返回该歌单")
+	}
+	var rows []struct {
+		PlaylistID   string          `json:"playlist_id"`
+		PlaylistName string          `json:"playlist_name"`
+		TrackIDs     json.RawMessage `json:"track_ids"`
+		TrackCount   int             `json:"track_count"`
+	}
+	if err := json.Unmarshal([]byte(output), &rows); err != nil {
+		return aiPlaylistTrackSnapshot{}, fmt.Errorf("解析歌单歌曲失败: %w", err)
+	}
+	if len(rows) != 1 || rows[0].PlaylistID != playlist.ID || rows[0].PlaylistName != playlist.Name || rows[0].TrackCount < 0 {
+		return aiPlaylistTrackSnapshot{}, errors.New("OliveTin 返回的歌单身份或歌曲数量无效")
+	}
+	var rawIDs []json.RawMessage
+	if len(rows[0].TrackIDs) > 0 && string(rows[0].TrackIDs) != "null" {
+		if err := json.Unmarshal(rows[0].TrackIDs, &rawIDs); err != nil {
+			return aiPlaylistTrackSnapshot{}, fmt.Errorf("解析歌单歌曲 ID 列表失败: %w", err)
+		}
+	}
+	snapshot := aiPlaylistTrackSnapshot{IDs: make([]string, 0, len(rawIDs)), Count: rows[0].TrackCount}
+	for _, rawID := range rawIDs {
+		if string(rawID) == "null" && snapshot.Count == 0 {
+			continue
+		}
+		var id string
+		if err := json.Unmarshal(rawID, &id); err != nil || !safeNavidromeID(id) {
+			return aiPlaylistTrackSnapshot{}, errors.New("OliveTin 返回了无效歌曲 ID")
+		}
+		snapshot.IDs = append(snapshot.IDs, id)
+	}
+	if len(snapshot.IDs) != snapshot.Count {
+		return aiPlaylistTrackSnapshot{}, fmt.Errorf("歌单歌曲数量不一致：track_count=%d, track_ids=%d", snapshot.Count, len(snapshot.IDs))
+	}
+	return snapshot, nil
+}
+
+func escapeOliveTinSQLiteString(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
+}
+
+func missingAIPlaylistSongIDs(planned, current []string) []string {
+	present := make(map[string]struct{}, len(current))
+	for _, id := range current {
+		present[id] = struct{}{}
+	}
+	missing := make([]string, 0, len(planned))
+	for _, id := range planned {
+		if _, exists := present[id]; !exists {
+			missing = append(missing, id)
+		}
+	}
+	return missing
 }
 
 func (s *aiPlaylistService) retrieveCandidates(ctx context.Context, description string) ([]aiPlaylistCandidate, error) {
@@ -390,15 +546,31 @@ func (s *aiPlaylistService) queryPinecone(ctx context.Context, vector []float32)
 }
 
 func (s *aiPlaylistService) deleteStaleVectors(ctx context.Context, missing map[string]struct{}) error {
+	if len(missing) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(missing))
 	for id := range missing {
+		if !safeNavidromeID(id) {
+			return errors.New("失效歌曲包含无效 Navidrome ID，已停止删除 Pinecone 向量")
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	endpoint, err := url.JoinPath(s.pineconeHost, "vectors", "delete")
+	if err != nil {
+		return fmt.Errorf("构造 Pinecone 删除地址失败: %w", err)
+	}
+	batchCount := (len(ids) + staleVectorDeleteBatchSize - 1) / staleVectorDeleteBatchSize
+	for start, batch := 0, 1; start < len(ids); start, batch = start+staleVectorDeleteBatchSize, batch+1 {
+		end := start + staleVectorDeleteBatchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
 		body, err := json.Marshal(map[string]any{
 			"namespace": s.config.PineconeNamespace,
-			"filter":    map[string]any{"id": map[string]any{"$eq": id}},
+			"filter":    map[string]any{"id": map[string]any{"$in": ids[start:end]}},
 		})
-		if err != nil {
-			return err
-		}
-		endpoint, err := url.JoinPath(s.pineconeHost, "vectors", "delete")
 		if err != nil {
 			return err
 		}
@@ -408,10 +580,10 @@ func (s *aiPlaylistService) deleteStaleVectors(ctx context.Context, missing map[
 			"X-Pinecone-Api-Version": "2025-04",
 		}, "", "")
 		if err != nil {
-			return fmt.Errorf("删除失效歌曲向量 %s 失败: %w", id, err)
+			return fmt.Errorf("删除失效歌曲向量失败（批次 %d/%d）: %w", batch, batchCount, err)
 		}
 		if status < 200 || status >= 300 {
-			return fmt.Errorf("删除失效歌曲向量返回 HTTP %d", status)
+			return fmt.Errorf("删除失效歌曲向量返回 HTTP %d（批次 %d/%d）", status, batch, batchCount)
 		}
 	}
 	return nil
@@ -649,12 +821,14 @@ func (app *BotApp) startAIPlaylist(c tb.Context) error {
 	}
 	chatID := c.Chat().ID
 	if !app.beginAIPlaylistRun(chatID) {
+		_ = service.close()
 		return c.Send("当前已有一个 AI 歌单任务正在运行，请稍后再试。")
 	}
 
 	message, err := c.Bot().Send(c.Chat(), "🚀 AI 智能歌单任务已启动…")
 	if err != nil {
 		app.finishAIPlaylistRun(chatID)
+		_ = service.close()
 		return err
 	}
 	go app.runAIPlaylistTask(chatID, message, service)
@@ -663,6 +837,11 @@ func (app *BotApp) startAIPlaylist(c tb.Context) error {
 
 func (app *BotApp) runAIPlaylistTask(chatID int64, message *tb.Message, service *aiPlaylistService) {
 	defer app.finishAIPlaylistRun(chatID)
+	defer func() {
+		if err := service.close(); err != nil {
+			logger.Warn("AI playlist resume store close failed", zap.Error(err))
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), aiPlaylistRunTimeout)
 	defer cancel()
 	result := service.run(ctx, func(text string) {
@@ -712,7 +891,10 @@ func formatAIPlaylistRunResult(result aiPlaylistRunResult) string {
 		output.WriteString("⚠️ AI 智能歌单部分完成")
 	}
 	for _, playlist := range result.Succeeded {
-		fmt.Fprintf(&output, "\n\n🎵 %s · %d 首", playlist.Name, playlist.Count)
+		fmt.Fprintf(&output, "\n\n🎵 %s · 生成 %d 首", playlist.Name, playlist.Count)
+		if playlist.Preserved > 0 {
+			fmt.Fprintf(&output, "\n已保留歌单里原有的 %d 首歌曲。", playlist.Preserved)
+		}
 		if playlist.Intro != "" {
 			fmt.Fprintf(&output, "\n%s", playlist.Intro)
 		}

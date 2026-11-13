@@ -13,12 +13,18 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/google/uuid"
 	"github.com/nichuanfang/gymdl/config"
 	"go.uber.org/zap"
 	tb "gopkg.in/telebot.v4"
 )
 
 const emptyTrashRunTimeout = 10 * time.Minute
+const emptyTrashConfirmationTTL = 5 * time.Minute
+
+const emptyTrashCallbackUnique = "empty_trash"
+
+var emptyTrashCallbackEndpoint = tb.InlineButton{Unique: emptyTrashCallbackUnique}
 
 type emptyTrashService struct {
 	organizer    *playlistOrganizerService
@@ -32,6 +38,23 @@ type emptyTrashService struct {
 type emptyTrashSnapshot struct {
 	PlaylistName string
 	TrackCount   int
+}
+
+type emptyTrashPlan struct {
+	snapshot emptyTrashSnapshot
+	ids      []string
+	paths    []string
+}
+
+type pendingEmptyTrash struct {
+	token      string
+	userID     int64
+	chatID     int64
+	message    *tb.Message
+	service    *emptyTrashService
+	plan       emptyTrashPlan
+	expiresAt  time.Time
+	processing bool
 }
 
 type emptyTrashRecord struct {
@@ -87,63 +110,85 @@ func newEmptyTrashService(cfg *config.Config) (*emptyTrashService, error) {
 
 func (s *emptyTrashService) run(ctx context.Context, progress func(string)) emptyTrashResult {
 	result := emptyTrashResult{}
-	snapshot, ids, paths, err := s.readTrashPlaylist(ctx)
+	plan, err := s.prepare(ctx)
 	if err != nil {
 		result.PreflightError = err
 		return result
 	}
-	if snapshot.TrackCount == 0 {
+	if plan.snapshot.TrackCount == 0 {
 		result.NoTracks = true
 		return result
 	}
-	result.TrackCount = snapshot.TrackCount
+	return s.execute(ctx, plan, progress)
+}
+
+func (s *emptyTrashService) runConfirmed(ctx context.Context, approvedPlan emptyTrashPlan, progress func(string)) emptyTrashResult {
+	currentPlan, err := s.prepare(ctx)
+	if err != nil {
+		return emptyTrashResult{PreflightError: err}
+	}
+	if currentPlan.snapshot.TrackCount == 0 {
+		return emptyTrashResult{NoTracks: true}
+	}
+	if !sameEmptyTrashPlan(approvedPlan, currentPlan) {
+		return emptyTrashResult{PreflightError: errors.New("确认后回收站内容发生变化，本次未执行删除；请重新发送 /empty_trash 查看最新数量")}
+	}
+	return s.execute(ctx, currentPlan, progress)
+}
+
+func (s *emptyTrashService) prepare(ctx context.Context) (emptyTrashPlan, error) {
+	snapshot, ids, paths, err := s.readTrashPlaylist(ctx)
+	if err != nil {
+		return emptyTrashPlan{}, err
+	}
+	plan := emptyTrashPlan{snapshot: snapshot, ids: ids, paths: paths}
+	if snapshot.TrackCount == 0 {
+		return plan, nil
+	}
 	if err := s.stateTable.deleteRows(ctx, ids, true); err != nil {
-		result.PreflightError = fmt.Errorf("MusicRAG 状态表删除权限检查失败: %w", err)
-		return result
+		return emptyTrashPlan{}, fmt.Errorf("MusicRAG 状态表删除权限检查失败: %w", err)
 	}
 	if err := s.checkPinecone(ctx); err != nil {
-		result.PreflightError = fmt.Errorf("Pinecone 连接检查失败: %w", err)
-		return result
+		return emptyTrashPlan{}, fmt.Errorf("Pinecone 连接检查失败: %w", err)
 	}
+	return plan, nil
+}
 
-	if progress != nil {
-		progress("🤖 清空回收站 · 正在清理 MusicRAG 状态记录…")
-	}
-	if err := s.stateTable.deleteRows(ctx, ids, false); err != nil {
-		result.StateError = err
-	} else {
-		result.StateRowsClean = true
-	}
-	if result.StateError != nil {
-		return result
-	}
+func (s *emptyTrashService) execute(ctx context.Context, plan emptyTrashPlan, progress func(string)) emptyTrashResult {
+	result := emptyTrashResult{TrackCount: plan.snapshot.TrackCount}
 
 	if progress != nil {
 		progress("🤖 清空回收站 · 正在删除 Pinecone 向量…")
 	}
-	if err := s.deleteVectors(ctx, ids); err != nil {
+	if err := s.deleteVectors(ctx, plan.ids); err != nil {
 		result.VectorError = err
-	} else {
-		result.VectorsDeleted = true
-	}
-	if result.StateError != nil || result.VectorError != nil {
 		return result
 	}
+	result.VectorsDeleted = true
 
-	for i, filePath := range paths {
+	if progress != nil {
+		progress("🤖 清空回收站 · 正在清理 MusicRAG 状态记录…")
+	}
+	if err := s.stateTable.deleteRows(ctx, plan.ids, false); err != nil {
+		result.StateError = err
+		return result
+	}
+	result.StateRowsClean = true
+
+	for i, filePath := range plan.paths {
 		if err := ctx.Err(); err != nil {
-			result.FileError = fmt.Errorf("清空任务超时，已删除 %d/%d 个文件: %w", result.FilesDeleted, len(paths), err)
+			result.FileError = fmt.Errorf("清空任务超时，已删除 %d/%d 个文件: %w", result.FilesDeleted, len(plan.paths), err)
 			return result
 		}
-		if progress != nil && (i == 0 || (i+1)%10 == 0 || i+1 == len(paths)) {
-			progress(fmt.Sprintf("🤖 清空回收站 · 正在删除歌曲文件 %d/%d…", i+1, len(paths)))
+		if progress != nil && (i == 0 || (i+1)%10 == 0 || i+1 == len(plan.paths)) {
+			progress(fmt.Sprintf("🤖 清空回收站 · 正在删除歌曲文件 %d/%d…", i+1, len(plan.paths)))
 		}
 		_, err := s.organizer.runOliveTinAction(ctx, oliveTinActionRequest{
 			ActionID:  "delete_music_file",
 			Arguments: []oliveTinArgument{{Name: "filePath", Value: filePath}},
 		})
 		if err != nil {
-			result.FileError = fmt.Errorf("删除回收站文件失败，已删除 %d/%d 个文件: %w", result.FilesDeleted, len(paths), err)
+			result.FileError = fmt.Errorf("删除回收站文件失败，已删除 %d/%d 个文件: %w", result.FilesDeleted, len(plan.paths), err)
 			return result
 		}
 		result.FilesDeleted++
@@ -306,14 +351,14 @@ func formatEmptyTrashResult(result emptyTrashResult) string {
 	if result.PreflightError != nil {
 		return "❌ 清空前检查失败，未执行清理：" + result.PreflightError.Error()
 	}
-	if result.StateError != nil {
-		return "❌ MusicRAG 状态表清理失败，歌曲文件未删除：" + result.StateError.Error()
-	}
 	if result.VectorError != nil {
-		return "❌ Pinecone 向量清理失败，歌曲文件未删除：" + result.VectorError.Error()
+		return "❌ Pinecone 向量删除失败（可能已部分完成）；MusicRAG 状态和歌曲文件尚未清理。重新发送 /empty_trash 可安全重试：" + result.VectorError.Error()
+	}
+	if result.StateError != nil {
+		return "⚠️ Pinecone 向量已清理，但 MusicRAG 状态表清理失败，歌曲文件未删除。重新发送 /empty_trash 可安全重试：" + result.StateError.Error()
 	}
 	if result.FileError != nil {
-		return fmt.Sprintf("⚠️ MusicRAG 状态和 Pinecone 已清理；%s", result.FileError)
+		return fmt.Sprintf("⚠️ MusicRAG 状态和 Pinecone 已清理；%s\n重新发送 /empty_trash 可安全重试剩余步骤。", result.FileError)
 	}
 	complete := result.FilesDeleted == result.TrackCount && result.StateRowsClean && result.VectorsDeleted
 	if complete {
@@ -334,35 +379,236 @@ func (app *BotApp) startEmptyTrash(c tb.Context) error {
 	if c.Chat() == nil || c.Sender() == nil {
 		return c.Send("无法读取 Telegram 会话信息，请在聊天中重新发送 /empty_trash。")
 	}
+	if app.hasPendingEmptyTrash(c.Chat().ID) {
+		return c.Send("当前已有一条待确认的清空回收站请求，请先确认、取消或等待过期。")
+	}
 	service, err := newEmptyTrashService(app.cfg)
 	if err != nil {
 		return c.Send("清空回收站服务尚未配置：" + err.Error())
 	}
-	chatID := c.Chat().ID
-	if !app.beginEmptyTrashRun(chatID) {
-		return c.Send("当前已有一个清空回收站任务正在运行，请稍后再试。")
-	}
-
 	message, err := c.Bot().Send(c.Chat(), "🚀 清空回收站任务已启动…")
 	if err != nil {
-		app.finishEmptyTrashRun(chatID)
 		return err
 	}
-	go app.runEmptyTrashTask(chatID, message, service)
+	go app.prepareEmptyTrashPreview(c.Sender().ID, c.Chat().ID, message, service)
 	return nil
 }
 
-func (app *BotApp) runEmptyTrashTask(chatID int64, message *tb.Message, service *emptyTrashService) {
-	defer app.finishEmptyTrashRun(chatID)
+func (app *BotApp) prepareEmptyTrashPreview(userID, chatID int64, message *tb.Message, service *emptyTrashService) {
 	ctx, cancel := context.WithTimeout(context.Background(), emptyTrashRunTimeout)
 	defer cancel()
-	result := service.run(ctx, func(text string) {
-		if _, err := app.bot.Edit(message, text); err != nil {
+	plan, err := service.prepare(ctx)
+	if err != nil {
+		_, _ = app.bot.Edit(message, formatEmptyTrashResult(emptyTrashResult{PreflightError: err}), &tb.ReplyMarkup{})
+		return
+	}
+	if plan.snapshot.TrackCount == 0 {
+		_, _ = app.bot.Edit(message, formatEmptyTrashResult(emptyTrashResult{NoTracks: true}), &tb.ReplyMarkup{})
+		return
+	}
+	token := strings.ReplaceAll(uuid.NewString(), "-", "")
+	pending := pendingEmptyTrash{
+		token:     token,
+		userID:    userID,
+		chatID:    chatID,
+		message:   message,
+		service:   service,
+		plan:      cloneEmptyTrashPlan(plan),
+		expiresAt: time.Now().Add(emptyTrashConfirmationTTL),
+	}
+	if !app.registerPendingEmptyTrash(pending) {
+		_, _ = app.bot.Edit(message, "当前已有一条待确认的清空回收站请求，请先处理它。", &tb.ReplyMarkup{})
+		return
+	}
+	if _, err := app.bot.Edit(message, formatEmptyTrashPreview(plan), emptyTrashConfirmationMarkup(token)); err != nil {
+		app.removePendingEmptyTrash(token)
+		logger.Warn("Empty trash confirmation preview could not be shown", zap.Error(err))
+	}
+}
+
+func formatEmptyTrashPreview(plan emptyTrashPlan) string {
+	return fmt.Sprintf("⚠️ 回收站中有 %d 首歌曲。确认后将删除对应歌曲文件、MusicRAG 状态记录和 Pinecone 向量。\n\n请确认是否继续？此确认将在 %d 分钟后过期。", plan.snapshot.TrackCount, int(emptyTrashConfirmationTTL.Minutes()))
+}
+
+func emptyTrashConfirmationMarkup(token string) *tb.ReplyMarkup {
+	markup := &tb.ReplyMarkup{}
+	confirm := markup.Data("🗑 确认清空", emptyTrashCallbackUnique, "confirm", token)
+	cancel := markup.Data("取消", emptyTrashCallbackUnique, "cancel", token)
+	markup.Inline(markup.Row(confirm, cancel))
+	return markup
+}
+
+func (app *BotApp) HandleEmptyTrashCallback(c tb.Context) error {
+	args := c.Args()
+	if len(args) != 2 || (args[0] != "confirm" && args[0] != "cancel") {
+		return c.Respond(&tb.CallbackResponse{Text: "清空操作无效或已过期", ShowAlert: true})
+	}
+	pending, ok := app.getPendingEmptyTrash(args[1])
+	if !ok {
+		return c.Respond(&tb.CallbackResponse{Text: "确认已过期，请重新发送 /empty_trash", ShowAlert: true})
+	}
+	if c.Sender() == nil || c.Sender().ID != pending.userID {
+		return c.Respond(&tb.CallbackResponse{Text: "只有发起请求的人可以确认清空", ShowAlert: true})
+	}
+	if !emptyTrashCallbackMatches(c.Callback(), pending) {
+		return c.Respond(&tb.CallbackResponse{Text: "按钮与请求消息不匹配，请使用原始消息中的按钮", ShowAlert: true})
+	}
+	if args[0] == "cancel" {
+		if _, ok := app.takePendingEmptyTrash(args[1]); !ok {
+			return c.Respond(&tb.CallbackResponse{Text: "确认请求已过期或正在处理", ShowAlert: true})
+		}
+		_ = c.Respond()
+		return c.Edit("已取消清空回收站。", &tb.ReplyMarkup{})
+	}
+	if !app.claimPendingEmptyTrash(args[1]) {
+		return c.Respond(&tb.CallbackResponse{Text: "该请求已过期或正在处理", ShowAlert: true})
+	}
+	if !app.beginEmptyTrashRun(pending.chatID) {
+		app.releasePendingEmptyTrash(args[1])
+		return c.Respond(&tb.CallbackResponse{Text: "当前有其他维护任务正在运行，请稍后重试。"})
+	}
+	_ = c.Respond(&tb.CallbackResponse{Text: "已确认，正在复核回收站并开始清理…"})
+	if err := c.Edit("⏳ 已确认，正在复核回收站内容…", &tb.ReplyMarkup{}); err != nil {
+		app.finishEmptyTrashRun(pending.chatID)
+		app.releasePendingEmptyTrash(args[1])
+		return err
+	}
+	app.removePendingEmptyTrash(args[1])
+	go app.runConfirmedEmptyTrashTask(pending)
+	return nil
+}
+
+func emptyTrashCallbackMatches(callback *tb.Callback, pending pendingEmptyTrash) bool {
+	return callback != nil && callback.Message != nil && pending.message != nil &&
+		callback.Message.ID == pending.message.ID && callback.Message.Chat != nil && callback.Message.Chat.ID == pending.chatID
+}
+
+func (app *BotApp) runConfirmedEmptyTrashTask(pending pendingEmptyTrash) {
+	defer app.finishEmptyTrashRun(pending.chatID)
+	ctx, cancel := context.WithTimeout(context.Background(), emptyTrashRunTimeout)
+	defer cancel()
+	result := pending.service.runConfirmed(ctx, pending.plan, func(text string) {
+		if _, err := app.bot.Edit(pending.message, text); err != nil {
 			logger.Debug("empty trash progress update failed", zap.Error(err))
 		}
 	})
 	app.logEmptyTrashWarning(result)
-	_, _ = app.bot.Edit(message, formatEmptyTrashResult(result))
+	_, _ = app.bot.Edit(pending.message, formatEmptyTrashResult(result), &tb.ReplyMarkup{})
+}
+
+func cloneEmptyTrashPlan(plan emptyTrashPlan) emptyTrashPlan {
+	plan.ids = append([]string(nil), plan.ids...)
+	plan.paths = append([]string(nil), plan.paths...)
+	return plan
+}
+
+func sameEmptyTrashPlan(first, second emptyTrashPlan) bool {
+	if first.snapshot.TrackCount != second.snapshot.TrackCount ||
+		len(first.ids) != len(first.paths) || len(second.ids) != len(second.paths) ||
+		len(first.ids) != len(second.ids) || len(first.paths) != len(second.paths) {
+		return false
+	}
+	tracks := make(map[string]int, len(first.ids))
+	for index, id := range first.ids {
+		tracks[id+"\x00"+first.paths[index]]++
+	}
+	for index, id := range second.ids {
+		key := id + "\x00" + second.paths[index]
+		if tracks[key] == 0 {
+			return false
+		}
+		tracks[key]--
+	}
+	for _, count := range tracks {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (app *BotApp) hasPendingEmptyTrash(chatID int64) bool {
+	app.emptyTrashMu.Lock()
+	defer app.emptyTrashMu.Unlock()
+	app.purgePendingEmptyTrashLocked(time.Now())
+	for _, pending := range app.emptyTrashPending {
+		if pending.chatID == chatID {
+			return true
+		}
+	}
+	return false
+}
+
+func (app *BotApp) registerPendingEmptyTrash(pending pendingEmptyTrash) bool {
+	app.emptyTrashMu.Lock()
+	defer app.emptyTrashMu.Unlock()
+	app.purgePendingEmptyTrashLocked(time.Now())
+	for _, existing := range app.emptyTrashPending {
+		if existing.chatID == pending.chatID {
+			return false
+		}
+	}
+	if app.emptyTrashPending == nil {
+		app.emptyTrashPending = make(map[string]pendingEmptyTrash)
+	}
+	app.emptyTrashPending[pending.token] = pending
+	return true
+}
+
+func (app *BotApp) getPendingEmptyTrash(token string) (pendingEmptyTrash, bool) {
+	app.emptyTrashMu.Lock()
+	defer app.emptyTrashMu.Unlock()
+	app.purgePendingEmptyTrashLocked(time.Now())
+	pending, ok := app.emptyTrashPending[token]
+	return pending, ok
+}
+
+func (app *BotApp) claimPendingEmptyTrash(token string) bool {
+	app.emptyTrashMu.Lock()
+	defer app.emptyTrashMu.Unlock()
+	app.purgePendingEmptyTrashLocked(time.Now())
+	pending, ok := app.emptyTrashPending[token]
+	if !ok || pending.processing {
+		return false
+	}
+	pending.processing = true
+	app.emptyTrashPending[token] = pending
+	return true
+}
+
+func (app *BotApp) releasePendingEmptyTrash(token string) {
+	app.emptyTrashMu.Lock()
+	defer app.emptyTrashMu.Unlock()
+	if pending, ok := app.emptyTrashPending[token]; ok {
+		pending.processing = false
+		app.emptyTrashPending[token] = pending
+	}
+}
+
+func (app *BotApp) takePendingEmptyTrash(token string) (pendingEmptyTrash, bool) {
+	app.emptyTrashMu.Lock()
+	defer app.emptyTrashMu.Unlock()
+	app.purgePendingEmptyTrashLocked(time.Now())
+	pending, ok := app.emptyTrashPending[token]
+	if !ok || pending.processing {
+		return pendingEmptyTrash{}, false
+	}
+	delete(app.emptyTrashPending, token)
+	return pending, true
+}
+
+func (app *BotApp) removePendingEmptyTrash(token string) {
+	app.emptyTrashMu.Lock()
+	delete(app.emptyTrashPending, token)
+	app.emptyTrashMu.Unlock()
+}
+
+func (app *BotApp) purgePendingEmptyTrashLocked(now time.Time) {
+	for token, pending := range app.emptyTrashPending {
+		if !now.Before(pending.expiresAt) && !pending.processing {
+			delete(app.emptyTrashPending, token)
+		}
+	}
 }
 
 func (app *BotApp) finishEmptyTrashRun(chatID int64) {
