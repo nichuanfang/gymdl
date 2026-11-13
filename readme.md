@@ -333,6 +333,22 @@ n8n_config:
 > 🎼 **歌单整理**：`/assign_playlist` 由 gymdl 直接执行。请在 `playlist_organizer` 中配置 OliveTin、Navidrome 和 `playlist_assist`；AI 预选还需启用 `ai.enable`。MusicRAG 仍消费 n8n `music_rag` 表；请配置 `n8n_config.n8n_base_url`、有数据表行读取/新增/删除权限的 `n8n_config.api_key` 和 `n8n_config.music_rag_table_id`。未配置时歌单仍会更新，但机器人会明确提示 MusicRAG 状态未同步；`/empty_trash` 必须配置状态表桥接后才会执行。
 > 🤖 **AI 智能歌单**：`/ai_playlist` 在 gymdl 中直接调用 AI、Pinecone 和 Navidrome。文本模型复用 `ai.base_url`、`ai.api_key` 和 `ai.model`；Embedding 可单独设置 `embedding_base_url`、`embedding_api_key` 与服务返回的模型 ID。Embedding 模型、namespace 和 1536 维索引必须与 MusicRAG 入库配置一致；检索意图和歌单编排模型可通过 `query_model` / `playlist_model` 覆盖。
 
+### 歌单与回收站流程
+
+- **`/assign_playlist` 歌单整理**：读取一首待整理歌曲，根据同歌手歌曲的归档情况或 AI 建议预选歌单；用户确认后，gymdl 只补加尚未包含该歌曲的歌单，并同步 MusicRAG 状态。失败时可以重试，已完成的歌单不会重复添加。
+- **`/ai_playlist` AI 智能歌单**：读取空的 `[AI]` 歌单，将备注改写为语义检索描述，再通过 Embedding 和 Pinecone 召回候选歌曲；gymdl 检查歌曲仍在 Navidrome 曲库后，由 AI 编排歌曲并写入歌单，最后复核歌曲数。AI 编排失败时会使用规则排序兜底。
+- **`/empty_trash` 清空回收站**：校验回收站歌曲 ID 和相对文件路径，预检 MusicRAG 删除权限及 Pinecone 连通性，然后依次清理 MusicRAG 状态、Pinecone 向量和歌曲文件，并报告失败阶段及文件删除进度。
+
+### 后续流程优化
+
+以下为流程评估建议，尚未实现：
+
+1. **为清空回收站增加确认步骤**：先展示待删除歌曲数量，再由用户确认或取消，降低误操作风险。
+2. **让 AI 歌单支持失败恢复**：目前只处理空歌单；若写入或复核阶段部分失败，歌单转为非空后会被后续运行跳过。应持久化本次目标曲目和执行状态，并在重试时核对现有内容、补齐缺项。
+3. **压缩 AI 编排输入并测量开销**：当前最多向规划模型传递 `candidate_count` 首候选，包含歌曲描述等元数据。应先记录请求大小和耗时，再精简或截短对选曲帮助有限的字段。
+4. **批量清理失效 Pinecone 向量**：AI 歌单流程当前逐个删除失效向量，可改为分批请求；回收站流程已经按批删除。
+5. **迁移 MusicRAG 状态存储**：这些命令已由 gymdl 执行，但 MusicRAG 状态记录仍通过 n8n Data Tables API 读写或清理。完成独立存储迁移并验证后，才能进一步解除这部分 n8n 依赖。
+
 ---
 
 ### 3️⃣ 运行 GYMDL
