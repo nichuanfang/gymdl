@@ -29,7 +29,10 @@ func TestParsePlaylistSuggestionsRequiresConfiguredExactNames(t *testing.T) {
 	if !ok || strings.Join(got, ",") != "华语,女声" {
 		t.Fatalf("valid suggestions = %#v, %v", got, ok)
 	}
-	for _, invalid := range []string{"未知", "华语,不存在", "", "华语。"} {
+	if got, ok := parsePlaylistSuggestions("未知", options); !ok || len(got) != 0 {
+		t.Fatalf("valid no-match response = %#v, %v", got, ok)
+	}
+	for _, invalid := range []string{"华语,不存在", "", "华语。"} {
 		if got, ok := parsePlaylistSuggestions(invalid, options); ok {
 			t.Errorf("invalid suggestion %q accepted: %#v", invalid, got)
 		}
@@ -89,6 +92,7 @@ func TestPlaylistAssignmentAISuggestionsCallsConfiguredModel(t *testing.T) {
 	t.Cleanup(func() { logger = oldLogger })
 	var calls int
 	var prompt string
+	classifierOutput := "华语"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if r.URL.Path != "/v1/chat/completions" || r.Method != http.MethodPost {
@@ -111,7 +115,7 @@ func TestPlaylistAssignmentAISuggestionsCallsConfiguredModel(t *testing.T) {
 		}
 		prompt = request.Messages[1].Content
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"华语"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"` + classifierOutput + `"}}]}`))
 	}))
 	defer server.Close()
 
@@ -172,6 +176,17 @@ func TestPlaylistAssignmentAISuggestionsCallsConfiguredModel(t *testing.T) {
 	_, unavailable = app.playlistAssignmentAISuggestions(context.Background(), song, assignment)
 	if !unavailable || calls != 2 {
 		t.Fatalf("classification without WebSearch evidence should fail closed, unavailable=%v AI calls=%d", unavailable, calls)
+	}
+	app.aiMCPTools[0].Run = webSearch.Run
+	classifierOutput = "未知"
+	suggestions, unavailable := app.playlistAssignmentAISuggestions(context.Background(), song, assignment)
+	if unavailable || len(suggestions) != 0 {
+		t.Fatalf("explicit no-match response = %#v, unavailable=%v", suggestions, unavailable)
+	}
+	classifierOutput = "华语（推荐）"
+	suggestions, unavailable = app.playlistAssignmentAISuggestions(context.Background(), song, assignment)
+	if unavailable || len(suggestions) != 0 {
+		t.Fatalf("unrecognized classifier response = %#v, unavailable=%v", suggestions, unavailable)
 	}
 }
 
@@ -748,6 +763,14 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				aiSuggestionUnavailable: true,
 			},
 			want: "WebSearch 或 AI 暂不可用",
+		},
+		{
+			name: "search completed without reliable match",
+			assignment: pendingPlaylistAssignment{
+				song:           unplaylistSong{ID: "song-1", Title: "Song"},
+				playlistAssist: true,
+			},
+			want: "未能确认可靠的归档匹配",
 		},
 	}
 	for _, test := range tests {

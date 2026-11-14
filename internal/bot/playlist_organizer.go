@@ -798,8 +798,11 @@ func normalizePlaylistOptions(entries []config.PlaylistInfo) ([]config.PlaylistI
 
 func parsePlaylistSuggestions(output string, options []config.PlaylistInfo) ([]string, bool) {
 	output = strings.TrimSpace(output)
-	if output == "" || output == "未知" {
+	if output == "" {
 		return nil, false
+	}
+	if output == "未知" {
+		return nil, true
 	}
 	available := make(map[string]struct{}, len(options))
 	for _, option := range options {
@@ -897,7 +900,10 @@ func (app *BotApp) playlistAssignmentAISuggestions(ctx context.Context, song unp
 	}
 	suggestions, ok := parsePlaylistSuggestions(output, assignment.playlists)
 	if !ok {
-		return nil, true
+		if logger != nil {
+			logger.Warn("[Telegram] 歌单 AI 分类输出不符合歌单白名单，保留人工选择", zap.Int("output_bytes", len(output)))
+		}
+		return nil, false
 	}
 	return suggestions, false
 }
@@ -1251,7 +1257,7 @@ func (app *BotApp) playlistAssignmentStatus(assignment pendingPlaylistAssignment
 	} else if !assignment.playlistAssist {
 		notes = append(notes, "🤖 AI 归档建议未开启。")
 	} else {
-		notes = append(notes, "AI 没有给出匹配建议，请按歌曲信息选择歌单。")
+		notes = append(notes, "🌐 已检索公开资料\n🤖 未能确认可靠的归档匹配，请按歌曲信息选择歌单。")
 	}
 	return strings.Join(notes, "\n")
 }
