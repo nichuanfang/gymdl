@@ -56,10 +56,11 @@ type aiPlaylistPlanItem struct {
 }
 
 type aiPlaylistDraft struct {
-	Description  string
-	Candidates   []aiPlaylistCandidate
-	Plan         aiPlaylistPlan
-	UsedFallback bool
+	Description     string
+	Candidates      []aiPlaylistCandidate
+	Plan            aiPlaylistPlan
+	UsedFallback    bool
+	ExistingSongIDs []string
 }
 
 type aiPlaylistRunResult struct {
@@ -75,6 +76,7 @@ type aiPlaylistResult struct {
 	Preserved    int
 	Intro        string
 	UsedFallback bool
+	Replaced     bool
 }
 
 type aiPlaylistFailure struct {
@@ -232,7 +234,13 @@ func (s *aiPlaylistService) run(ctx context.Context, progress func(string)) aiPl
 		if progress != nil {
 			progress(fmt.Sprintf("🤖 AI 智能歌单（%d/%d）\n正在整理「%s」…", index+1, len(work), playlist.Name))
 		}
-		playlistResult, err := s.processAIPlaylist(ctx, playlist, pending[playlist.ID], false)
+		var playlistResult aiPlaylistResult
+		var err error
+		if plan := pending[playlist.ID]; plan != nil && plan.Replace {
+			playlistResult, err = s.replaceAIPlaylist(ctx, playlist, *plan)
+		} else {
+			playlistResult, err = s.processAIPlaylist(ctx, playlist, pending[playlist.ID], false)
+		}
 		if err != nil {
 			result.Failed = append(result.Failed, aiPlaylistFailure{Name: playlist.Name, Err: err})
 			continue
@@ -358,11 +366,98 @@ func (s *aiPlaylistService) processAIPlaylist(ctx context.Context, playlist aiPl
 	}, nil
 }
 
+func (s *aiPlaylistService) replaceAIPlaylist(ctx context.Context, playlist aiPlaylist, plan aiPlaylistResumePlan) (aiPlaylistResult, error) {
+	if err := validateAIPlaylistResumePlan(plan); err != nil {
+		return aiPlaylistResult{}, fmt.Errorf("替换计划无效: %w", err)
+	}
+	if !plan.Replace || plan.PlaylistID != playlist.ID {
+		return aiPlaylistResult{}, errors.New("替换计划与目标歌单不匹配")
+	}
+	if strings.TrimSpace(plan.Description) != strings.TrimSpace(playlist.Description) {
+		return aiPlaylistResult{}, errors.New("歌单备注已变化，未执行替换；请恢复原备注后重试")
+	}
+	current, err := s.readAIPlaylistTracks(ctx, playlist)
+	if err != nil {
+		return aiPlaylistResult{}, fmt.Errorf("读取替换前歌单失败: %w", err)
+	}
+	if !samePlaylistTrackOrder(current.IDs, plan.SongIDs) && !plan.Started && !samePlaylistTrackOrder(current.IDs, plan.OriginalSongIDs) {
+		return aiPlaylistResult{}, errors.New("歌单曲目在预览后发生变化，为保护现有内容已停止替换")
+	}
+	if plan.Started && !playlistTracksCompatibleWithResume(current.IDs, plan.OriginalSongIDs, plan.SongIDs) {
+		return aiPlaylistResult{}, errors.New("当前歌单曲目与预览快照不一致，为保护现有内容已停止替换")
+	}
+	if !samePlaylistTrackOrder(current.IDs, plan.SongIDs) {
+		if !plan.Started {
+			if s.resumeStore == nil {
+				return aiPlaylistResult{}, errors.New("AI 歌单续写状态未初始化，未替换歌单")
+			}
+			if err := s.resumeStore.MarkReplacementStarted(ctx, playlist.ID); err != nil {
+				return aiPlaylistResult{}, fmt.Errorf("保存替换进度失败，歌单未修改: %w", err)
+			}
+			plan.Started = true
+		}
+		if err := s.organizer.replaceAIPlaylistTracks(ctx, playlist.ID, current.Count, plan.SongIDs); err != nil {
+			return aiPlaylistResult{}, fmt.Errorf("替换 Navidrome 歌单失败；续写计划已保留，可安全重试: %w", err)
+		}
+	}
+	verified, err := s.readAIPlaylistTracks(ctx, playlist)
+	if err != nil {
+		return aiPlaylistResult{}, fmt.Errorf("歌单写入后无法复核；续写计划已保留: %w", err)
+	}
+	if !samePlaylistTrackOrder(verified.IDs, plan.SongIDs) {
+		return aiPlaylistResult{}, fmt.Errorf("Navidrome 替换复核不完整（期望 %d 首，实际 %d 首）；续写计划已保留", len(plan.SongIDs), len(verified.IDs))
+	}
+	if err := s.resumeStore.Delete(ctx, playlist.ID); err != nil {
+		return aiPlaylistResult{}, fmt.Errorf("歌单已替换并复核，但清理续写计划失败；再次继续可安全确认: %w", err)
+	}
+	return aiPlaylistResult{
+		Name:         playlist.Name,
+		Count:        len(plan.SongIDs),
+		Intro:        plan.Intro,
+		UsedFallback: plan.UsedFallback,
+		Replaced:     true,
+	}, nil
+}
+
+func playlistTracksCompatibleWithResume(current, original, planned []string) bool {
+	return playlistTrackIDsPrefix(current, planned) || playlistTrackIDsSuffix(current, original)
+}
+
+func playlistTrackIDsPrefix(current, planned []string) bool {
+	if len(current) > len(planned) {
+		return false
+	}
+	return samePlaylistTrackOrder(current, planned[:len(current)])
+}
+
+func playlistTrackIDsSuffix(current, original []string) bool {
+	if len(current) > len(original) {
+		return false
+	}
+	return samePlaylistTrackOrder(current, original[len(original)-len(current):])
+}
+
+func samePlaylistTrackOrder(first, second []string) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for index := range first {
+		if first[index] != second[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *aiPlaylistService) previewAIPlaylist(ctx context.Context, playlist aiPlaylist, request string, excludedIDs []string) (aiPlaylistDraft, error) {
 	request = strings.TrimSpace(request)
 	description := strings.TrimSpace(strings.Join(nonEmptyStrings(playlist.Description, request), "\n"))
 	if description == "" {
 		return aiPlaylistDraft{}, errors.New("请写明希望生成的音乐主题")
+	}
+	existing, err := s.readAIPlaylistTracks(ctx, playlist)
+	if err != nil {
+		return aiPlaylistDraft{}, fmt.Errorf("读取当前歌单失败: %w", err)
 	}
 	candidates, err := s.retrieveCandidates(ctx, description)
 	if err != nil {
@@ -393,7 +488,13 @@ func (s *aiPlaylistService) previewAIPlaylist(ctx context.Context, playlist aiPl
 	if err != nil {
 		return aiPlaylistDraft{}, err
 	}
-	return aiPlaylistDraft{Description: description, Candidates: candidates, Plan: plan, UsedFallback: usedFallback}, nil
+	return aiPlaylistDraft{
+		Description:     description,
+		Candidates:      candidates,
+		Plan:            plan,
+		UsedFallback:    usedFallback,
+		ExistingSongIDs: append([]string(nil), existing.IDs...),
+	}, nil
 }
 
 func nonEmptyStrings(values ...string) []string {
@@ -430,9 +531,16 @@ func (s *aiPlaylistService) readAIPlaylistTracks(ctx context.Context, playlist a
 	if len(rows) != 1 || rows[0].PlaylistID != playlist.ID || rows[0].PlaylistName != playlist.Name || rows[0].TrackCount < 0 {
 		return aiPlaylistTrackSnapshot{}, errors.New("OliveTin 返回的歌单身份或歌曲数量无效")
 	}
+	trackIDs := rows[0].TrackIDs
+	var nestedTrackIDs string
+	if json.Unmarshal(trackIDs, &nestedTrackIDs) == nil {
+		// OliveTin's sqlite3 -json output may encode JSON_GROUP_ARRAY as a
+		// string containing JSON rather than as a nested JSON array.
+		trackIDs = json.RawMessage(nestedTrackIDs)
+	}
 	var rawIDs []json.RawMessage
-	if len(rows[0].TrackIDs) > 0 && string(rows[0].TrackIDs) != "null" {
-		if err := json.Unmarshal(rows[0].TrackIDs, &rawIDs); err != nil {
+	if len(trackIDs) > 0 && string(trackIDs) != "null" {
+		if err := json.Unmarshal(trackIDs, &rawIDs); err != nil {
 			return aiPlaylistTrackSnapshot{}, fmt.Errorf("解析歌单歌曲 ID 列表失败: %w", err)
 		}
 	}

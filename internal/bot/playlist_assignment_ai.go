@@ -15,7 +15,7 @@ const maxPlaylistWebEvidenceRunes = 5000
 
 func playlistWebSearchTool(tools []aichat.Tool) (aichat.Tool, string, bool) {
 	for _, tool := range tools {
-		if !strings.EqualFold(tool.Name, "mcp_webtool_websearch") || tool.Run == nil {
+		if !isPlaylistWebSearchTool(tool) || tool.Run == nil {
 			continue
 		}
 		properties, _ := tool.Parameters["properties"].(map[string]any)
@@ -44,6 +44,25 @@ func playlistWebSearchTool(tools []aichat.Tool) (aichat.Tool, string, bool) {
 		return aichat.Tool{}, "", false
 	}
 	return aichat.Tool{}, "", false
+}
+
+func isPlaylistWebSearchTool(tool aichat.Tool) bool {
+	name := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return -1
+	}, strings.ToLower(tool.Name))
+	if strings.Contains(name, "websearch") {
+		return true
+	}
+	description := strings.ToLower(tool.Description)
+	for _, phrase := range []string{"web search", "search the web", "search web", "网页搜索", "网络搜索"} {
+		if strings.Contains(description, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func runPlaylistWebSearch(ctx context.Context, tools []aichat.Tool, song unplaylistSong) (string, error) {
@@ -112,7 +131,19 @@ func playlistSongSearchQuery(song unplaylistSong) string {
 	if strings.TrimSpace(song.Album) != "" {
 		parts = append(parts, displaySongValue(song.Album))
 	}
+	if comment := strings.TrimSpace(song.Comment); comment != "" {
+		parts = append(parts, "library source", truncatePlaylistSearchReference(comment))
+	}
 	return strings.Join(parts, " ") + " song genre style mood"
+}
+
+func truncatePlaylistSearchReference(value string) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	runes := []rune(value)
+	if len(runes) > 240 {
+		return string(runes[:239]) + "…"
+	}
+	return value
 }
 
 func truncatePlaylistWebEvidence(value string) string {

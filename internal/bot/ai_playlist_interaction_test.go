@@ -178,6 +178,33 @@ func TestAIPlaylistMessageUsesPlainTextHouseStyle(t *testing.T) {
 	}
 }
 
+func TestAIPlaylistCanSelectPopulatedTargetAndClearlyConfirmReplacement(t *testing.T) {
+	playlist := aiPlaylist{ID: "playlist", Name: "[AI] 夜间", Description: "舒缓的夜间音乐", SongCount: 28}
+	menu := pendingAIPlaylistSession{token: "token", playlists: []aiPlaylist{playlist}}
+	if message := formatAIPlaylistSession(menu); !strings.Contains(message, "确认后会按预览替换") {
+		t.Fatalf("menu should explain the write behavior: %q", message)
+	}
+	markup := aiPlaylistSessionMarkup(menu)
+	if got := markup.InlineKeyboard[0][0].Text; got != "[AI] 夜间 · 28 首" {
+		t.Fatalf("populated target label = %q", got)
+	}
+	selected := pendingAIPlaylistSession{
+		target: playlist,
+		draft: &aiPlaylistDraft{
+			Description:     "夜间舒缓",
+			ExistingSongIDs: []string{"old1", "old2"},
+			Plan:            aiPlaylistPlan{Playlist: []aiPlaylistPlanItem{{ID: "new1"}}},
+			Candidates:      []aiPlaylistCandidate{{ID: "new1", Title: "New song", Artist: "Artist"}},
+		},
+	}
+	if message := formatAIPlaylistSession(selected); !strings.Contains(message, "当前 2 首") || !strings.Contains(message, "确认后会替换当前 2 首") {
+		t.Fatalf("preview should state the exact replacement impact: %q", message)
+	}
+	if got := aiPlaylistSessionMarkup(selected).InlineKeyboard[1][0].Text; got != "✅ 确认替换" {
+		t.Fatalf("confirmation button = %q, want explicit replacement", got)
+	}
+}
+
 func TestAIPlaylistTargetCanChangeBeforeWriteButNotDuringResume(t *testing.T) {
 	app := &BotApp{}
 	if !app.registerAIPlaylistSession(pendingAIPlaylistSession{
@@ -229,6 +256,24 @@ func TestAIPlaylistPendingWriteShowsOnlyContinueAndCancel(t *testing.T) {
 	}
 	if message := formatAIPlaylistSession(session); !strings.Contains(message, "AI 智能歌单续写") || strings.Contains(message, "旧预览") {
 		t.Fatalf("pending write should not show a stale preview: %q", message)
+	}
+}
+
+func TestAIPlaylistPendingReplacementShowsReplaceResumeAction(t *testing.T) {
+	session := pendingAIPlaylistSession{
+		token:        "token",
+		target:       aiPlaylist{ID: "playlist", Name: "[AI] 夜间"},
+		pendingWrite: true,
+		resumePlans: map[string]aiPlaylistResumePlan{
+			"playlist": {Replace: true, OriginalSongIDs: []string{"old1"}},
+		},
+	}
+	markup := aiPlaylistSessionMarkup(session)
+	if got := markup.InlineKeyboard[0][0].Text; got != "↻ 继续替换" {
+		t.Fatalf("replacement retry button = %q", got)
+	}
+	if message := formatAIPlaylistSession(session); !strings.Contains(message, "未完成的替换计划") {
+		t.Fatalf("resume copy should describe the interrupted replacement: %q", message)
 	}
 }
 

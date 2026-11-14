@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/internal/storage"
 )
 
 func TestAIPlaylistRequiresNavidromeCredentialsBeforeStarting(t *testing.T) {
@@ -334,11 +335,13 @@ func TestAIPlaylistResumeStorePersistsAndDoesNotOverwritePlans(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := aiPlaylistResumePlan{
-		PlaylistID:   "playlist1",
-		Description:  "安静的氛围音乐",
-		SongIDs:      []string{"song1", "song2"},
-		Intro:        "夜晚聆听的温柔旋律。",
-		UsedFallback: true,
+		PlaylistID:      "playlist1",
+		Description:     "安静的氛围音乐",
+		SongIDs:         []string{"song1", "song2"},
+		Intro:           "夜晚聆听的温柔旋律。",
+		UsedFallback:    true,
+		Replace:         true,
+		OriginalSongIDs: []string{"old1", "old2"},
 	}
 	if err := store.Create(t.Context(), plan); err != nil {
 		t.Fatal(err)
@@ -368,6 +371,64 @@ func TestAIPlaylistResumeStorePersistsAndDoesNotOverwritePlans(t *testing.T) {
 	loaded, err = store.Load(t.Context(), plan.PlaylistID)
 	if err != nil || loaded != nil {
 		t.Fatalf("deleted resume plan is still present: plan=%#v err=%v", loaded, err)
+	}
+}
+
+func TestAIPlaylistResumeStoreMigratesLegacyAppendRows(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "gymdl.sqlite3")
+	db, err := storage.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE ai_playlist_pending (
+		playlist_id TEXT PRIMARY KEY,
+		description TEXT NOT NULL,
+		song_ids_json TEXT NOT NULL,
+		intro TEXT NOT NULL,
+		used_fallback INTEGER NOT NULL CHECK (used_fallback IN (0, 1))
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO ai_playlist_pending (playlist_id, description, song_ids_json, intro, used_fallback) VALUES (?, ?, ?, ?, ?)`, "playlist1", "夜间氛围", `["song1"]`, "简介", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := openAIPlaylistResumeStore(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	loaded, err := store.Load(t.Context(), "playlist1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil || loaded.Replace || !reflect.DeepEqual(loaded.SongIDs, []string{"song1"}) || len(loaded.OriginalSongIDs) != 0 {
+		t.Fatalf("legacy append plan was not preserved: %#v", loaded)
+	}
+}
+
+func TestAIPlaylistReplacementSnapshotPreservesDuplicateExistingTracks(t *testing.T) {
+	store, err := openAIPlaylistResumeStore(filepath.Join(t.TempDir(), "gymdl.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	plan := aiPlaylistResumePlan{
+		PlaylistID:      "playlist1",
+		Description:     "主题",
+		SongIDs:         []string{"new-song"},
+		Replace:         true,
+		OriginalSongIDs: []string{"old-song", "old-song"},
+	}
+	if err := store.Create(t.Context(), plan); err != nil {
+		t.Fatalf("duplicate existing tracks should be a valid snapshot: %v", err)
+	}
+	loaded, err := store.Load(t.Context(), plan.PlaylistID)
+	if err != nil || loaded == nil || !reflect.DeepEqual(loaded.OriginalSongIDs, plan.OriginalSongIDs) {
+		t.Fatalf("replacement snapshot did not preserve duplicate tracks: plan=%#v err=%v", loaded, err)
 	}
 }
 

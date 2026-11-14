@@ -6,6 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -32,10 +35,35 @@ func TestParsePlaylistSuggestionsRequiresConfiguredExactNames(t *testing.T) {
 	if got, ok := parsePlaylistSuggestions("未知", options); !ok || len(got) != 0 {
 		t.Fatalf("valid no-match response = %#v, %v", got, ok)
 	}
-	for _, invalid := range []string{"华语,不存在", "", "华语。"} {
+	for _, invalid := range []string{"华语,不存在", "", `{"playlists":["华语","不存在"]}`} {
 		if got, ok := parsePlaylistSuggestions(invalid, options); ok {
 			t.Errorf("invalid suggestion %q accepted: %#v", invalid, got)
 		}
+	}
+}
+
+func TestParsePlaylistSuggestionsAcceptsCommonModelFormatting(t *testing.T) {
+	options := []config.PlaylistInfo{
+		{Name: "华语"},
+		{Name: "女声"},
+		{Name: "摇滚"},
+	}
+	for _, test := range []struct {
+		name   string
+		output string
+		want   []string
+	}{
+		{name: "markdown and parenthetical", output: "推荐：**华语**（匹配度较高）", want: []string{"华语"}},
+		{name: "numbered lines", output: "1. 华语\n2. 女声", want: []string{"华语", "女声"}},
+		{name: "json array", output: `["华语","女声"]`, want: []string{"华语", "女声"}},
+		{name: "json object", output: `{"playlists":["华语","女声"]}`, want: []string{"华语", "女声"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := parsePlaylistSuggestions(test.output, options)
+			if !ok || strings.Join(got, ",") != strings.Join(test.want, ",") {
+				t.Fatalf("parsePlaylistSuggestions(%q) = %#v, %v; want %#v", test.output, got, ok, test.want)
+			}
+		})
 	}
 }
 
@@ -150,12 +178,12 @@ func TestPlaylistAssignmentAISuggestionsCallsConfiguredModel(t *testing.T) {
 		playlistAssist: true,
 		playlists:      []config.PlaylistInfo{{Name: "华语", Desc: "中文歌曲"}},
 	}
-	song := unplaylistSong{ID: "song-1", Title: "夜行", Artist: "歌手"}
+	song := unplaylistSong{ID: "song-1", Title: "夜行", Artist: "歌手", Comment: "https://music.163.com/#/song?id=12345"}
 	got, unavailable := app.playlistAssignmentAISuggestions(context.Background(), song, assignment)
 	if unavailable || len(got) != 1 || got[0] != "华语" {
 		t.Fatalf("AI suggestions = %#v, unavailable=%v", got, unavailable)
 	}
-	if calls != 1 || webSearchCalls != 1 || !strings.Contains(prompt, "歌名：夜行") || !strings.Contains(prompt, "华语：中文歌曲") || !strings.Contains(prompt, "Search evidence: this song is jazz and soul") {
+	if calls != 1 || webSearchCalls != 1 || !strings.Contains(prompt, "歌名：夜行") || !strings.Contains(prompt, "https://music.163.com/#/song?id=12345") || !strings.Contains(prompt, "华语：中文歌曲") || !strings.Contains(prompt, "Search evidence: this song is jazz and soul") {
 		t.Fatalf("AI classifier was not called with song, playlists, and WebSearch evidence: AI calls=%d WebSearch calls=%d prompt=%q", calls, webSearchCalls, prompt)
 	}
 
@@ -185,8 +213,17 @@ func TestPlaylistAssignmentAISuggestionsCallsConfiguredModel(t *testing.T) {
 	}
 	classifierOutput = "华语（推荐）"
 	suggestions, unavailable = app.playlistAssignmentAISuggestions(context.Background(), song, assignment)
-	if unavailable || len(suggestions) != 0 {
-		t.Fatalf("unrecognized classifier response = %#v, unavailable=%v", suggestions, unavailable)
+	if unavailable || len(suggestions) != 1 || suggestions[0] != "华语" {
+		t.Fatalf("formatted classifier recommendation = %#v, unavailable=%v", suggestions, unavailable)
+	}
+	classifierPrompt := playlistClassifierPrompt(song, assignment.playlists, "evidence")
+	if !strings.Contains(classifierPrompt, "必须至少推荐 1 个") || !strings.Contains(classifierPrompt, "WebSearch 没有找到有效资料时") {
+		t.Fatal("classifier prompt should produce a best-fit recommendation when search evidence is sparse")
+	}
+	classifierOutput = "华语, 不在可选列表"
+	_, unavailable = app.playlistAssignmentAISuggestions(context.Background(), song, assignment)
+	if !unavailable {
+		t.Fatal("a response outside the playlist whitelist should be reported as an unusable AI suggestion")
 	}
 }
 
@@ -394,6 +431,63 @@ func TestNavidromeLoginAndAddSongToPlaylist(t *testing.T) {
 	}
 	if err := service.addSongToPlaylist(context.Background(), token, "song-1", navidromePlaylist{ID: "playlist-1", Name: "华语"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReplaceAIPlaylistTracksClearsInBoundedPositionBatches(t *testing.T) {
+	loginCalls := 0
+	var deleteBatchSizes []int
+	addCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/login":
+			loginCalls++
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": "test-jwt"})
+		case "/api/playlist/playlist-1/tracks":
+			if r.Header.Get("X-Nd-Authorization") != "Bearer test-jwt" {
+				t.Fatal("missing Navidrome bearer token")
+			}
+			switch r.Method {
+			case http.MethodDelete:
+				positions := r.URL.Query()["id"]
+				deleteBatchSizes = append(deleteBatchSizes, len(positions))
+				for index, position := range positions {
+					if position != strconv.Itoa(index+1) {
+						t.Errorf("delete batch positions = %#v", positions)
+					}
+				}
+				w.WriteHeader(http.StatusOK)
+			case http.MethodPost:
+				addCalls++
+				var request struct {
+					IDs []string `json:"ids"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !reflect.DeepEqual(request.IDs, []string{"new-song"}) {
+					t.Fatalf("unexpected replacement add request: %#v err=%v", request, err)
+				}
+				w.WriteHeader(http.StatusOK)
+			default:
+				t.Fatalf("unexpected Navidrome method %s", r.Method)
+			}
+		default:
+			t.Fatalf("unexpected Navidrome path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	service, err := newPlaylistOrganizerService(&config.PlaylistOrganizerConfig{
+		OliveTinURL:       server.URL,
+		NavidromeURL:      server.URL,
+		NavidromeUsername: "nav-user",
+		NavidromePassword: "nav-pass",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.replaceAIPlaylistTracks(context.Background(), "playlist-1", 101, []string{"new-song"}); err != nil {
+		t.Fatal(err)
+	}
+	if loginCalls != 1 || addCalls != 1 || !reflect.DeepEqual(deleteBatchSizes, []int{100, 1}) {
+		t.Fatalf("login=%d delete batches=%#v add=%d", loginCalls, deleteBatchSizes, addCalls)
 	}
 }
 
@@ -765,6 +859,15 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 			want: "WebSearch 或 AI 暂不可用",
 		},
 		{
+			name: "AI suggestions finish before the picker is shown",
+			assignment: pendingPlaylistAssignment{
+				song:                unplaylistSong{ID: "song-1", Title: "Song"},
+				playlistAssist:      true,
+				aiSuggestionLoading: true,
+			},
+			want: "完成后即可打开歌单选择页面",
+		},
+		{
 			name: "search completed without reliable match",
 			assignment: pendingPlaylistAssignment{
 				song:           unplaylistSong{ID: "song-1", Title: "Song"},
@@ -779,6 +882,64 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				t.Fatalf("playlistAssignmentStatus() = %q, want it to contain %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestPlaylistAssignmentSuggestionsUpdateChooserDefaultsWithoutLosingSession(t *testing.T) {
+	app := &BotApp{}
+	assignment := pendingPlaylistAssignment{
+		token:               "assignment",
+		chatID:              10,
+		song:                unplaylistSong{ID: "song-1", Title: "Song"},
+		playlists:           []config.PlaylistInfo{{Name: "华语"}, {Name: "摇滚"}},
+		webAppBaseURL:       "https://webapp.example.com",
+		selectionToken:      "01234567890123456789012345678901",
+		webAppButtonURL:     "https://webapp.example.com/?old=1",
+		aiSuggestionLoading: true,
+		handledSongIDs:      map[string]struct{}{},
+		expiresAt:           time.Now().Add(time.Minute),
+	}
+	if !app.registerPlaylistAssignment(assignment) {
+		t.Fatal("failed to register assignment")
+	}
+	loadingMarkup := playlistAssignmentMarkup(assignment)
+	loadingButtons := make(map[string]bool)
+	for _, row := range loadingMarkup.InlineKeyboard {
+		for _, button := range row {
+			if button.WebApp != nil {
+				t.Fatal("legacy chooser must stay closed until AI defaults are ready")
+			}
+			loadingButtons[button.Text] = true
+		}
+	}
+	if !loadingButtons["跳过本首"] || !loadingButtons["结束整理"] {
+		t.Fatalf("skip and end controls should remain available while AI loads: %#v", loadingButtons)
+	}
+	updated, ok := app.storePlaylistAssignmentAISuggestions(assignment.token, "song-1", []string{"摇滚"}, false)
+	if !ok || updated.aiSuggestionLoading || len(updated.aiSuggestedPlaylists) != 1 || updated.aiSuggestedPlaylists[0] != "摇滚" {
+		t.Fatalf("suggestions were not stored: %#v, ok=%t", updated, ok)
+	}
+	var page struct {
+		Default []string `json:"default"`
+	}
+	parsed, err := url.Parse(updated.webAppButtonURL)
+	if err != nil || json.Unmarshal([]byte(parsed.Query().Get("data")), &page) != nil || !reflect.DeepEqual(page.Default, []string{"摇滚"}) {
+		t.Fatalf("WebApp chooser did not receive suggested defaults: URL=%q defaults=%#v err=%v", updated.webAppButtonURL, page.Default, err)
+	}
+	readyMarkup := playlistAssignmentMarkup(updated)
+	foundChooser := false
+	for _, row := range readyMarkup.InlineKeyboard {
+		for _, button := range row {
+			if button.WebApp != nil && button.WebApp.URL == updated.webAppButtonURL {
+				foundChooser = true
+			}
+		}
+	}
+	if !foundChooser {
+		t.Fatal("legacy chooser should appear after AI defaults are ready")
+	}
+	if _, ok := app.storePlaylistAssignmentAISuggestions(assignment.token, "another-song", []string{"华语"}, false); ok {
+		t.Fatal("stale background result must not overwrite a different song")
 	}
 }
 
