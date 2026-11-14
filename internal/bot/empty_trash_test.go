@@ -484,6 +484,32 @@ func TestEmptyTrashCallbackMustMatchOriginatingMessage(t *testing.T) {
 	}
 }
 
+func TestEmptyTrashPreviewUsesHouseStyleAndNamesAllEffects(t *testing.T) {
+	preview := formatEmptyTrashPreview(emptyTrashPlan{snapshot: emptyTrashSnapshot{TrackCount: 12}})
+	for _, expected := range []string{
+		"⚠️ 清空回收站",
+		"──────────────────",
+		"🗑 待删除：12 首歌曲",
+		"歌曲文件",
+		"MusicRAG 状态",
+		"Pinecone 向量",
+		"确认是否继续？",
+	} {
+		if !strings.Contains(preview, expected) {
+			t.Errorf("preview %q does not contain %q", preview, expected)
+		}
+	}
+}
+
+func TestEmptyTrashErrorsAreBoundedAndSingleLine(t *testing.T) {
+	message := formatEmptyTrashResult(emptyTrashResult{
+		PreflightError: fmt.Errorf("database unavailable\n%s", strings.Repeat("x", 1000)),
+	})
+	if strings.Contains(message, "\n") || len([]rune(message)) > 600 || !strings.HasSuffix(message, "…") {
+		t.Fatalf("unsafe preflight error formatting: length=%d message=%q", len([]rune(message)), message)
+	}
+}
+
 func TestEmptyTrashCallbackCancelDoesNotStartDeletion(t *testing.T) {
 	app := &BotApp{}
 	message := &tb.Message{ID: 42, Chat: &tb.Chat{ID: 10}}

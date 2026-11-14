@@ -45,6 +45,7 @@ func (app *BotApp) registerHandlers() {
 	app.bot.Handle(&duplicateCallbackEndpoint, app.HandleDuplicateMusicCallback)
 	app.bot.Handle(&musicActionCallbackEndpoint, app.HandleMusicActionCallback)
 	app.bot.Handle(&playlistAssignmentCallbackEndpoint, app.HandlePlaylistAssignmentCallback)
+	app.bot.Handle(&aiPlaylistCallbackEndpoint, app.HandleAIPlaylistCallback)
 	app.bot.Handle(&emptyTrashCallbackEndpoint, app.HandleEmptyTrashCallback)
 	app.bot.Handle(&aiCandidateEndpoint, app.HandleAICandidateCallback)
 	app.bot.Handle(&aiModeSettingEndpoint, app.HandleAIModeCallback)

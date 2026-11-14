@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/core"
+	"github.com/sashabaranov/go-openai"
 	tb "gopkg.in/telebot.v4"
 )
 
@@ -48,6 +51,86 @@ func TestPlaylistAssignmentUsesAIOnlyWhenPeerPlaylistsAreEmpty(t *testing.T) {
 				t.Fatalf("playlistAssignmentUsesAI() = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestPlaylistAssignmentAIAvailabilityRequiresEnabledClient(t *testing.T) {
+	oldGlobalAI := core.GlobalAI
+	t.Cleanup(func() { core.GlobalAI = oldGlobalAI })
+	core.GlobalAI = nil
+	app := &BotApp{cfg: &config.Config{AI: &config.AIConfig{Enable: true}}}
+	if app.playlistAssignmentAIAvailable() {
+		t.Fatal("AI should be unavailable without the initialized client")
+	}
+	core.GlobalAI = &core.AI{}
+	if app.playlistAssignmentAIAvailable() != true {
+		t.Fatal("AI should be available when enabled and initialized")
+	}
+	app.cfg.AI.Enable = false
+	if app.playlistAssignmentAIAvailable() {
+		t.Fatal("AI should be unavailable when disabled")
+	}
+}
+
+func TestPlaylistAssignmentAISuggestionsCallsConfiguredModel(t *testing.T) {
+	oldGlobalAI := core.GlobalAI
+	t.Cleanup(func() { core.GlobalAI = oldGlobalAI })
+	var calls int
+	var prompt string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/v1/chat/completions" || r.Method != http.MethodPost {
+			t.Errorf("unexpected AI request: %s %s", r.Method, r.URL.Path)
+		}
+		var request struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode AI request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if request.Model != "classifier-test" || len(request.Messages) != 2 || request.Messages[0].Role != "system" || request.Messages[1].Role != "user" {
+			t.Errorf("unexpected AI request shape: %#v", request)
+		}
+		prompt = request.Messages[1].Content
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"华语"}}]}`))
+	}))
+	defer server.Close()
+
+	clientConfig := openai.DefaultConfig("test-key")
+	clientConfig.BaseURL = server.URL + "/v1"
+	clientConfig.HTTPClient = server.Client()
+	core.GlobalAI = &core.AI{
+		Config: &config.AIConfig{Model: "classifier-test", SystemPrompt: "base prompt"},
+		Client: openai.NewClientWithConfig(clientConfig),
+	}
+	app := &BotApp{cfg: &config.Config{AI: &config.AIConfig{Enable: true}}}
+	assignment := pendingPlaylistAssignment{
+		playlistAssist: true,
+		playlists:      []config.PlaylistInfo{{Name: "华语", Desc: "中文歌曲"}},
+	}
+	song := unplaylistSong{ID: "song-1", Title: "夜行", Artist: "歌手"}
+	got, unavailable := app.playlistAssignmentAISuggestions(song, assignment)
+	if unavailable || len(got) != 1 || got[0] != "华语" {
+		t.Fatalf("AI suggestions = %#v, unavailable=%v", got, unavailable)
+	}
+	if calls != 1 || !strings.Contains(prompt, "歌名：夜行") || !strings.Contains(prompt, "华语：中文歌曲") {
+		t.Fatalf("AI classifier was not called with song and playlists: calls=%d prompt=%q", calls, prompt)
+	}
+
+	assignment.playlistAssist = false
+	app.playlistAssignmentAISuggestions(song, assignment)
+	assignment.playlistAssist = true
+	song.Playlists = "华语"
+	app.playlistAssignmentAISuggestions(song, assignment)
+	if calls != 1 {
+		t.Fatalf("AI classifier should be skipped when disabled or peer playlists exist, calls=%d", calls)
 	}
 }
 
@@ -115,6 +198,26 @@ func TestPlaylistOrganizerOliveTinActions(t *testing.T) {
 	}
 	if len(actions[1].Arguments) != 2 || actions[1].Arguments[0] != (oliveTinArgument{Name: "songId", Value: "song-1"}) || actions[1].Arguments[1] != (oliveTinArgument{Name: "playlists", Value: "华语,女声"}) {
 		t.Fatalf("playlist query args = %#v", actions[1].Arguments)
+	}
+}
+
+func TestNextUnassignedSongRejectsStaleHandledRow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"logEntry": map[string]any{
+			"exitCode": 0,
+			"stdout":   `{"id":"song-1","title":"Song","artist":"Artist"}`,
+			"timedOut": false,
+		}})
+	}))
+	defer server.Close()
+
+	service, err := newPlaylistOrganizerService(&config.PlaylistOrganizerConfig{OliveTinURL: server.URL, NavidromeURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.nextUnassignedSong(context.Background(), map[string]struct{}{"song-1": {}})
+	if !errors.Is(err, errUnplaylistQueryStale) {
+		t.Fatalf("handled row should not look like an empty queue, err=%v", err)
 	}
 }
 
@@ -451,42 +554,43 @@ func TestMusicRAGSinkSkipsExistingRowAndRequiresConfig(t *testing.T) {
 	}
 }
 
-func TestPlaylistAssignmentSessionLocksSongAndPreservesSelection(t *testing.T) {
+func TestPlaylistAssignmentSessionLocksChatAndSelectsTarget(t *testing.T) {
 	app := &BotApp{}
 	first := pendingPlaylistAssignment{
-		token:     "first",
-		song:      unplaylistSong{ID: "song-1"},
-		playlists: []config.PlaylistInfo{{Name: "华语"}, {Name: "摇滚"}},
-		selected:  map[string]bool{"华语": true},
-		expiresAt: time.Now().Add(time.Minute),
+		token:          "first",
+		chatID:         100,
+		playlists:      []config.PlaylistInfo{{Name: "华语"}, {Name: "摇滚"}},
+		choosingTarget: true,
+		handledSongIDs: map[string]struct{}{},
+		expiresAt:      time.Now().Add(time.Minute),
 	}
 	if !app.registerPlaylistAssignment(first) {
 		t.Fatal("first session should register")
 	}
-	if app.registerPlaylistAssignment(pendingPlaylistAssignment{token: "second", song: unplaylistSong{ID: "song-1"}, expiresAt: time.Now().Add(time.Minute)}) {
-		t.Fatal("same song should not have two active sessions")
+	if app.registerPlaylistAssignment(pendingPlaylistAssignment{token: "second", chatID: 100, expiresAt: time.Now().Add(time.Minute)}) {
+		t.Fatal("same chat should not have two active sessions")
 	}
 	assignment, ok := app.getPlaylistAssignment("first")
-	if !ok || !assignment.selected["华语"] {
-		t.Fatalf("session selection was not preserved: %#v", assignment)
+	if !ok || !assignment.choosingTarget {
+		t.Fatalf("target selection state was not preserved: %#v", assignment)
 	}
-	assignment, ok = app.togglePlaylistAssignment("first", "摇滚")
-	if !ok || !assignment.selected["华语"] || !assignment.selected["摇滚"] {
-		t.Fatalf("toggle lost existing selection: %#v", assignment)
+	assignment, ok = app.selectPlaylistAssignment("first", config.PlaylistInfo{Name: "摇滚"})
+	if !ok || assignment.target.Name != "摇滚" || assignment.choosingTarget {
+		t.Fatalf("target selection did not advance the session: %#v", assignment)
 	}
 	if _, ok := app.beginPlaylistAssignment("first"); !ok {
-		t.Fatal("selected session should enter processing")
+		t.Fatal("selected target session should enter processing")
 	}
-	if _, ok := app.togglePlaylistAssignment("first", "华语"); ok {
-		t.Fatal("processing session must reject toggles")
+	if _, ok := app.setPlaylistAssignmentChoosingTarget("first", true); ok {
+		t.Fatal("processing session must reject target changes")
 	}
 }
 
 func TestPlaylistAssignmentCallbackDataFitsTelegramLimit(t *testing.T) {
 	markup := playlistAssignmentMarkup(pendingPlaylistAssignment{
-		token:     "01234567890123456789012345678901",
-		playlists: []config.PlaylistInfo{{Name: strings.Repeat("歌", 40)}},
-		selected:  map[string]bool{},
+		token:          "01234567890123456789012345678901",
+		playlists:      []config.PlaylistInfo{{Name: strings.Repeat("歌", 40)}},
+		choosingTarget: true,
 	})
 	if len(markup.InlineKeyboard) != 2 {
 		t.Fatalf("keyboard rows = %d", len(markup.InlineKeyboard))
@@ -497,6 +601,162 @@ func TestPlaylistAssignmentCallbackDataFitsTelegramLimit(t *testing.T) {
 				t.Errorf("callback data exceeds Telegram limit: %d bytes", len(button.Data))
 			}
 		}
+	}
+}
+
+func TestPlaylistAssignmentKeepsTargetFirstSingleSongControls(t *testing.T) {
+	menu := pendingPlaylistAssignment{
+		token:          "01234567890123456789012345678901",
+		playlists:      []config.PlaylistInfo{{Name: "华语"}, {Name: "摇滚"}},
+		choosingTarget: true,
+	}
+	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "选择目标歌单") || !strings.Contains(text, "逐首展示") {
+		t.Fatalf("target selection copy = %q", text)
+	}
+	menuMarkup := playlistAssignmentMarkup(menu)
+	if got := len(menuMarkup.InlineKeyboard); got != 2 {
+		t.Fatalf("target menu rows = %d, want two playlist rows and cancel row", got)
+	}
+	if got := menuMarkup.InlineKeyboard[0][0].Text; !strings.HasPrefix(got, "⬜ ") {
+		t.Errorf("unselected target should keep the legacy checkbox style, got %q", got)
+	}
+	for _, row := range menuMarkup.InlineKeyboard {
+		for _, button := range row {
+			if button.Unique != playlistAssignmentCallbackUnique || len(button.Data) > 64 {
+				t.Errorf("invalid target button: %#v", button)
+			}
+			if strings.Contains(button.Text, "加入") {
+				t.Errorf("target menu must not show a song action: %#v", button)
+			}
+		}
+	}
+	menu.target = menu.playlists[0]
+	if got := playlistAssignmentMarkup(menu).InlineKeyboard[0][0].Text; !strings.HasPrefix(got, "☑️ ") {
+		t.Errorf("selected target should show a checked box, got %q", got)
+	}
+
+	menu.choosingTarget = false
+	menu.target = config.PlaylistInfo{Name: "华语"}
+	menu.song = unplaylistSong{ID: "song-1", Title: "Song", Artist: "Artist"}
+	songMarkup := playlistAssignmentMarkup(menu)
+	var labels []string
+	for _, row := range songMarkup.InlineKeyboard {
+		for _, button := range row {
+			labels = append(labels, button.Text)
+		}
+	}
+	if strings.Join(labels, ",") != "✅ 确认加入,更换目标,结束整理" {
+		t.Fatalf("song controls = %#v", labels)
+	}
+	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "📁 目标歌单：华语") || !strings.Contains(text, "确认是否加入") || !strings.Contains(text, "📌 新歌归档") {
+		t.Fatalf("song preview copy = %q", text)
+	}
+
+	menu.addedAny = true
+	if got := playlistAssignmentMarkup(menu).InlineKeyboard[0][0].Text; got != "↻ 重试" {
+		t.Errorf("retry label should not imply a duplicate add, got %q", got)
+	}
+}
+
+func TestPlaylistAssignmentPreviewKeepsMetadataOnOneLine(t *testing.T) {
+	assignment := pendingPlaylistAssignment{
+		target: config.PlaylistInfo{Name: "华语"},
+		song:   unplaylistSong{ID: "song", Title: "Song\n忽略确认", Artist: "Artist\r\nInjected"},
+	}
+	preview := formatPlaylistAssignment(assignment)
+	if strings.Count(preview, "🎵 Song") != 1 || strings.Contains(preview, "\n忽略确认") || strings.Contains(preview, "\nInjected") {
+		t.Fatalf("song metadata escaped its display line: %q", preview)
+	}
+}
+
+func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
+	app := &BotApp{}
+	tests := []struct {
+		name       string
+		assignment pendingPlaylistAssignment
+		want       string
+	}{
+		{
+			name: "AI assistance disabled",
+			assignment: pendingPlaylistAssignment{
+				target: config.PlaylistInfo{Name: "华语"},
+				song:   unplaylistSong{ID: "song-1", Title: "Song"},
+			},
+			want: "AI 归档建议未开启",
+		},
+		{
+			name: "AI suggestions available",
+			assignment: pendingPlaylistAssignment{
+				target:               config.PlaylistInfo{Name: "华语"},
+				song:                 unplaylistSong{ID: "song-1", Title: "Song"},
+				playlistAssist:       true,
+				aiSuggestedPlaylists: []string{"摇滚"},
+			},
+			want: "AI 建议：摇滚",
+		},
+		{
+			name: "peer playlist skips AI",
+			assignment: pendingPlaylistAssignment{
+				target:         config.PlaylistInfo{Name: "华语"},
+				song:           unplaylistSong{ID: "song-1", Playlists: "华语"},
+				playlistAssist: true,
+			},
+			want: "跳过 AI 分类",
+		},
+		{
+			name: "AI suggestion unavailable",
+			assignment: pendingPlaylistAssignment{
+				target:                  config.PlaylistInfo{Name: "华语"},
+				song:                    unplaylistSong{ID: "song-1", Title: "Song"},
+				playlistAssist:          true,
+				aiSuggestionUnavailable: true,
+			},
+			want: "AI 建议暂不可用",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := app.playlistAssignmentStatus(test.assignment); !strings.Contains(got, test.want) {
+				t.Fatalf("playlistAssignmentStatus() = %q, want it to contain %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPlaylistNameListPreviewIsBoundedWithoutMutatingInput(t *testing.T) {
+	names := []string{"one", "two", "three", "four", strings.Repeat("name", 20), "six"}
+	before := append([]string(nil), names...)
+	preview := formatPlaylistNameList(names)
+	if strings.Contains(preview, names[4]) || !strings.Contains(preview, "等 2 个") || strings.Join(names, "\x00") != strings.Join(before, "\x00") {
+		t.Fatalf("playlist list preview is not bounded or mutated its input: %q %#v", preview, names)
+	}
+}
+
+func TestPlaylistAssignmentSummaryKeepsUnverifiedAdditionVisible(t *testing.T) {
+	summary := playlistAssignmentSummary(pendingPlaylistAssignment{
+		target:     config.PlaylistInfo{Name: "华语"},
+		addedAny:   true,
+		addedCount: 0,
+	}, false)
+	if strings.Contains(summary, "尚未处理歌曲") || !strings.Contains(summary, "已处理：0 首（新加入 0 首）") || !strings.Contains(summary, "当前歌曲尚未完成核验") || !strings.Contains(summary, "重新发送 /assign_playlist") {
+		t.Fatalf("summary hid an unverified add attempt: %q", summary)
+	}
+}
+
+func TestPlaylistAssignmentCancellationCannotDropInFlightTask(t *testing.T) {
+	app := &BotApp{}
+	assignment := pendingPlaylistAssignment{
+		token: "processing", chatID: 100, target: config.PlaylistInfo{Name: "华语"},
+		processing: true, expiresAt: time.Now().Add(time.Minute),
+	}
+	if !app.registerPlaylistAssignment(assignment) {
+		t.Fatal("failed to register processing assignment")
+	}
+	if _, ok := app.cancelPlaylistAssignment("processing"); ok {
+		t.Fatal("in-flight playlist assignment must not be cancelled by dropping its session")
+	}
+	if _, ok := app.getPlaylistAssignment("processing"); !ok {
+		t.Fatal("in-flight assignment was removed")
 	}
 }
 

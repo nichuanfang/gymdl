@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/nichuanfang/gymdl/internal/storage"
 )
@@ -121,9 +120,6 @@ func (s *sqliteAIPlaylistResumeStore) Close() error {
 func validateAIPlaylistResumePlan(plan aiPlaylistResumePlan) error {
 	if !safeNavidromeID(plan.PlaylistID) {
 		return errors.New("saved playlist ID is invalid")
-	}
-	if strings.TrimSpace(plan.Description) == "" {
-		return errors.New("saved playlist description is empty")
 	}
 	if len(plan.SongIDs) == 0 {
 		return errors.New("saved playlist has no song IDs")

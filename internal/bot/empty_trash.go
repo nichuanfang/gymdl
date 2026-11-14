@@ -349,16 +349,16 @@ func formatEmptyTrashResult(result emptyTrashResult) string {
 		return "✅ 回收站为空"
 	}
 	if result.PreflightError != nil {
-		return "❌ 清空前检查失败，未执行清理：" + result.PreflightError.Error()
+		return "❌ 清空前检查失败，未执行清理：" + formatEmptyTrashError(result.PreflightError)
 	}
 	if result.VectorError != nil {
-		return "❌ Pinecone 向量删除失败（可能已部分完成）；MusicRAG 状态和歌曲文件尚未清理。重新发送 /empty_trash 可安全重试：" + result.VectorError.Error()
+		return "❌ Pinecone 向量删除失败（可能已部分完成）；MusicRAG 状态和歌曲文件尚未清理。重新发送 /empty_trash 可安全重试：" + formatEmptyTrashError(result.VectorError)
 	}
 	if result.StateError != nil {
-		return "⚠️ Pinecone 向量已清理，但 MusicRAG 状态表清理失败，歌曲文件未删除。重新发送 /empty_trash 可安全重试：" + result.StateError.Error()
+		return "⚠️ Pinecone 向量已清理，但 MusicRAG 状态表清理失败，歌曲文件未删除。重新发送 /empty_trash 可安全重试：" + formatEmptyTrashError(result.StateError)
 	}
 	if result.FileError != nil {
-		return fmt.Sprintf("⚠️ MusicRAG 状态和 Pinecone 已清理；%s\n重新发送 /empty_trash 可安全重试剩余步骤。", result.FileError)
+		return fmt.Sprintf("⚠️ MusicRAG 状态和 Pinecone 已清理；%s\n重新发送 /empty_trash 可安全重试剩余步骤。", formatEmptyTrashError(result.FileError))
 	}
 	complete := result.FilesDeleted == result.TrackCount && result.StateRowsClean && result.VectorsDeleted
 	if complete {
@@ -367,17 +367,38 @@ func formatEmptyTrashResult(result emptyTrashResult) string {
 	var output strings.Builder
 	fmt.Fprintf(&output, "⚠️ 回收站文件已删除 %d/%d 首，清理尚未完全完成。", result.FilesDeleted, result.TrackCount)
 	if result.StateError != nil {
-		fmt.Fprintf(&output, "\nMusicRAG 状态表清理失败：%v", result.StateError)
+		fmt.Fprintf(&output, "\nMusicRAG 状态表清理失败：%s", formatEmptyTrashError(result.StateError))
 	}
 	if result.VectorError != nil {
-		fmt.Fprintf(&output, "\nPinecone 向量清理失败：%v", result.VectorError)
+		fmt.Fprintf(&output, "\nPinecone 向量清理失败：%s", formatEmptyTrashError(result.VectorError))
 	}
 	return output.String()
+}
+
+func formatEmptyTrashError(err error) string {
+	if err == nil {
+		return "未知错误"
+	}
+	value := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, err.Error())
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if len(runes) > 500 {
+		value = string(runes[:499]) + "…"
+	}
+	return value
 }
 
 func (app *BotApp) startEmptyTrash(c tb.Context) error {
 	if c.Chat() == nil || c.Sender() == nil {
 		return c.Send("无法读取 Telegram 会话信息，请在聊天中重新发送 /empty_trash。")
+	}
+	if app.hasPlaylistAssignmentForChat(c.Chat().ID) || app.hasAIPlaylistSessionForChat(c.Chat().ID) {
+		return c.Send("当前聊天已有一条歌单维护会话，请先完成或结束它。")
 	}
 	if app.hasPendingEmptyTrash(c.Chat().ID) {
 		return c.Send("当前已有一条待确认的清空回收站请求，请先确认、取消或等待过期。")
@@ -386,15 +407,32 @@ func (app *BotApp) startEmptyTrash(c tb.Context) error {
 	if err != nil {
 		return c.Send("清空回收站服务尚未配置：" + err.Error())
 	}
-	message, err := c.Bot().Send(c.Chat(), "🚀 清空回收站任务已启动…")
+	app.playlistMaintenanceStartMu.Lock()
+	if app.hasPlaylistAssignmentForChat(c.Chat().ID) || app.hasAIPlaylistSessionForChat(c.Chat().ID) || app.hasPendingEmptyTrash(c.Chat().ID) {
+		app.playlistMaintenanceStartMu.Unlock()
+		service.organizer.client.CloseIdleConnections()
+		return c.Send("当前聊天已有一条歌单维护会话，请先完成或结束它。")
+	}
+	if !app.beginEmptyTrashRun(c.Chat().ID) {
+		app.playlistMaintenanceStartMu.Unlock()
+		service.organizer.client.CloseIdleConnections()
+		return c.Send("当前有其他维护任务正在运行，请稍后重试。")
+	}
+	message, err := c.Bot().Send(c.Chat(), "⏳ 正在读取回收站内容…")
 	if err != nil {
+		app.finishEmptyTrashRun(c.Chat().ID)
+		app.playlistMaintenanceStartMu.Unlock()
+		service.organizer.client.CloseIdleConnections()
 		return err
 	}
 	go app.prepareEmptyTrashPreview(c.Sender().ID, c.Chat().ID, message, service)
+	app.playlistMaintenanceStartMu.Unlock()
 	return nil
 }
 
 func (app *BotApp) prepareEmptyTrashPreview(userID, chatID int64, message *tb.Message, service *emptyTrashService) {
+	defer app.finishEmptyTrashRun(chatID)
+	defer service.organizer.client.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(context.Background(), emptyTrashRunTimeout)
 	defer cancel()
 	plan, err := service.prepare(ctx)
@@ -427,7 +465,7 @@ func (app *BotApp) prepareEmptyTrashPreview(userID, chatID int64, message *tb.Me
 }
 
 func formatEmptyTrashPreview(plan emptyTrashPlan) string {
-	return fmt.Sprintf("⚠️ 回收站中有 %d 首歌曲。确认后将删除对应歌曲文件、MusicRAG 状态记录和 Pinecone 向量。\n\n请确认是否继续？此确认将在 %d 分钟后过期。", plan.snapshot.TrackCount, int(emptyTrashConfirmationTTL.Minutes()))
+	return fmt.Sprintf("⚠️ 清空回收站\n──────────────────\n🗑 待删除：%d 首歌曲\n确认后会删除对应歌曲文件，并清理 MusicRAG 状态与 Pinecone 向量。\n\n请确认是否继续？此请求将在 %d 分钟后过期。", plan.snapshot.TrackCount, int(emptyTrashConfirmationTTL.Minutes()))
 }
 
 func emptyTrashConfirmationMarkup(token string) *tb.ReplyMarkup {
@@ -485,6 +523,7 @@ func emptyTrashCallbackMatches(callback *tb.Callback, pending pendingEmptyTrash)
 
 func (app *BotApp) runConfirmedEmptyTrashTask(pending pendingEmptyTrash) {
 	defer app.finishEmptyTrashRun(pending.chatID)
+	defer pending.service.organizer.client.CloseIdleConnections()
 	ctx, cancel := context.WithTimeout(context.Background(), emptyTrashRunTimeout)
 	defer cancel()
 	result := pending.service.runConfirmed(ctx, pending.plan, func(text string) {
@@ -531,6 +570,9 @@ func (app *BotApp) hasPendingEmptyTrash(chatID int64) bool {
 	app.emptyTrashMu.Lock()
 	defer app.emptyTrashMu.Unlock()
 	app.purgePendingEmptyTrashLocked(time.Now())
+	if _, running := app.emptyTrashRunning[chatID]; running {
+		return true
+	}
 	for _, pending := range app.emptyTrashPending {
 		if pending.chatID == chatID {
 			return true
@@ -622,7 +664,7 @@ func (app *BotApp) beginEmptyTrashRun(chatID int64) bool {
 	defer app.aiPlaylistMu.Unlock()
 	app.emptyTrashMu.Lock()
 	defer app.emptyTrashMu.Unlock()
-	if len(app.aiPlaylistRunning) != 0 || len(app.emptyTrashRunning) != 0 {
+	if len(app.aiPlaylistRunning) != 0 || len(app.emptyTrashRunning) != 0 || len(app.playlistAssignmentRunning) != 0 {
 		return false
 	}
 	if app.emptyTrashRunning == nil {

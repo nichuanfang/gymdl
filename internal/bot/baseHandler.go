@@ -20,6 +20,9 @@ import (
 // HandleText 精简版交互逻辑
 func (app *BotApp) HandleText(c tb.Context) error {
 	text := c.Text()
+	if handled, err := app.handleAIPlaylistText(c); handled {
+		return err
+	}
 	user := c.Sender()
 	b := c.Bot()
 

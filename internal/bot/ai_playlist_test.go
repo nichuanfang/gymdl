@@ -425,7 +425,7 @@ func TestAIPlaylistResumeStopsWhenDescriptionChangesAndEscapesLookupName(t *test
 	}
 	_, err = service.processAIPlaylist(t.Context(), aiPlaylist{
 		ID: "playlist1", Name: "[AI] night's mood", Description: "新的爵士主题", SongCount: 1,
-	}, &saved)
+	}, &saved, false)
 	if err == nil || !strings.Contains(err.Error(), "歌单备注已变更") {
 		t.Fatalf("changed description should stop the stale plan: %v", err)
 	}

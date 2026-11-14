@@ -61,5 +61,23 @@ func TestMusicMaintenanceTasksAreMutuallyExclusive(t *testing.T) {
 	if !app.beginEmptyTrashRun(100) {
 		t.Fatal("a new maintenance task should start after the previous task finishes")
 	}
+	if !app.hasPendingEmptyTrash(100) {
+		t.Fatal("empty-trash preflight should reserve its chat against new maintenance sessions")
+	}
 	app.finishEmptyTrashRun(100)
+	if app.hasPendingEmptyTrash(100) {
+		t.Fatal("finished empty-trash preflight must release its chat reservation")
+	}
+
+	if !app.beginPlaylistAssignmentRun(101) {
+		t.Fatal("playlist assignment should start after the previous task finishes")
+	}
+	if app.beginAIPlaylistRun(102) || app.beginEmptyTrashRun(103) {
+		t.Fatal("AI playlist and empty trash must wait for an active playlist assignment")
+	}
+	app.finishPlaylistAssignmentRun(101)
+	if !app.beginAIPlaylistRun(104) {
+		t.Fatal("AI playlist should start after playlist assignment finishes")
+	}
+	app.finishAIPlaylistRun(104)
 }
