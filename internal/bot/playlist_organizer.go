@@ -1436,18 +1436,18 @@ func (app *BotApp) playlistAssignmentStatus(assignment pendingPlaylistAssignment
 	}
 	var notes []string
 	if peers := splitPlaylistNames(assignment.song.Playlists); len(peers) > 0 {
-		notes = append(notes, "🎵 同歌手其他歌曲已在："+formatPlaylistNameList(peers))
+		notes = append(notes, "同歌手歌单："+formatPlaylistNameList(peers))
 	}
 	if assignment.aiSuggestionLoading {
-		notes = append(notes, "🌐 正在检索公开资料并生成归档建议；完成后即可打开歌单选择页面。")
+		notes = append(notes, "🌐 正在检索公开资料并生成归档建议…")
 	} else if len(assignment.aiSuggestedPlaylists) > 0 {
-		notes = append(notes, "🌐 已检索公开资料\n🤖 AI 建议："+formatPlaylistNameList(assignment.aiSuggestedPlaylists))
+		notes = append(notes, "🌐 已检索 · AI 建议："+formatPlaylistNameList(assignment.aiSuggestedPlaylists))
 	} else if assignment.aiSuggestionUnavailable {
-		notes = append(notes, "🤖 WebSearch 或 AI 暂不可用，请人工选择归档歌单。")
+		notes = append(notes, "⚠️ WebSearch 或 AI 暂不可用")
 	} else if !assignment.playlistAssist {
-		notes = append(notes, "🤖 AI 归档建议未开启。")
+		notes = append(notes, "AI 归档建议未开启")
 	} else {
-		notes = append(notes, "🌐 已检索公开资料\n🤖 未能确认可靠的归档匹配，请按歌曲信息选择歌单。")
+		notes = append(notes, "🌐 已检索 · 未能确认可靠的归档匹配")
 	}
 	return strings.Join(notes, "\n")
 }
@@ -1476,6 +1476,7 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 	var text strings.Builder
 	if assignment.song.ID == "" {
 		text.WriteString("📌 新歌归档")
+		text.WriteString("\n──────────────────")
 		if assignment.statusNote != "" {
 			text.WriteString("\n")
 			text.WriteString(assignment.statusNote)
@@ -1485,20 +1486,24 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 		return text.String()
 	}
 	text.WriteString("📌 新歌归档")
-	fmt.Fprintf(&text, "\n\n🎵 %s\n🎤 %s", displaySongValue(assignment.song.Title), displaySongValue(assignment.song.Artist))
+	text.WriteString("\n──────────────────\n")
+	text.WriteString(displaySongValue(assignment.song.Title))
+	text.WriteString("\n")
+	text.WriteString(displaySongValue(assignment.song.Artist))
 	if album := strings.TrimSpace(assignment.song.Album); album != "" {
-		fmt.Fprintf(&text, "\n💿 %s", displaySongValue(album))
+		text.WriteString(" · ")
+		text.WriteString(displaySongValue(album))
 	}
 	if assignment.song.Year > 0 {
 		fmt.Fprintf(&text, " · %d", assignment.song.Year)
 	}
 	if assignment.selectionComplete {
-		fmt.Fprintf(&text, "\n📁 已选歌单：%s", formatPlaylistNameList(assignment.selectedPlaylists))
+		fmt.Fprintf(&text, "\n归档到：%s", formatPlaylistNameList(assignment.selectedPlaylists))
 	} else {
-		text.WriteString("\n📁 尚未选择归档歌单")
+		text.WriteString("\n归档到：未选择")
 	}
 	if assignment.processedCount > 0 || assignment.skippedCount > 0 {
-		fmt.Fprintf(&text, "\n\n本次已确认 %d 首（新加入 %d 首），跳过 %d 首。", assignment.processedCount, assignment.addedCount, assignment.skippedCount)
+		fmt.Fprintf(&text, "\n进度：确认 %d · 新加入 %d · 跳过 %d", assignment.processedCount, assignment.addedCount, assignment.skippedCount)
 	}
 	status := app.playlistAssignmentStatus(assignment)
 	if status != "" {
@@ -1506,39 +1511,39 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 		text.WriteString(status)
 	}
 	if assignment.hiddenPlaylistCount > 0 {
-		fmt.Fprintf(&text, "\n⚠️ %d 个不适用于选择菜单的歌单名称已隐藏。", assignment.hiddenPlaylistCount)
-	}
-	if assignment.addedAny {
-		text.WriteString("\n\n歌曲已加入；再次确认会安全重试状态同步。")
-	} else if assignment.selectionComplete {
-		text.WriteString("\n\n请核对所选歌单，再确认加入。")
-	} else if assignment.aiSuggestionLoading {
-		text.WriteString("\n\nAI 建议生成后会显示歌单选择页面；也可以跳过本首或结束整理。")
-	} else {
-		text.WriteString("\n\n打开歌单选择页面，勾选本首要归入的歌单。")
+		fmt.Fprintf(&text, "\n⚠️ %d 个歌单未显示（名称格式不支持）。", assignment.hiddenPlaylistCount)
 	}
 	return text.String()
 }
 
 func playlistAssignmentMarkup(assignment pendingPlaylistAssignment) *tb.ReplyMarkup {
 	markup := &tb.ReplyMarkup{}
-	rows := make([]tb.Row, 0, 5)
+	rows := make([]tb.Row, 0, 3)
 	if assignment.retryNext {
-		rows = append(rows, markup.Row(markup.Data("↻ 重试查询", playlistAssignmentCallbackUnique, "next", assignment.token)))
+		rows = append(rows, markup.Row(
+			markup.Data("↻ 重试查询", playlistAssignmentCallbackUnique, "next", assignment.token),
+			markup.Data("结束整理", playlistAssignmentCallbackUnique, "stop", assignment.token),
+		))
 	} else if assignment.song.ID != "" {
 		if assignment.selectionComplete {
 			label := "✅ 确认加入"
 			if assignment.addedAny {
 				label = "↻ 重试"
 			}
-			rows = append(rows, markup.Row(markup.Data(label, playlistAssignmentCallbackUnique, "add", assignment.token)))
-			rows = append(rows, markup.Row(markup.Data("重新选择歌单", playlistAssignmentCallbackUnique, "reselect", assignment.token)))
+			rows = append(rows, markup.Row(
+				markup.Data(label, playlistAssignmentCallbackUnique, "add", assignment.token),
+				markup.Data("重新选择", playlistAssignmentCallbackUnique, "reselect", assignment.token),
+			))
 		} else if assignment.webAppButtonURL != "" && !assignment.aiSuggestionLoading {
-			rows = append(rows, markup.Row(markup.WebApp("📂 选择归档歌单", &tb.WebApp{URL: assignment.webAppButtonURL})))
+			rows = append(rows, markup.Row(markup.WebApp("📂 选择歌单", &tb.WebApp{URL: assignment.webAppButtonURL})))
 		}
-		rows = append(rows, markup.Row(markup.Data("跳过本首", playlistAssignmentCallbackUnique, "skip", assignment.token)))
+		rows = append(rows, markup.Row(
+			markup.Data("跳过本首", playlistAssignmentCallbackUnique, "skip", assignment.token),
+			markup.Data("结束整理", playlistAssignmentCallbackUnique, "stop", assignment.token),
+		))
+	} else {
+		rows = append(rows, markup.Row(markup.Data("结束整理", playlistAssignmentCallbackUnique, "stop", assignment.token)))
 	}
-	rows = append(rows, markup.Row(markup.Data("结束整理", playlistAssignmentCallbackUnique, "stop", assignment.token)))
 	markup.Inline(rows...)
 	return markup
 }
@@ -1865,6 +1870,8 @@ func (app *BotApp) purgePlaylistAssignmentsLocked(now time.Time) {
 			if app.playlistAssignmentByChat[assignment.chatID] == token {
 				delete(app.playlistAssignmentByChat, assignment.chatID)
 			}
+			message := assignment.message
+			go app.editPlaylistAssignmentMessage(message, "⏱️ 整理会话已过期，请重新发送 /assign_playlist。", &tb.ReplyMarkup{})
 		}
 	}
 }

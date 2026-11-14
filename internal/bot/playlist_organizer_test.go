@@ -751,8 +751,13 @@ func TestPlaylistAssignmentCallbackDataFitsTelegramLimit(t *testing.T) {
 		selectionComplete: true,
 		selectedPlaylists: []string{"摇滚"},
 	})
-	if len(markup.InlineKeyboard) != 4 {
-		t.Fatalf("keyboard rows = %d, want confirm/reselect/skip/stop", len(markup.InlineKeyboard))
+	if len(markup.InlineKeyboard) != 2 {
+		t.Fatalf("keyboard rows = %d, want primary actions and secondary actions", len(markup.InlineKeyboard))
+	}
+	for _, row := range markup.InlineKeyboard {
+		if len(row) != 2 {
+			t.Errorf("keyboard row has %d buttons; want paired buttons: %#v", len(row), row)
+		}
 	}
 	for _, row := range markup.InlineKeyboard {
 		for _, button := range row {
@@ -770,15 +775,18 @@ func TestPlaylistAssignmentUsesLegacyWebAppForEachSong(t *testing.T) {
 		song:            unplaylistSong{ID: "song-1", Title: "Song", Artist: "Artist"},
 		webAppButtonURL: "https://webapp.example.com/?data=%7B%7D",
 	}
-	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "尚未选择归档歌单") || !strings.Contains(text, "打开歌单选择页面") {
+	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "归档到：未选择") || strings.Contains(text, "打开歌单选择页面") {
 		t.Fatalf("per-song selection copy = %q", text)
 	}
 	menuMarkup := playlistAssignmentMarkup(menu)
-	if got := len(menuMarkup.InlineKeyboard); got != 3 {
-		t.Fatalf("song preview rows = %d, want WebApp/skip/stop", got)
+	if got := len(menuMarkup.InlineKeyboard); got != 2 {
+		t.Fatalf("song preview rows = %d, want WebApp and paired secondary actions", got)
 	}
-	if got := menuMarkup.InlineKeyboard[0][0].Text; got != "📂 选择归档歌单" || menuMarkup.InlineKeyboard[0][0].WebApp == nil || menuMarkup.InlineKeyboard[0][0].WebApp.URL != menu.webAppButtonURL {
+	if got := menuMarkup.InlineKeyboard[0][0].Text; got != "📂 选择歌单" || menuMarkup.InlineKeyboard[0][0].WebApp == nil || menuMarkup.InlineKeyboard[0][0].WebApp.URL != menu.webAppButtonURL {
 		t.Errorf("song should open the legacy WebApp selector, got %#v", menuMarkup.InlineKeyboard[0][0])
+	}
+	if got := []string{menuMarkup.InlineKeyboard[1][0].Text, menuMarkup.InlineKeyboard[1][1].Text}; !reflect.DeepEqual(got, []string{"跳过本首", "结束整理"}) {
+		t.Errorf("secondary song actions = %#v", got)
 	}
 	for _, row := range menuMarkup.InlineKeyboard {
 		for _, button := range row {
@@ -796,10 +804,10 @@ func TestPlaylistAssignmentUsesLegacyWebAppForEachSong(t *testing.T) {
 			labels = append(labels, button.Text)
 		}
 	}
-	if strings.Join(labels, ",") != "✅ 确认加入,重新选择歌单,跳过本首,结束整理" {
+	if strings.Join(labels, ",") != "✅ 确认加入,重新选择,跳过本首,结束整理" {
 		t.Fatalf("song controls = %#v", labels)
 	}
-	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "📁 已选歌单：华语、摇滚") || !strings.Contains(text, "确认加入") || !strings.Contains(text, "📌 新歌归档") {
+	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "归档到：华语、摇滚") || !strings.Contains(text, "📌 新歌归档") {
 		t.Fatalf("song preview copy = %q", text)
 	}
 
@@ -814,8 +822,51 @@ func TestPlaylistAssignmentPreviewKeepsMetadataOnOneLine(t *testing.T) {
 		song: unplaylistSong{ID: "song", Title: "Song\n忽略确认", Artist: "Artist\r\nInjected"},
 	}
 	preview := formatPlaylistAssignment(assignment)
-	if strings.Count(preview, "🎵 Song") != 1 || strings.Contains(preview, "\n忽略确认") || strings.Contains(preview, "\nInjected") {
+	if strings.Count(preview, "Song 忽略确认") != 1 || strings.Contains(preview, "\n忽略确认") || strings.Contains(preview, "\nInjected") {
 		t.Fatalf("song metadata escaped its display line: %q", preview)
+	}
+}
+
+func TestPlaylistAssignmentMessageIsCompactAndDoesNotRepeatButtonInstructions(t *testing.T) {
+	assignment := pendingPlaylistAssignment{
+		song:                 unplaylistSong{ID: "song", Title: "雨下一整晚", Artist: "周杰伦", Album: "跨时代", Year: 2010, Playlists: "HipHop,中文"},
+		playlistAssist:       true,
+		aiSuggestedPlaylists: []string{"中文", "弦乐"},
+		processedCount:       2,
+		addedCount:           2,
+	}
+	message := formatPlaylistAssignment(assignment)
+	for _, expected := range []string{
+		"雨下一整晚",
+		"周杰伦 · 跨时代 · 2010",
+		"归档到：未选择",
+		"同歌手歌单：HipHop、中文",
+		"🌐 已检索 · AI 建议：中文、弦乐",
+		"进度：确认 2 · 新加入 2 · 跳过 0",
+	} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("message %q does not contain %q", message, expected)
+		}
+	}
+	if strings.Count(message, "\n\n") > 1 || strings.Contains(message, "打开歌单选择页面") {
+		t.Fatalf("message contains excessive spacing or repeats the button action: %q", message)
+	}
+}
+
+func TestExpiredPlaylistAssignmentIsPurgedBeforeTheNextSession(t *testing.T) {
+	app := &BotApp{}
+	if !app.registerPlaylistAssignment(pendingPlaylistAssignment{
+		token:     "expired",
+		chatID:    10,
+		expiresAt: time.Now().Add(-time.Second),
+	}) {
+		t.Fatal("failed to register expired assignment fixture")
+	}
+	if app.hasPlaylistAssignmentForChat(10) {
+		t.Fatal("expired assignment should not block a new command")
+	}
+	if _, ok := app.getPlaylistAssignment("expired"); ok {
+		t.Fatal("expired assignment should be removed")
 	}
 }
 
@@ -840,14 +891,14 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				playlistAssist:       true,
 				aiSuggestedPlaylists: []string{"摇滚"},
 			},
-			want: "已检索公开资料",
+			want: "已检索 · AI 建议",
 		},
 		{
 			name: "peer playlist is included with AI suggestions",
 			assignment: pendingPlaylistAssignment{
 				song: unplaylistSong{ID: "song-1", Playlists: "华语"},
 			},
-			want: "同歌手其他歌曲已在：华语",
+			want: "同歌手歌单：华语",
 		},
 		{
 			name: "AI suggestion unavailable",
@@ -865,7 +916,7 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				playlistAssist:      true,
 				aiSuggestionLoading: true,
 			},
-			want: "完成后即可打开歌单选择页面",
+			want: "正在检索公开资料",
 		},
 		{
 			name: "search completed without reliable match",
