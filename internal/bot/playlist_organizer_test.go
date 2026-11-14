@@ -775,7 +775,7 @@ func TestPlaylistAssignmentUsesLegacyWebAppForEachSong(t *testing.T) {
 		song:            unplaylistSong{ID: "song-1", Title: "Song", Artist: "Artist"},
 		webAppButtonURL: "https://webapp.example.com/?data=%7B%7D",
 	}
-	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "归档到：未选择") || strings.Contains(text, "打开歌单选择页面") {
+	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "归档：待选择") || strings.Contains(text, "打开歌单选择页面") {
 		t.Fatalf("per-song selection copy = %q", text)
 	}
 	menuMarkup := playlistAssignmentMarkup(menu)
@@ -839,16 +839,15 @@ func TestPlaylistAssignmentMessageIsCompactAndDoesNotRepeatButtonInstructions(t 
 	for _, expected := range []string{
 		"雨下一整晚",
 		"周杰伦 · 跨时代 · 2010",
-		"归档到：未选择",
-		"同歌手歌单：HipHop、中文",
-		"🌐 已检索 · AI 建议：中文、弦乐",
-		"进度：确认 2 · 新加入 2 · 跳过 0",
+		"归档：待选择",
+		"🤖 AI 建议：中文、弦乐",
+		"进度：已确认 2 · 跳过 0",
 	} {
 		if !strings.Contains(message, expected) {
 			t.Errorf("message %q does not contain %q", message, expected)
 		}
 	}
-	if strings.Count(message, "\n\n") > 1 || strings.Contains(message, "打开歌单选择页面") {
+	if strings.Count(message, "\n\n") > 1 || strings.Contains(message, "打开歌单选择页面") || strings.Contains(message, "同歌手歌单：") {
 		t.Fatalf("message contains excessive spacing or repeats the button action: %q", message)
 	}
 }
@@ -882,7 +881,7 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 			assignment: pendingPlaylistAssignment{
 				song: unplaylistSong{ID: "song-1", Title: "Song"},
 			},
-			want: "AI 归档建议未开启",
+			want: "AI 建议未启用",
 		},
 		{
 			name: "AI suggestions available",
@@ -891,14 +890,14 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				playlistAssist:       true,
 				aiSuggestedPlaylists: []string{"摇滚"},
 			},
-			want: "已检索 · AI 建议",
+			want: "🤖 AI 建议",
 		},
 		{
-			name: "peer playlist is included with AI suggestions",
+			name: "peer playlist details are omitted from the concise status",
 			assignment: pendingPlaylistAssignment{
 				song: unplaylistSong{ID: "song-1", Playlists: "华语"},
 			},
-			want: "同歌手歌单：华语",
+			want: "AI 建议未启用",
 		},
 		{
 			name: "AI suggestion unavailable",
@@ -907,7 +906,7 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				playlistAssist:          true,
 				aiSuggestionUnavailable: true,
 			},
-			want: "WebSearch 或 AI 暂不可用",
+			want: "AI 建议暂不可用",
 		},
 		{
 			name: "AI suggestions finish before the picker is shown",
@@ -916,7 +915,7 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				playlistAssist:      true,
 				aiSuggestionLoading: true,
 			},
-			want: "正在检索公开资料",
+			want: "正在生成归档建议",
 		},
 		{
 			name: "search completed without reliable match",
@@ -924,7 +923,7 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				song:           unplaylistSong{ID: "song-1", Title: "Song"},
 				playlistAssist: true,
 			},
-			want: "未能确认可靠的归档匹配",
+			want: "AI 暂无可靠建议",
 		},
 	}
 	for _, test := range tests {

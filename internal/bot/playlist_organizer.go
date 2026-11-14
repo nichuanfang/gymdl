@@ -1434,22 +1434,16 @@ func (app *BotApp) playlistAssignmentStatus(assignment pendingPlaylistAssignment
 	if assignment.statusNote != "" {
 		return assignment.statusNote
 	}
-	var notes []string
-	if peers := splitPlaylistNames(assignment.song.Playlists); len(peers) > 0 {
-		notes = append(notes, "同歌手歌单："+formatPlaylistNameList(peers))
-	}
 	if assignment.aiSuggestionLoading {
-		notes = append(notes, "🌐 正在检索公开资料并生成归档建议…")
+		return "🤖 正在生成归档建议…"
 	} else if len(assignment.aiSuggestedPlaylists) > 0 {
-		notes = append(notes, "🌐 已检索 · AI 建议："+formatPlaylistNameList(assignment.aiSuggestedPlaylists))
+		return "🤖 AI 建议：" + formatPlaylistNameList(assignment.aiSuggestedPlaylists)
 	} else if assignment.aiSuggestionUnavailable {
-		notes = append(notes, "⚠️ WebSearch 或 AI 暂不可用")
+		return "⚠️ AI 建议暂不可用"
 	} else if !assignment.playlistAssist {
-		notes = append(notes, "AI 归档建议未开启")
-	} else {
-		notes = append(notes, "🌐 已检索 · 未能确认可靠的归档匹配")
+		return "AI 建议未启用"
 	}
-	return strings.Join(notes, "\n")
+	return "AI 暂无可靠建议"
 }
 
 func formatPlaylistNameList(names []string) string {
@@ -1481,7 +1475,7 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 			text.WriteString("\n")
 			text.WriteString(assignment.statusNote)
 		} else {
-			text.WriteString("\n正在查找待整理歌曲…")
+			text.WriteString("\n正在查找歌曲…")
 		}
 		return text.String()
 	}
@@ -1500,10 +1494,10 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 	if assignment.selectionComplete {
 		fmt.Fprintf(&text, "\n归档到：%s", formatPlaylistNameList(assignment.selectedPlaylists))
 	} else {
-		text.WriteString("\n归档到：未选择")
+		text.WriteString("\n归档：待选择")
 	}
 	if assignment.processedCount > 0 || assignment.skippedCount > 0 {
-		fmt.Fprintf(&text, "\n进度：确认 %d · 新加入 %d · 跳过 %d", assignment.processedCount, assignment.addedCount, assignment.skippedCount)
+		fmt.Fprintf(&text, "\n进度：已确认 %d · 跳过 %d", assignment.processedCount, assignment.skippedCount)
 	}
 	status := app.playlistAssignmentStatus(assignment)
 	if status != "" {
@@ -1511,7 +1505,7 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 		text.WriteString(status)
 	}
 	if assignment.hiddenPlaylistCount > 0 {
-		fmt.Fprintf(&text, "\n⚠️ %d 个歌单未显示（名称格式不支持）。", assignment.hiddenPlaylistCount)
+		fmt.Fprintf(&text, "\n⚠️ %d 个歌单未显示。", assignment.hiddenPlaylistCount)
 	}
 	return text.String()
 }
