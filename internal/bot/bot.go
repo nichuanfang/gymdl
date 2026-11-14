@@ -8,6 +8,7 @@ import (
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/internal/aichat"
+	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
 	"github.com/nichuanfang/gymdl/internal/musicdedupe"
 	"github.com/nichuanfang/gymdl/utils"
 	"go.uber.org/zap"
@@ -125,6 +126,7 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 		emptyTrashRunning:         make(map[int64]struct{}),
 		emptyTrashPending:         make(map[string]pendingEmptyTrash),
 	}
+	web.SetPlaylistAssignmentSelectionHandler(app.HandlePlaylistAssignmentWebAppSelection)
 	app.initAI()
 	//注册处理器
 	app.registerHandlers()

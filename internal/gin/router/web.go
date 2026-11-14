@@ -21,6 +21,9 @@ func SetupWebRoutesWithTaskManager(rg *gin.RouterGroup, c *config.Config, tm *ta
 	web.SetConfigFilePath(c.ConfigFile)
 
 	web.SetTaskManager(tm)
+	// The one-time Telegram WebApp selection token and signed initData protect
+	// this callback; it must remain outside the WebUI's cookie-auth group.
+	rg.POST("/playlist-assignment/:token", web.HandlePlaylistAssignmentWebAppSelection)
 
 	group := rg.Group("/web")
 	authSecure := c.WebConfig != nil && c.WebConfig.Https

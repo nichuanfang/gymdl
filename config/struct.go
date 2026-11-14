@@ -157,6 +157,7 @@ type PlaylistOrganizerConfig struct {
 	NavidromeURL      string         `yaml:"navidrome_url"`           // Navidrome服务地址
 	NavidromeUsername string         `yaml:"navidrome_username"`      // Navidrome用户名
 	NavidromePassword string         `yaml:"navidrome_password"`      // Navidrome密码
+	WebAppURL         string         `yaml:"web_app_url"`             // Nginx 上 Telegram 歌单选择页面地址
 	PlaylistAssist    bool           `yaml:"playlist_assist"`         // 是否使用AI预选歌单
 	TidyPlaylist      []PlaylistInfo `yaml:"tidy_playlist,omitempty"` // 歌单整理选项（实际保存在 config.playlists.yaml）
 }

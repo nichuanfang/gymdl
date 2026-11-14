@@ -265,6 +265,7 @@ playlist_organizer:
   navidrome_url: '' # Navidrome地址
   navidrome_username: '' # Navidrome用户名
   navidrome_password: '' # Navidrome密码
+  web_app_url: '' # Nginx 上 Telegram 歌单选择页面地址，例如 https://webapp.example.com
   playlist_assist: false # 是否使用 AI 为歌单整理预选分类
   # 歌单列表保存在同目录的 config.playlists.yaml，示例见 config.playlists.example.yaml
 

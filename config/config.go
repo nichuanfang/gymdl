@@ -280,6 +280,7 @@ func (c *Config) setDefaults() {
 			NavidromeURL:      "",
 			NavidromeUsername: "",
 			NavidromePassword: "",
+			WebAppURL:         "",
 			PlaylistAssist:    false,
 			TidyPlaylist:      make([]PlaylistInfo, 0),
 		}
