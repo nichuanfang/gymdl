@@ -10,7 +10,15 @@ import (
 // allow-listed tools into ordinary agent tools. A failed server is skipped so
 // one broken endpoint cannot disable the whole agent.
 func LoadMCPTools(ctx context.Context, clients []*MCPClient) []Tool {
+	tools, _ := LoadMCPToolsWithErrors(ctx, clients)
+	return tools
+}
+
+// LoadMCPToolsWithErrors initializes configured MCP servers and returns any
+// failures alongside the tools that were successfully loaded.
+func LoadMCPToolsWithErrors(ctx context.Context, clients []*MCPClient) ([]Tool, []error) {
 	out := make([]Tool, 0)
+	var failures []error
 	for _, client := range clients {
 		if client == nil {
 			continue
@@ -19,11 +27,12 @@ func LoadMCPTools(ctx context.Context, clients []*MCPClient) []Tool {
 		tools, err := client.Tools(initCtx)
 		cancel()
 		if err != nil {
+			failures = append(failures, err)
 			continue
 		}
 		out = append(out, tools...)
 	}
-	return out
+	return out, failures
 }
 
 // MergeTools appends sources while dropping duplicate names; the first

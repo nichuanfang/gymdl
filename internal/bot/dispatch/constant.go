@@ -17,7 +17,8 @@ type Session struct {
 	Link                    string         // 有效链接
 	Start                   time.Time      // 开始处理时间
 	Cfg                     *config.Config // 配置文件
+	CandidateToken          string         // AI 推荐候选 ID；成功入库后用于更新候选状态
 	OnMusicDownloaded       func([]*music.SongInfo)
 	CreateMusicActionMarkup func(*music.SongInfo) (string, *tb.ReplyMarkup)
-	SetMusicActionMessages  func([]string, *tb.Message, *tb.ReplyMarkup)
+	SetMusicActionMessages  func([]string, *tb.Message, *tb.ReplyMarkup, int64, int64)
 }

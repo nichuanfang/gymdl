@@ -24,14 +24,23 @@ var duplicateCallbackEndpoint = tb.InlineButton{Unique: duplicateCallbackUnique}
 
 type pendingMusicDownload struct {
 	userID         int64
+	chatID         int64
+	origin         *tb.Message
 	link           string
 	cfg            *config.Config
 	track          musicdedupe.Track
 	reservationKey string
+	candidateToken string
 	expiresAt      time.Time
 }
 
 func (app *BotApp) handleMusicWithDuplicateCheck(session *dispatch.Session, p music.Processor) error {
+	if app.musicDedupe == nil {
+		if _, err := session.Bot.Edit(session.Msg, "❌ 本地查重暂时不可用，本次下载未启动，请稍后重试。", tb.ModeHTML); err != nil {
+			return err
+		}
+		return errMusicDedupeUnavailable
+	}
 	track := musicdedupe.IdentityFromLink(p.Name(), session.Link)
 	if musicdedupe.IsSingleTrackLink(p.Name(), session.Link) {
 		metadata, err := resolveMusicMetadata(session.Cfg, p.Name(), session.Link)
@@ -47,8 +56,10 @@ func (app *BotApp) handleMusicWithDuplicateCheck(session *dispatch.Session, p mu
 
 	reservationKey := musicdedupe.ReservationKey(track)
 	if reservationKey != "" && !app.reserveMusicKey(reservationKey) {
-		_, _ = session.Bot.Edit(session.Msg, "⏳ 这首歌已经有一个下载或确认任务正在处理，请稍后再试。", tb.ModeHTML)
-		return nil
+		if _, err := session.Bot.Edit(session.Msg, "⏳ 这首歌已经有一个下载或确认任务正在处理，请稍后再试。", tb.ModeHTML); err != nil {
+			return err
+		}
+		return errMusicDownloadAlreadyProcessing
 	}
 	reserved := reservationKey != ""
 	defer func() {
@@ -59,9 +70,11 @@ func (app *BotApp) handleMusicWithDuplicateCheck(session *dispatch.Session, p mu
 
 	match, err := app.musicDedupe.FindDuplicate(context.Background(), track)
 	if err != nil {
-		_, _ = session.Bot.Edit(session.Msg, "❌ 本地查重数据库暂时不可用，本次下载未启动，请稍后重试。", tb.ModeHTML)
+		if _, editErr := session.Bot.Edit(session.Msg, "❌ 本地查重数据库暂时不可用，本次下载未启动，请稍后重试。", tb.ModeHTML); editErr != nil {
+			return editErr
+		}
 		utils.ErrorWithFormat("[TelegramDuplicate] SQLite 查询失败: %v", err)
-		return nil
+		return errMusicDedupeUnavailable
 	}
 	if match != nil {
 		if err := app.askDuplicateConfirmation(session, track, *match, reservationKey); err != nil {
@@ -70,7 +83,7 @@ func (app *BotApp) handleMusicWithDuplicateCheck(session *dispatch.Session, p mu
 			return err
 		}
 		reserved = false
-		return nil
+		return errDuplicateConfirmationPending
 	}
 
 	app.attachDownloadRecorder(session, p.Name(), track)
@@ -91,15 +104,32 @@ func resolveMusicMetadata(cfg *config.Config, kind processor.LinkType, rawURL st
 }
 
 func (app *BotApp) attachDownloadRecorder(session *dispatch.Session, kind processor.LinkType, identity musicdedupe.Track) {
+	previousCallback := session.OnMusicDownloaded
 	session.OnMusicDownloaded = func(songs []*music.SongInfo) {
 		for _, song := range songs {
 			if song == nil {
 				continue
 			}
 			record := successfulDownloadRecord(kind, session.Link, identity, song, len(songs))
-			if err := app.musicDedupe.RecordSuccessfulDownload(context.Background(), record); err != nil {
-				utils.ErrorWithFormat("[TelegramDuplicate] 下载成功但保存去重记录失败: %v", err)
+			if app.musicDedupe != nil {
+				if err := app.musicDedupe.RecordSuccessfulDownload(context.Background(), record); err != nil {
+					utils.ErrorWithFormat("[TelegramDuplicate] 下载成功但保存去重记录失败: %v", err)
+				}
+			} else {
+				utils.ErrorWithFormat("[TelegramDuplicate] 下载成功但查重数据库不可用")
 			}
+		}
+		if len(songs) > 0 && session.CandidateToken != "" && app.aiStore != nil && session.User != nil {
+			userID, chatID := session.User.ID, int64(0)
+			if session.Context != nil && session.Context.Chat() != nil {
+				chatID = session.Context.Chat().ID
+			}
+			if err := app.aiStore.MarkCandidateOwned(userID, chatID, session.CandidateToken); err != nil {
+				utils.WarnWithFormat("[AI] 下载已入库，但更新候选状态失败: %v", err)
+			}
+		}
+		if previousCallback != nil {
+			previousCallback(songs)
 		}
 	}
 }
@@ -127,11 +157,16 @@ func (app *BotApp) askDuplicateConfirmation(session *dispatch.Session, incoming 
 	token := strings.ReplaceAll(uuid.NewString(), "-", "")
 	item := pendingMusicDownload{
 		userID:         session.User.ID,
+		origin:         session.Msg,
 		link:           session.Link,
 		cfg:            session.Cfg,
 		track:          incoming,
 		reservationKey: reservationKey,
+		candidateToken: session.CandidateToken,
 		expiresAt:      time.Now().Add(duplicateConfirmationTTL),
+	}
+	if session.Context != nil && session.Context.Chat() != nil {
+		item.chatID = session.Context.Chat().ID
 	}
 	app.pendingMu.Lock()
 	app.purgeExpiredPendingLocked(time.Now())
@@ -144,9 +179,9 @@ func (app *BotApp) askDuplicateConfirmation(session *dispatch.Session, incoming 
 	markup.Inline(markup.Row(continueButton, cancelButton))
 	message := fmt.Sprintf(
 		"⚠️ 检测到可能重复的歌曲\n\n歌名：《%s》\n歌手：%s\n专辑：%s\n\n匹配依据：%s\n仍要继续下载吗？",
-		firstNonEmpty(match.Title, incoming.Title),
-		firstNonEmpty(match.Artist, incoming.Artist),
-		firstNonEmpty(match.Album, incoming.Album),
+		displaySongValue(firstNonEmpty(match.Title, incoming.Title)),
+		displaySongValue(firstNonEmpty(match.Artist, incoming.Artist)),
+		displaySongValue(firstNonEmpty(match.Album, incoming.Album)),
 		matchReason(match.MatchedBy),
 	)
 	if _, err := session.Bot.Edit(session.Msg, message, markup); err != nil {
@@ -179,6 +214,14 @@ func (app *BotApp) HandleDuplicateMusicCallback(c tb.Context) error {
 		app.pendingMu.Unlock()
 		return c.Respond(&tb.CallbackResponse{Text: "只有发起下载的用户可以确认", ShowAlert: true})
 	}
+	var callbackMessage *tb.Message
+	if callback := c.Callback(); callback != nil {
+		callbackMessage = callback.Message
+	}
+	if !sameMusicActionMessage(pending.origin, callbackMessage) || (pending.chatID != 0 && (c.Chat() == nil || c.Chat().ID != pending.chatID)) {
+		app.pendingMu.Unlock()
+		return c.Respond(&tb.CallbackResponse{Text: "请使用原下载提示中的按钮", ShowAlert: true})
+	}
 	delete(app.pendingMusic, token)
 	app.pendingMu.Unlock()
 
@@ -190,7 +233,11 @@ func (app *BotApp) HandleDuplicateMusicCallback(c tb.Context) error {
 
 	_ = c.Respond()
 	if err := c.Edit("✅ 已确认，开始下载…", &tb.ReplyMarkup{}); err != nil {
-		app.releaseMusicKey(pending.reservationKey)
+		app.pendingMu.Lock()
+		if !time.Now().After(pending.expiresAt) {
+			app.pendingMusic[token] = pending
+		}
+		app.pendingMu.Unlock()
 		return err
 	}
 	defer app.releaseMusicKey(pending.reservationKey)
@@ -210,6 +257,7 @@ func (app *BotApp) HandleDuplicateMusicCallback(c tb.Context) error {
 		Link:                    link,
 		Start:                   time.Now(),
 		Cfg:                     pending.cfg,
+		CandidateToken:          pending.candidateToken,
 		CreateMusicActionMarkup: app.musicActionMarkup,
 		SetMusicActionMessages:  app.setMusicActionMessages,
 	}

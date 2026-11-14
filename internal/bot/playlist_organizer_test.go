@@ -35,10 +35,80 @@ func TestParsePlaylistSuggestionsRequiresConfiguredExactNames(t *testing.T) {
 	if got, ok := parsePlaylistSuggestions("未知", options); !ok || len(got) != 0 {
 		t.Fatalf("valid no-match response = %#v, %v", got, ok)
 	}
+	for _, noMatch := range []string{"[]", "```json\n[]\n```", `{"playlists":[]}`} {
+		if got, ok := parsePlaylistSuggestions(noMatch, options); !ok || len(got) != 0 {
+			t.Errorf("valid no-match response %q = %#v, %v", noMatch, got, ok)
+		}
+	}
 	for _, invalid := range []string{"华语,不存在", "", `{"playlists":["华语","不存在"]}`} {
 		if got, ok := parsePlaylistSuggestions(invalid, options); ok {
 			t.Errorf("invalid suggestion %q accepted: %#v", invalid, got)
 		}
+	}
+}
+
+func TestCreateAIPlaylistReusesMarkerAndRejectsDuplicateNames(t *testing.T) {
+	var playlists []navidromeAPIPlaylist
+	var createCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/auth/login" && r.Method == http.MethodPost:
+			writeJSON(t, w, map[string]string{"token": "test-token"})
+		case r.URL.Path == "/api/playlist" && r.Method == http.MethodGet:
+			if r.Header.Get("X-Nd-Authorization") != "Bearer test-token" {
+				t.Errorf("playlist listing missing bearer token: %q", r.Header.Get("X-Nd-Authorization"))
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			writeJSON(t, w, playlists)
+		case r.URL.Path == "/api/playlist" && r.Method == http.MethodPost:
+			if r.Header.Get("Content-Type") != "application/json" || r.Header.Get("X-Nd-Authorization") != "Bearer test-token" {
+				t.Errorf("playlist creation headers incorrect: %#v", r.Header)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			var body struct {
+				Name    string `json:"name"`
+				Comment string `json:"comment"`
+				Public  bool   `json:"public"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode create playlist body: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if body.Name != "[AI] 夜间" || !strings.HasPrefix(body.Comment, "gymdl-ai-playlist-create:") || body.Public {
+				t.Errorf("unexpected new playlist payload: %#v", body)
+			}
+			createCalls++
+			playlist := navidromeAPIPlaylist{ID: "playlist1", Name: body.Name, Comment: body.Comment}
+			playlists = append(playlists, playlist)
+			w.WriteHeader(http.StatusCreated)
+			writeJSON(t, w, playlist)
+		default:
+			t.Errorf("unexpected Navidrome request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	service := &playlistOrganizerService{
+		config: &config.PlaylistOrganizerConfig{NavidromeURL: server.URL, NavidromeUsername: "user", NavidromePassword: "pass"},
+		client: server.Client(),
+	}
+	marker := "gymdl-ai-playlist-create:operation1"
+	created, err := service.createAIPlaylist(context.Background(), "[AI] 夜间", marker)
+	if err != nil || created.ID != "playlist1" || created.Description != marker {
+		t.Fatalf("createAIPlaylist = %#v, err=%v", created, err)
+	}
+	reused, err := service.createAIPlaylist(context.Background(), "[AI] 夜间", marker)
+	if err != nil || reused.ID != "playlist1" || createCalls != 1 {
+		t.Fatalf("retry should reuse created playlist: playlist=%#v err=%v createCalls=%d", reused, err, createCalls)
+	}
+	if _, err := service.createAIPlaylist(context.Background(), "[AI] 夜间", "gymdl-ai-playlist-create:different-marker"); err == nil || !strings.Contains(err.Error(), "已存在") {
+		t.Fatalf("duplicate name should be rejected before creation: %v", err)
+	}
+	if createCalls != 1 {
+		t.Fatalf("duplicate name unexpectedly created a second playlist: %d", createCalls)
 	}
 }
 
@@ -47,6 +117,8 @@ func TestParsePlaylistSuggestionsAcceptsCommonModelFormatting(t *testing.T) {
 		{Name: "华语"},
 		{Name: "女声"},
 		{Name: "摇滚"},
+		{Name: "Chillhop&HipHop(Inst)"},
+		{Name: "Hiphop"},
 	}
 	for _, test := range []struct {
 		name   string
@@ -57,6 +129,9 @@ func TestParsePlaylistSuggestionsAcceptsCommonModelFormatting(t *testing.T) {
 		{name: "numbered lines", output: "1. 华语\n2. 女声", want: []string{"华语", "女声"}},
 		{name: "json array", output: `["华语","女声"]`, want: []string{"华语", "女声"}},
 		{name: "json object", output: `{"playlists":["华语","女声"]}`, want: []string{"华语", "女声"}},
+		{name: "configured name ending in punctuation", output: "Chillhop&HipHop(Inst)", want: []string{"Chillhop&HipHop(Inst)"}},
+		{name: "punctuated name with another suggestion", output: "Chillhop&HipHop(Inst),Hiphop", want: []string{"Chillhop&HipHop(Inst)", "Hiphop"}},
+		{name: "json array preserves punctuation in configured names", output: `["Chillhop&HipHop(Inst)","Hiphop"]`, want: []string{"Chillhop&HipHop(Inst)", "Hiphop"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got, ok := parsePlaylistSuggestions(test.output, options)
@@ -217,8 +292,8 @@ func TestPlaylistAssignmentAISuggestionsCallsConfiguredModel(t *testing.T) {
 		t.Fatalf("formatted classifier recommendation = %#v, unavailable=%v", suggestions, unavailable)
 	}
 	classifierPrompt := playlistClassifierPrompt(song, assignment.playlists, "evidence")
-	if !strings.Contains(classifierPrompt, "必须至少推荐 1 个") || !strings.Contains(classifierPrompt, "WebSearch 没有找到有效资料时") {
-		t.Fatal("classifier prompt should produce a best-fit recommendation when search evidence is sparse")
+	if !strings.Contains(classifierPrompt, "无匹配时返回 []") || !strings.Contains(classifierPrompt, "搜索资料不足时") {
+		t.Fatal("classifier prompt should request a best-fit recommendation and a clear no-match result")
 	}
 	classifierOutput = "华语, 不在可选列表"
 	_, unavailable = app.playlistAssignmentAISuggestions(context.Background(), song, assignment)
@@ -923,7 +998,7 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				song:           unplaylistSong{ID: "song-1", Title: "Song"},
 				playlistAssist: true,
 			},
-			want: "AI 暂无可靠建议",
+			want: "AI 暂未找到合适歌单，请手动选择",
 		},
 	}
 	for _, test := range tests {

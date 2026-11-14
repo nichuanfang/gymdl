@@ -33,7 +33,7 @@ func (app *BotApp) registerHandlers() {
 	app.bot.Handle("/empty_trash", app.EmptyTrashCommand)
 
 	// 指令注册器
-	app.bot.Handle("/setCommands", SetCommands)
+	app.bot.Handle("/set_commands", SetCommands)
 
 	// 普通文本
 	app.bot.Handle(tb.OnText, app.HandleText)

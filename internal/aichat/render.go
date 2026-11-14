@@ -82,46 +82,120 @@ func SplitMessage(body string) []string {
 	if utf8.RuneCountInString(body) <= telegramMessageLimit {
 		return []string{body}
 	}
+	const chunkRuneLimit = telegramMessageLimit - 64
 	lines := strings.Split(body, "\n")
 	var chunks []string
 	var current strings.Builder
 	count := 0
+	openTags := make([]string, 0, 2)
 	flush := func() {
 		if current.Len() == 0 {
 			return
 		}
+		for index := len(openTags) - 1; index >= 0; index-- {
+			current.WriteString("</" + openTags[index] + ">")
+		}
 		chunks = append(chunks, strings.TrimRight(current.String(), "\n"))
 		current.Reset()
 		count = 0
+		for _, tag := range openTags {
+			reopen := "<" + tag + ">"
+			current.WriteString(reopen)
+			count += utf8.RuneCountInString(reopen)
+		}
 	}
-	for _, line := range lines {
-		lineLen := utf8.RuneCountInString(line) + 1
-		if count+lineLen > telegramMessageLimit-64 {
-			flush()
+	appendToken := func(token string) {
+		current.WriteString(token)
+		count += utf8.RuneCountInString(token)
+		if name, opening, ok := splitMessageTag(token); ok {
+			if opening {
+				openTags = append(openTags, name)
+			} else {
+				for index := len(openTags) - 1; index >= 0; index-- {
+					if openTags[index] == name {
+						openTags = append(openTags[:index], openTags[index+1:]...)
+						break
+					}
+				}
+			}
 		}
-		// A single line longer than the limit is split on runes; emphasis
-		// markers may then break, so the raw line is used rather than markup
-		// that could cross the boundary.
-		for utf8.RuneCountInString(line) > telegramMessageLimit {
-			runes := []rune(line)
-			cut := telegramMessageLimit - 64
-			current.WriteString(string(runes[:cut]))
-			flush()
-			line = string(runes[cut:])
-			lineLen = utf8.RuneCountInString(line) + 1
+	}
+	for lineIndex, line := range lines {
+		tokens := splitMessageLineTokens(line)
+		lineLength := 0
+		for _, token := range tokens {
+			lineLength += utf8.RuneCountInString(token)
 		}
-		if count+lineLen > telegramMessageLimit-64 {
+		if count+lineLength <= chunkRuneLimit {
+			for _, token := range tokens {
+				appendToken(token)
+			}
+		} else {
 			flush()
+			for _, token := range tokens {
+				if count+utf8.RuneCountInString(token) > chunkRuneLimit {
+					flush()
+				}
+				appendToken(token)
+			}
 		}
-		current.WriteString(line)
-		current.WriteString("\n")
-		count += lineLen
+		if lineIndex < len(lines)-1 {
+			if count+1 > chunkRuneLimit {
+				flush()
+			}
+			appendToken("\n")
+		}
 	}
 	flush()
 	if len(chunks) == 0 {
 		return []string{body}
 	}
 	return chunks
+}
+
+func splitMessageLineTokens(line string) []string {
+	tokens := make([]string, 0, utf8.RuneCountInString(line))
+	for len(line) > 0 {
+		if line[0] == '<' {
+			if end := strings.IndexByte(line, '>'); end >= 0 {
+				tag := line[:end+1]
+				if _, _, ok := splitMessageTag(tag); ok {
+					tokens = append(tokens, tag)
+					line = line[end+1:]
+					continue
+				}
+			}
+		}
+		if line[0] == '&' {
+			if end := strings.IndexByte(line, ';'); end > 1 && end <= 12 {
+				tokens = append(tokens, line[:end+1])
+				line = line[end+1:]
+				continue
+			}
+		}
+		_, size := utf8.DecodeRuneInString(line)
+		if size == 0 {
+			break
+		}
+		tokens = append(tokens, line[:size])
+		line = line[size:]
+	}
+	return tokens
+}
+
+func splitMessageTag(token string) (name string, opening bool, ok bool) {
+	switch token {
+	case "<b>":
+		return "b", true, true
+	case "</b>":
+		return "b", false, true
+	case "<code>":
+		return "code", true, true
+	case "</code>":
+		return "code", false, true
+	default:
+		return "", false, false
+	}
 }
 
 // PlatformLabel renders a provider name the way the candidate list shows it.

@@ -49,9 +49,10 @@ func (s *Session) HandleMusic(p music.Processor) error {
 		_, _ = bot.Edit(msg, fmt.Sprintf("⚠️ 文件入库失败：\n<pre>%s</pre>", utils.EscapeHTML(utils.TruncateString(err.Error(), 400))), tb.ModeHTML)
 		return nil
 	}
-	s.setStoredMusicPaths(p.Songs())
+	songs := nonNilMusicSongs(p.Songs())
+	s.setStoredMusicPaths(songs)
 	if s.OnMusicDownloaded != nil {
-		s.OnMusicDownloaded(p.Songs())
+		s.OnMusicDownloaded(songs)
 	}
 
 	// 成功反馈
@@ -64,7 +65,7 @@ func (s *Session) sendMusicFeedback(p music.Processor) {
 	bot := s.Bot
 	msg := s.Msg
 
-	songs := p.Songs()
+	songs := nonNilMusicSongs(p.Songs())
 	count := len(songs)
 
 	if count == 0 {
@@ -90,10 +91,10 @@ func (s *Session) sendMusicFeedback(p music.Processor) {
 			utils.EscapeHTML(utils.TruncateString(song.SongName, 80)),
 			utils.EscapeHTML(utils.TruncateString(song.SongArtists, 80)),
 			utils.EscapeHTML(utils.TruncateString(song.SongAlbum, 80)),
-			strings.ToUpper(song.FileExt),
-			song.Bitrate,
+			utils.EscapeHTML(strings.ToUpper(song.FileExt)),
+			utils.EscapeHTML(song.Bitrate),
 			fileSizeMB,
-			storageLabel,
+			utils.EscapeHTML(storageLabel),
 		)
 
 		s.editMusicSuccess(successMsg, songs)
@@ -109,7 +110,7 @@ func (s *Session) sendMusicFeedback(p music.Processor) {
 			utils.EscapeHTML(utils.TruncateString(s.SongName, 60)),
 			utils.EscapeHTML(utils.TruncateString(s.SongArtists, 40)),
 			utils.EscapeHTML(utils.TruncateString(s.SongAlbum, 40)),
-			s.Bitrate,
+			utils.EscapeHTML(s.Bitrate),
 			fileSizeMB,
 		))
 
@@ -130,11 +131,21 @@ func (s *Session) sendMusicFeedback(p music.Processor) {
 			"☁️ <b>入库状态:</b> %s\n",
 		count,
 		listBuilder.String(),
-		strings.ToUpper(songs[0].FileExt),
-		tidyStorageLabel(songs[0].Tidy),
+		utils.EscapeHTML(strings.ToUpper(songs[0].FileExt)),
+		utils.EscapeHTML(tidyStorageLabel(songs[0].Tidy)),
 	)
 
 	s.editMusicSuccess(successMsg, songs)
+}
+
+func nonNilMusicSongs(songs []*music.SongInfo) []*music.SongInfo {
+	valid := make([]*music.SongInfo, 0, len(songs))
+	for _, song := range songs {
+		if song != nil {
+			valid = append(valid, song)
+		}
+	}
+	return valid
 }
 
 func tidyStorageLabel(tidy string) string {
@@ -174,7 +185,14 @@ func (s *Session) editMusicSuccess(text string, songs []*music.SongInfo) {
 		if updated == nil {
 			updated = s.Msg
 		}
-		s.SetMusicActionMessages(actionTokens, updated, actionMarkup)
+		var userID, chatID int64
+		if s.User != nil {
+			userID = s.User.ID
+		}
+		if s.Context != nil && s.Context.Chat() != nil {
+			chatID = s.Context.Chat().ID
+		}
+		s.SetMusicActionMessages(actionTokens, updated, actionMarkup, userID, chatID)
 	}
 }
 

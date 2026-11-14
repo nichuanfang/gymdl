@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nichuanfang/gymdl/internal/bot/dispatch"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core/linkparser"
+	"github.com/nichuanfang/gymdl/internal/musicdedupe"
+	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/processor/music"
 	"github.com/nichuanfang/gymdl/processor/video"
 	tb "gopkg.in/telebot.v4"
@@ -40,7 +43,13 @@ func (app *BotApp) HandleText(c tb.Context) error {
 	}
 	// Links always take priority over AI mode so sharing a track never starts a
 	// chat turn and never needs the user to leave the conversation first.
-	msg, _ := b.Send(user, "🔍 正在识别链接...")
+	if c.Chat() == nil {
+		return c.Send("无法读取 Telegram 聊天信息，请重新发送链接。")
+	}
+	msg, err := b.Send(c.Chat(), "🔍 正在识别链接...")
+	if err != nil {
+		return err
+	}
 	utils.InfoWithFormat("[Telegram] 解析成功: %s", link)
 
 	// 创建会话对象
@@ -56,7 +65,6 @@ func (app *BotApp) HandleText(c tb.Context) error {
 		CreateMusicActionMarkup: app.musicActionMarkup,
 		SetMusicActionMessages:  app.setMusicActionMessages,
 	}
-	var err error
 	switch expr := executor.(type) {
 	case music.Processor:
 		// 初始化音乐处理器
@@ -70,27 +78,42 @@ func (app *BotApp) HandleText(c tb.Context) error {
 		err = errors.New(fmt.Sprintf("未知处理器类型: %v", expr))
 	}
 	if err != nil {
+		if errors.Is(err, errMusicDownloadAlreadyProcessing) || errors.Is(err, errDuplicateConfirmationPending) || errors.Is(err, errMusicDedupeUnavailable) {
+			return nil // handleMusicWithDuplicateCheck already edited the status message
+		}
 		errMsg := fmt.Sprintf(
 			"❌ 处理失败\n\n"+
 				"处理器: %s\n"+
 				"详情: %s",
-			executor.Name(), err.Error(),
+			utils.EscapeHTML(processorDisplayName(executor)), utils.EscapeHTML(utils.TruncateString(err.Error(), 400)),
 		)
-		_, _ = b.Edit(msg, errMsg)
+		_, _ = b.Edit(msg, errMsg, tb.ModeHTML)
 	}
 	return nil
 }
 
 // HandleAudio 处理音频
 func (app *BotApp) HandleAudio(c tb.Context) error {
+	if c.Message() == nil || c.Message().Audio == nil {
+		return c.Send("❌ 没有收到可处理的音频文件，请重新发送。")
+	}
 	file := &c.Message().Audio.File
+	if file.FileSize > 20*1024*1024 {
+		return c.Send("❌ 音频超过 Telegram 机器人的下载限制（20 MB），请发送较小的文件。")
+	}
 
 	text := c.Text()
 	user := c.Sender()
 	b := c.Bot()
 
 	// 初始提示
-	msg, _ := b.Send(user, "🎧 正在处理音频...")
+	if c.Chat() == nil {
+		return c.Send("无法读取 Telegram 聊天信息，请重新发送音频。")
+	}
+	msg, err := b.Send(c.Chat(), "🎧 正在处理音频...")
+	if err != nil {
+		return err
+	}
 
 	// New Telegram audio tasks also capture the currently active safe overrides.
 	taskConfig := config.WithLiveTaskOverrides(app.cfg)
@@ -107,8 +130,8 @@ func (app *BotApp) HandleAudio(c tb.Context) error {
 		SetMusicActionMessages:  app.setMusicActionMessages,
 	}
 
-	processor := &music.ForwardProcessor{}
-	processor.Init(taskConfig)
+	forwardProcessor := &music.ForwardProcessor{}
+	forwardProcessor.Init(taskConfig)
 
 	// 获取文件流 最大支持20MB
 	closer, err := b.File(file)
@@ -126,15 +149,32 @@ func (app *BotApp) HandleAudio(c tb.Context) error {
 	}
 
 	// data 完整的音频字节数组
-	processor.AudioBytes = data
+	forwardProcessor.AudioBytes = data
 	// file.FilePath
-	processor.FileName = filepath.Base(file.FilePath)
+	fileName := strings.TrimSpace(c.Message().Audio.FileName)
+	if fileName == "" {
+		fileName = file.FilePath
+	}
+	forwardProcessor.FileName = filepath.Base(fileName)
+	if forwardProcessor.FileName == "." || forwardProcessor.FileName == string(filepath.Separator) || strings.TrimSpace(forwardProcessor.FileName) == "" {
+		_, _ = b.Edit(msg, "❌ 音频文件名无效，请重新发送文件。")
+		return nil
+	}
+	identity := musicdedupe.Track{Platform: string(processor.LinkForwardMusic)}
+	app.attachDownloadRecorder(session, processor.LinkForwardMusic, identity)
 
 	// 处理音频
-	err = session.HandleMusic(processor)
+	err = session.HandleMusic(forwardProcessor)
 	if err != nil {
 		_, _ = b.Edit(msg, fmt.Sprintf("处理失败：%s", err.Error()))
 		return nil
 	}
 	return nil
+}
+
+func processorDisplayName(value processor.Processor) string {
+	if value == nil {
+		return "未知"
+	}
+	return string(value.Name())
 }

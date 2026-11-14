@@ -73,3 +73,33 @@ func TestSplitMessageKeepsChunksWithinTelegramLimit(t *testing.T) {
 		t.Fatalf("short message changed: %#v", got)
 	}
 }
+
+func TestSplitMessageKeepsHTMLBalancedAndEntitiesWhole(t *testing.T) {
+	plain := strings.Repeat("歌曲 &amp; 艺人 ", 900)
+	body := "<b>" + plain + "</b>"
+	chunks := SplitMessage(body)
+	if len(chunks) < 2 {
+		t.Fatalf("long HTML body was not split: %d chunk(s)", len(chunks))
+	}
+	var reconstructed strings.Builder
+	entityCount := 0
+	for index, chunk := range chunks {
+		if got := utf8.RuneCountInString(chunk); got > telegramMessageLimit {
+			t.Errorf("chunk %d has %d runes", index, got)
+		}
+		if strings.Count(chunk, "<b>") != strings.Count(chunk, "</b>") || strings.Count(chunk, "<code>") != strings.Count(chunk, "</code>") {
+			t.Errorf("chunk %d has unbalanced Telegram HTML: %q", index, chunk[:min(80, len(chunk))])
+		}
+		if strings.Count(chunk, "&") != strings.Count(chunk, "&amp;") {
+			t.Errorf("chunk %d split an HTML entity", index)
+		}
+		entityCount += strings.Count(chunk, "&amp;")
+		reconstructed.WriteString(strings.ReplaceAll(strings.ReplaceAll(chunk, "<b>", ""), "</b>", ""))
+	}
+	if reconstructed.String() != plain {
+		t.Fatal("splitting changed the rendered text")
+	}
+	if entityCount != strings.Count(plain, "&amp;") {
+		t.Fatalf("entity count = %d, want %d", entityCount, strings.Count(plain, "&amp;"))
+	}
+}

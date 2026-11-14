@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/nichuanfang/gymdl/internal/aichat"
+	"github.com/nichuanfang/gymdl/utils"
 	tb "gopkg.in/telebot.v4"
 )
 
@@ -27,12 +28,14 @@ func (app *BotApp) AIModeCommand(c tb.Context) error {
 		return c.Send(aichat.ModeSummary(app.aiEnabled(c), app.cfg.AI.DefaultMode), tb.ModeHTML, markup)
 	case "ai", "on":
 		if err := app.aiStore.SetMode(userID, chatID, true); err != nil {
-			return c.Send("切换失败：" + err.Error())
+			utils.WarnWithFormat("[AI] 更新模式失败 chat=%d: %v", chatID, err)
+			return c.Send("切换失败，请稍后重试。")
 		}
 		return c.Send("✅ <b>智能体模式</b>\n直接说话；发链接仍会下载。", tb.ModeHTML)
 	case "normal", "off":
 		if err := app.aiStore.SetMode(userID, chatID, false); err != nil {
-			return c.Send("切换失败：" + err.Error())
+			utils.WarnWithFormat("[AI] 更新模式失败 chat=%d: %v", chatID, err)
+			return c.Send("切换失败，请稍后重试。")
 		}
 		return c.Send("✅ <b>普通模式</b>\n发链接下载；对话用 /ai。", tb.ModeHTML)
 	default:
@@ -41,6 +44,9 @@ func (app *BotApp) AIModeCommand(c tb.Context) error {
 }
 
 func (app *BotApp) HandleAIModeCallback(c tb.Context) error {
+	if !app.aiAvailable() {
+		return c.Respond(&tb.CallbackResponse{Text: "AI 模式当前不可用，请稍后再试。", ShowAlert: true})
+	}
 	args := c.Args()
 	if len(args) != 1 {
 		return c.Respond(&tb.CallbackResponse{Text: "无效操作", ShowAlert: true})
@@ -58,6 +64,7 @@ func (app *BotApp) HandleAIModeCallback(c tb.Context) error {
 		return c.Respond(&tb.CallbackResponse{Text: "无效操作", ShowAlert: true})
 	}
 	if err := app.aiStore.SetMode(userID, chatID, enable); err != nil {
+		utils.WarnWithFormat("[AI] 更新模式失败 chat=%d: %v", chatID, err)
 		return c.Respond(&tb.CallbackResponse{Text: "切换失败", ShowAlert: true})
 	}
 	_ = c.Respond(&tb.CallbackResponse{Text: "已切换到" + aichat.ModeLabel(enable)})

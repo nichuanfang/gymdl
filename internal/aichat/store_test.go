@@ -217,11 +217,15 @@ func TestStoreMigratesLegacyCandidateTable(t *testing.T) {
 // resurrect an expired one.
 func TestCandidatesListsOnlyCurrentBatchAndSkipsExpired(t *testing.T) {
 	store := openTestStore(t)
-	if err := store.SaveCandidates(1, 1, []Candidate{
+	firstBatch := []Candidate{
 		{Token: "a", Name: "A", URL: "https://example.test/a"},
 		{Token: "b", Name: "B", URL: "https://example.test/b"},
-	}); err != nil {
+	}
+	if err := store.SaveCandidates(1, 1, firstBatch); err != nil {
 		t.Fatal(err)
+	}
+	if firstBatch[0].BatchID == "" || firstBatch[0].BatchID != firstBatch[1].BatchID {
+		t.Fatalf("inline candidates were not tagged with their saved batch: %#v", firstBatch)
 	}
 	if _, err := store.db.Exec(`UPDATE ai_chat_candidates SET created_at = ? WHERE token = 'b'`,
 		time.Now().Add(-2*candidateTTL).UTC().Format(time.RFC3339Nano)); err != nil {

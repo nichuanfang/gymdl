@@ -241,8 +241,8 @@ func (s *Store) History(userID, chatID int64, limit int) ([]Message, error) {
 	return out, rows.Err()
 }
 
-// MarkCandidateOwned flips the "已入库" badge for one candidate after a batch
-// download, so a later press cannot offer the same track again.
+// MarkCandidateOwned flips the "已入库" badge only after the shared Telegram
+// download path reports at least one stored song.
 func (s *Store) MarkCandidateOwned(userID, chatID int64, token string) error {
 	_, err := s.db.Exec(`UPDATE ai_chat_candidates SET owned = 1 WHERE token = ? AND user_id = ? AND chat_id = ?`,
 		token, userID, chatID)
@@ -321,7 +321,10 @@ func (s *Store) SaveCandidates(userID, chatID int64, items []Candidate) error {
 		return err
 	}
 	stamp := now.Format(time.RFC3339Nano)
-	for _, c := range items {
+	for index, c := range items {
+		// Return the same batch key that is persisted so inline buttons can stay
+		// bound to the exact recommendation card that created them.
+		items[index].BatchID = stamp
 		if _, err := tx.Exec(`INSERT OR REPLACE INTO ai_chat_candidates(token, user_id, chat_id, title, artist, platform, url, name, created_at, owned, is_vip, grounded)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, c.Token, userID, chatID, c.Title, c.Artist, c.Platform, c.URL, c.Name, stamp,
 			boolToInt(c.Owned), boolToInt(c.IsVIP), boolToInt(c.Grounded)); err != nil {

@@ -374,6 +374,60 @@ func TestAIPlaylistResumeStorePersistsAndDoesNotOverwritePlans(t *testing.T) {
 	}
 }
 
+func TestAIPlaylistCreationIntentIsRecoverableAndRetrySafe(t *testing.T) {
+	store, err := openAIPlaylistResumeStore(filepath.Join(t.TempDir(), "gymdl.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	intent := aiPlaylistCreateIntent{
+		OperationID:  "operation-1",
+		Name:         "[AI] 夜间氛围",
+		Description:  "安静舒缓的电子音乐",
+		Marker:       "gymdl-ai-playlist-create:operation-1",
+		SongIDs:      []string{"song1", "song2"},
+		Intro:        "夜色中的温柔旋律",
+		UsedFallback: true,
+	}
+	if err := store.CreateIntent(t.Context(), intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateIntent(t.Context(), intent); err != nil {
+		t.Fatalf("retrying the same creation intent should be idempotent: %v", err)
+	}
+	if err := store.SetIntentPlaylistID(t.Context(), intent.OperationID, "playlist1"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.LoadIntent(t.Context(), intent.OperationID)
+	if err != nil || loaded == nil {
+		t.Fatalf("load creation intent: intent=%#v err=%v", loaded, err)
+	}
+	intent.PlaylistID = "playlist1"
+	if !sameAIPlaylistCreateIntent(*loaded, intent) {
+		t.Fatalf("loaded intent = %#v, want %#v", loaded, intent)
+	}
+	if err := store.CreateIntent(t.Context(), aiPlaylistCreateIntent{
+		OperationID: intent.OperationID,
+		Name:        intent.Name,
+		Description: intent.Description,
+		Marker:      intent.Marker,
+		SongIDs:     []string{"song2", "song1"},
+	}); err == nil {
+		t.Fatal("a different plan must not overwrite a confirmed creation intent")
+	}
+	intents, err := store.ListIntents(t.Context())
+	if err != nil || len(intents) != 1 || intents[0].PlaylistID != "playlist1" {
+		t.Fatalf("list creation intents = %#v, err=%v", intents, err)
+	}
+	if err := store.DeleteIntent(t.Context(), intent.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = store.LoadIntent(t.Context(), intent.OperationID)
+	if err != nil || loaded != nil {
+		t.Fatalf("deleted intent is still present: intent=%#v err=%v", loaded, err)
+	}
+}
+
 func TestAIPlaylistResumeStoreMigratesLegacyAppendRows(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "gymdl.sqlite3")
 	db, err := storage.Open(databasePath)

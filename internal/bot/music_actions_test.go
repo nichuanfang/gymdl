@@ -56,6 +56,34 @@ func TestMusicActionMarkupRequiresStoredPathAndSupportedStorage(t *testing.T) {
 	}
 }
 
+func TestMusicActionButtonsAreBoundToOwnerAndOriginalChat(t *testing.T) {
+	app := &BotApp{musicActions: make(map[string]pendingMusicAction)}
+	token, _ := app.musicActionMarkup(&music.SongInfo{SongName: "Song", Tidy: "LOCAL", MusicPath: "/music/song.mp3"})
+	message := &tb.Message{ID: 42, Chat: &tb.Chat{ID: 10}}
+	app.setMusicActionMessages([]string{token}, message, nil, 20, 10)
+
+	for name, test := range map[string]struct {
+		userID int64
+		chatID int64
+	}{
+		"different user": {userID: 99, chatID: 10},
+		"different chat": {userID: 20, chatID: 11},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := &aiPlaylistInteractionTestContext{
+				args: []string{"play", token}, sender: &tb.User{ID: test.userID},
+				callback: &tb.Callback{Message: message}, chat: &tb.Chat{ID: test.chatID},
+			}
+			if err := app.HandleMusicActionCallback(ctx); err != nil {
+				t.Fatalf("unauthorized callback handling returned an error: %v", err)
+			}
+			if ctx.response != 1 || ctx.edited != nil {
+				t.Fatalf("unauthorized callback was not rejected before action: response=%d edited=%v", ctx.response, ctx.edited)
+			}
+		})
+	}
+}
+
 func TestRemoveMusicActionRowKeepsOtherSongs(t *testing.T) {
 	markup := &tb.ReplyMarkup{}
 	first := markup.Data("▶️ 播放", musicActionCallbackUnique, "play", "first-token")

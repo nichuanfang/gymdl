@@ -70,8 +70,11 @@ func TestLoadMCPToolsSkipsBrokenServer(t *testing.T) {
 	ts := newMCPTestServer(t)
 	good := NewMCPClients([]config.MCPServerConfig{{Name: "good", URL: ts.URL, AllowedTools: []string{"lookup"}}})
 	broken := NewMCPClients([]config.MCPServerConfig{{Name: "broken", URL: "http://127.0.0.1:1/mcp", AllowedTools: []string{"x"}}})
-	tools := LoadMCPTools(context.Background(), append(good, broken...))
+	tools, failures := LoadMCPToolsWithErrors(context.Background(), append(good, broken...))
 	if len(tools) != 1 {
 		t.Fatalf("tools = %d, want 1 (broken server must be skipped)", len(tools))
+	}
+	if len(failures) != 1 {
+		t.Fatalf("failures = %d, want 1 for the unavailable server", len(failures))
 	}
 }

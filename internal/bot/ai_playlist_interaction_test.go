@@ -43,13 +43,16 @@ func TestAIPlaylistInitialMenuKeepsCancelAndShortResumeCallbacks(t *testing.T) {
 		resumePlans:     map[string]aiPlaylistResumePlan{strings.Repeat("b", 32): {}},
 	}
 	markup := aiPlaylistSessionMarkup(session)
-	if len(markup.InlineKeyboard) != 2 {
-		t.Fatalf("keyboard rows = %d, want resume and cancel", len(markup.InlineKeyboard))
+	if len(markup.InlineKeyboard) != 3 {
+		t.Fatalf("keyboard rows = %d, want new playlist, resume, cancel", len(markup.InlineKeyboard))
 	}
 	if got := markup.InlineKeyboard[len(markup.InlineKeyboard)-1][0].Text; got != "取消" {
 		t.Fatalf("final button = %q, want cancel", got)
 	}
-	resume := markup.InlineKeyboard[0][0]
+	if got := markup.InlineKeyboard[0][0].Text; got != "＋ 新建 AI 歌单" {
+		t.Fatalf("first menu action = %q, want create playlist", got)
+	}
+	resume := markup.InlineKeyboard[1][0]
 	if !strings.HasSuffix(resume.Data, "|0") {
 		t.Fatalf("resume callback should carry a short session index, got %q", resume.Data)
 	}
@@ -64,8 +67,65 @@ func TestAIPlaylistInitialMenuKeepsCancelAndShortResumeCallbacks(t *testing.T) {
 
 func TestAIPlaylistUnavailableMenuStillHasCancelButton(t *testing.T) {
 	markup := aiPlaylistSessionMarkup(pendingAIPlaylistSession{token: "token"})
-	if len(markup.InlineKeyboard) != 1 || len(markup.InlineKeyboard[0]) != 1 || markup.InlineKeyboard[0][0].Text != "取消" {
+	if len(markup.InlineKeyboard) != 2 || markup.InlineKeyboard[0][0].Text != "＋ 新建 AI 歌单" || markup.InlineKeyboard[1][0].Text != "取消" {
 		t.Fatalf("unavailable menu should still allow cancel: %#v", markup.InlineKeyboard)
+	}
+}
+
+func TestAIPlaylistNewFlowAsksNameBeforeThemeAndKeepsPreviewNonMutating(t *testing.T) {
+	app := &BotApp{}
+	message := &tb.Message{ID: 42, Chat: &tb.Chat{ID: 10}}
+	if !app.registerAIPlaylistSession(pendingAIPlaylistSession{
+		token: "token", userID: 20, chatID: 10, message: message,
+		playlists: []aiPlaylist{{ID: "existing", Name: "[AI] Existing"}},
+		expiresAt: time.Now().Add(time.Minute),
+	}) {
+		t.Fatal("failed to register AI playlist session")
+	}
+	ctx := &aiPlaylistInteractionTestContext{
+		args: []string{"new", "token"}, sender: &tb.User{ID: 20},
+		callback: &tb.Callback{Message: message}, chat: message.Chat,
+	}
+	if err := app.HandleAIPlaylistCallback(ctx); err != nil {
+		t.Fatalf("new playlist callback failed: %v", err)
+	}
+	session, ok := app.getAIPlaylistSession("token")
+	if !ok || !session.creating || !session.awaitingName || session.newPlaylistName != "" {
+		t.Fatalf("new playlist should request a name first: %#v, exists=%t", session, ok)
+	}
+	if messageText := formatAIPlaylistSession(session); !strings.Contains(messageText, "确认预览前不会创建歌单") {
+		t.Fatalf("name prompt should explain the no-side-effect preview: %q", messageText)
+	}
+	name, err := normalizeAIPlaylistName("  夜间散步  ")
+	if err != nil || name != "[AI] 夜间散步" {
+		t.Fatalf("normalize playlist name = %q, err=%v", name, err)
+	}
+	if name, err := normalizeAIPlaylistName("[ai] Chill"); err != nil || name != "[AI] Chill" {
+		t.Fatalf("existing prefix should be normalized once: %q, err=%v", name, err)
+	}
+	for _, invalid := range []string{"", "[AI]", strings.Repeat("名", 89)} {
+		if _, err := normalizeAIPlaylistName(invalid); err == nil {
+			t.Errorf("invalid name %q was accepted", invalid)
+		}
+	}
+	if _, ok := app.setAIPlaylistNewName("token", name); !ok {
+		t.Fatal("failed to set new playlist name")
+	}
+	session, _ = app.getAIPlaylistSession("token")
+	if !session.creating || !session.awaitingInput || session.newPlaylistName != name {
+		t.Fatalf("new playlist should now request a theme: %#v", session)
+	}
+	if markup := aiPlaylistSessionMarkup(session); len(markup.InlineKeyboard) < 2 {
+		t.Fatalf("new playlist theme should offer presets: %#v", markup.InlineKeyboard)
+	}
+	preview := session
+	preview.draft = &aiPlaylistDraft{Description: "quiet evening", Plan: aiPlaylistPlan{Playlist: []aiPlaylistPlanItem{{ID: "song1"}}}}
+	messageText := formatAIPlaylistSession(preview)
+	if !strings.Contains(messageText, "确认后才会创建这张歌单") || strings.Contains(messageText, "替换当前") {
+		t.Fatalf("new playlist preview should describe create-on-confirm accurately: %q", messageText)
+	}
+	if got := aiPlaylistSessionMarkup(preview).InlineKeyboard[1][0].Text; got != "✅ 确认创建" {
+		t.Fatalf("new playlist confirmation button = %q", got)
 	}
 }
 
@@ -181,11 +241,11 @@ func TestAIPlaylistMessageUsesPlainTextHouseStyle(t *testing.T) {
 func TestAIPlaylistCanSelectPopulatedTargetAndClearlyConfirmReplacement(t *testing.T) {
 	playlist := aiPlaylist{ID: "playlist", Name: "[AI] 夜间", Description: "舒缓的夜间音乐", SongCount: 28}
 	menu := pendingAIPlaylistSession{token: "token", playlists: []aiPlaylist{playlist}}
-	if message := formatAIPlaylistSession(menu); !strings.Contains(message, "确认后会按预览替换") {
+	if message := formatAIPlaylistSession(menu); !strings.Contains(message, "确认前不会修改 Navidrome") {
 		t.Fatalf("menu should explain the write behavior: %q", message)
 	}
 	markup := aiPlaylistSessionMarkup(menu)
-	if got := markup.InlineKeyboard[0][0].Text; got != "[AI] 夜间 · 28 首" {
+	if got := markup.InlineKeyboard[1][0].Text; got != "[AI] 夜间 · 28 首" {
 		t.Fatalf("populated target label = %q", got)
 	}
 	selected := pendingAIPlaylistSession{

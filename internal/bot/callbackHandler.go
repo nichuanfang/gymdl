@@ -1,9 +1,9 @@
 package bot
 
 import (
-    "encoding/json"
+	"encoding/json"
 
-    tb "gopkg.in/telebot.v4"
+	tb "gopkg.in/telebot.v4"
 )
 
 // CallbackData 结构化协议

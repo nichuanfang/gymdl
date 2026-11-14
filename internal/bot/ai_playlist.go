@@ -77,6 +77,7 @@ type aiPlaylistResult struct {
 	Intro        string
 	UsedFallback bool
 	Replaced     bool
+	Created      bool
 }
 
 type aiPlaylistFailure struct {
@@ -455,9 +456,13 @@ func (s *aiPlaylistService) previewAIPlaylist(ctx context.Context, playlist aiPl
 	if description == "" {
 		return aiPlaylistDraft{}, errors.New("请写明希望生成的音乐主题")
 	}
-	existing, err := s.readAIPlaylistTracks(ctx, playlist)
-	if err != nil {
-		return aiPlaylistDraft{}, fmt.Errorf("读取当前歌单失败: %w", err)
+	var existing aiPlaylistTrackSnapshot
+	if playlist.ID != "" {
+		var err error
+		existing, err = s.readAIPlaylistTracks(ctx, playlist)
+		if err != nil {
+			return aiPlaylistDraft{}, fmt.Errorf("读取当前歌单失败: %w", err)
+		}
 	}
 	candidates, err := s.retrieveCandidates(ctx, description)
 	if err != nil {
@@ -495,6 +500,87 @@ func (s *aiPlaylistService) previewAIPlaylist(ctx context.Context, playlist aiPl
 		UsedFallback:    usedFallback,
 		ExistingSongIDs: append([]string(nil), existing.IDs...),
 	}, nil
+}
+
+func (s *aiPlaylistService) finishAIPlaylistCreation(ctx context.Context, intent aiPlaylistCreateIntent) (aiPlaylist, aiPlaylistResumePlan, error) {
+	if err := validateAIPlaylistCreateIntent(intent); err != nil {
+		return aiPlaylist{}, aiPlaylistResumePlan{}, err
+	}
+	if err := s.resumeStore.CreateIntent(ctx, intent); err != nil {
+		return aiPlaylist{}, aiPlaylistResumePlan{}, fmt.Errorf("保存创建续跑状态失败，未创建歌单: %w", err)
+	}
+	var playlist aiPlaylist
+	if intent.PlaylistID == "" {
+		var err error
+		playlist, err = s.organizer.createAIPlaylist(ctx, intent.Name, intent.Marker)
+		if err != nil {
+			return aiPlaylist{}, aiPlaylistResumePlan{}, err
+		}
+		if err := s.resumeStore.SetIntentPlaylistID(ctx, intent.OperationID, playlist.ID); err != nil {
+			return aiPlaylist{}, aiPlaylistResumePlan{}, fmt.Errorf("歌单已创建，但保存续跑 ID 失败；请重试继续恢复: %w", err)
+		}
+		intent.PlaylistID = playlist.ID
+	} else {
+		apiPlaylist, err := s.organizer.getAIPlaylistByID(ctx, intent.PlaylistID)
+		if err != nil {
+			return aiPlaylist{}, aiPlaylistResumePlan{}, fmt.Errorf("恢复已创建的 AI 歌单失败: %w", err)
+		}
+		if apiPlaylist.Name != intent.Name || (apiPlaylist.Comment != intent.Marker && apiPlaylist.Comment != intent.Description) {
+			return aiPlaylist{}, aiPlaylistResumePlan{}, errors.New("已创建歌单的名称或备注发生变化，为保护现有内容已停止")
+		}
+		playlist = aiPlaylistFromAPI(apiPlaylist)
+	}
+	if playlist.ID == "" || playlist.Name != intent.Name {
+		return aiPlaylist{}, aiPlaylistResumePlan{}, errors.New("Navidrome 返回的已创建歌单身份不匹配")
+	}
+	if playlist.Description == intent.Marker {
+		if err := s.organizer.updateAIPlaylistComment(ctx, playlist, intent.Description); err != nil {
+			return aiPlaylist{}, aiPlaylistResumePlan{}, fmt.Errorf("歌单已创建，更新主题备注失败；请安全重试: %w", err)
+		}
+		playlist.Description = intent.Description
+	} else if playlist.Description != intent.Description {
+		return aiPlaylist{}, aiPlaylistResumePlan{}, errors.New("已创建歌单的主题备注不匹配，为保护现有内容已停止")
+	}
+	plan := aiPlaylistResumePlan{
+		PlaylistID:   playlist.ID,
+		Description:  intent.Description,
+		SongIDs:      append([]string(nil), intent.SongIDs...),
+		Intro:        intent.Intro,
+		UsedFallback: intent.UsedFallback,
+	}
+	stored, err := s.resumeStore.Load(ctx, playlist.ID)
+	if err != nil {
+		return aiPlaylist{}, aiPlaylistResumePlan{}, fmt.Errorf("读取已创建歌单续写状态失败: %w", err)
+	}
+	snapshot, err := s.readAIPlaylistTracks(ctx, playlist)
+	if err != nil {
+		return aiPlaylist{}, aiPlaylistResumePlan{}, fmt.Errorf("复核新建歌单曲目失败: %w", err)
+	}
+	if stored == nil {
+		if snapshot.Count != 0 {
+			return aiPlaylist{}, aiPlaylistResumePlan{}, errors.New("新建歌单在写入计划保存前已有曲目，为保护内容已停止")
+		}
+		if err := s.resumeStore.Create(ctx, plan); err != nil {
+			return aiPlaylist{}, aiPlaylistResumePlan{}, fmt.Errorf("创建续写计划失败；已创建的空歌单可安全继续: %w", err)
+		}
+	} else if stored.Description != plan.Description || stored.Replace || !samePlaylistTrackOrder(stored.SongIDs, plan.SongIDs) {
+		return aiPlaylist{}, aiPlaylistResumePlan{}, errors.New("已创建歌单存在不同的续写计划，为保护内容已停止")
+	} else {
+		plannedIDs := make(map[string]struct{}, len(stored.SongIDs))
+		for _, id := range stored.SongIDs {
+			plannedIDs[id] = struct{}{}
+		}
+		for _, id := range snapshot.IDs {
+			if _, planned := plannedIDs[id]; !planned {
+				return aiPlaylist{}, aiPlaylistResumePlan{}, errors.New("新建歌单包含预览以外的曲目，为保护内容已停止续写")
+			}
+		}
+		plan = *stored
+	}
+	if err := s.resumeStore.DeleteIntent(ctx, intent.OperationID); err != nil {
+		return aiPlaylist{}, aiPlaylistResumePlan{}, fmt.Errorf("歌单和续写计划已保存，但清理创建标记失败；请安全重试: %w", err)
+	}
+	return playlist, plan, nil
 }
 
 func nonEmptyStrings(values ...string) []string {

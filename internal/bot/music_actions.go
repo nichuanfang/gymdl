@@ -23,6 +23,8 @@ const (
 var musicActionCallbackEndpoint = tb.InlineButton{Unique: musicActionCallbackUnique}
 
 type pendingMusicAction struct {
+	userID    int64
+	chatID    int64
 	path      string
 	title     string
 	artist    string
@@ -66,7 +68,7 @@ func (app *BotApp) musicActionMarkup(song *music.SongInfo) (string, *tb.ReplyMar
 	return token, markup
 }
 
-func (app *BotApp) setMusicActionMessages(tokens []string, message *tb.Message, markup *tb.ReplyMarkup) {
+func (app *BotApp) setMusicActionMessages(tokens []string, message *tb.Message, markup *tb.ReplyMarkup, userID, chatID int64) {
 	if len(tokens) == 0 || message == nil {
 		return
 	}
@@ -75,6 +77,8 @@ func (app *BotApp) setMusicActionMessages(tokens []string, message *tb.Message, 
 	defer app.musicActionMu.Unlock()
 	for _, token := range tokens {
 		if action, ok := app.musicActions[token]; ok {
+			action.userID = userID
+			action.chatID = chatID
 			action.origin = message
 			action.markup = cloneMusicActionMarkup(markupCopy)
 			app.musicActions[token] = action
@@ -159,6 +163,19 @@ func (app *BotApp) HandleMusicActionCallback(c tb.Context) error {
 	if !ok {
 		return c.Respond(&tb.CallbackResponse{Text: "操作已过期，请重新入库后再试", ShowAlert: true})
 	}
+	if action.userID > 0 && (c.Sender() == nil || c.Sender().ID != action.userID) {
+		return c.Respond(&tb.CallbackResponse{Text: "只有发起入库的人可以操作这首歌", ShowAlert: true})
+	}
+	if action.chatID != 0 && (c.Chat() == nil || c.Chat().ID != action.chatID) {
+		return c.Respond(&tb.CallbackResponse{Text: "请在原来的聊天中操作这首歌", ShowAlert: true})
+	}
+	var callbackMessage *tb.Message
+	if callback := c.Callback(); callback != nil {
+		callbackMessage = callback.Message
+	}
+	if (actionName == "play" || actionName == "delete") && !sameMusicActionMessage(action.origin, callbackMessage) {
+		return c.Respond(&tb.CallbackResponse{Text: "请使用入库成功消息中的按钮", ShowAlert: true})
+	}
 
 	switch actionName {
 	case "play":
@@ -172,7 +189,7 @@ func (app *BotApp) HandleMusicActionCallback(c tb.Context) error {
 		confirm := markup.Data("确认删除", musicActionCallbackUnique, "confirm_delete", token)
 		cancel := markup.Data("取消", musicActionCallbackUnique, "cancel_delete", token)
 		markup.Inline(markup.Row(confirm, cancel))
-		if err := c.Send(fmt.Sprintf("确定删除《%s》吗？\n将删除已入库的文件（%s），此操作不可撤销。", action.title, action.storage), markup); err != nil {
+		if err := c.Send(fmt.Sprintf("确定删除《%s》吗？\n将删除已入库的文件（%s），此操作不可撤销。", displaySongValue(action.title), action.storage), markup); err != nil {
 			_ = c.Respond()
 			return err
 		}
@@ -279,21 +296,15 @@ func (app *BotApp) confirmMusicActionDelete(c tb.Context, token string, action p
 		if core.GlobalWebDAV == nil {
 			err = fmt.Errorf("WebDAV 未初始化")
 		} else {
-			pendingRemoved := false
 			if core.GlobalWebDAV.Outbox != nil {
-				if removed, removeErr := core.GlobalWebDAV.Outbox.RemoveByRemote(
+				if _, removeErr := core.GlobalWebDAV.Outbox.RemoveByRemote(
 					path.Dir(action.path), path.Base(action.path),
 				); removeErr != nil {
-					utils.WarnWithFormat("[Telegram] 清理待上传歌曲失败: %v", removeErr)
-				} else {
-					pendingRemoved = removed > 0
+					err = fmt.Errorf("清理待上传任务失败: %w", removeErr)
 				}
 			}
-			if deleteErr := core.GlobalWebDAV.Delete(action.path); deleteErr != nil && pendingRemoved {
-				// The song may exist only in the local outbox while NAS is offline.
-				err = nil
-			} else {
-				err = deleteErr
+			if err == nil {
+				err = core.GlobalWebDAV.Delete(action.path)
 			}
 		}
 	default:
@@ -320,5 +331,5 @@ func (app *BotApp) confirmMusicActionDelete(c tb.Context, token string, action p
 			utils.WarnWithFormat("[Telegram] 更新歌曲操作按钮失败: %v", err)
 		}
 	}
-	return c.Edit("✅ 已删除《"+action.title+"》的入库文件。", &tb.ReplyMarkup{})
+	return c.Edit("✅ 已删除《"+displaySongValue(action.title)+"》的入库文件。", &tb.ReplyMarkup{})
 }

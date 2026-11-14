@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -42,6 +43,20 @@ func TestBotCommandsFitPhoneMenu(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+func TestQQCredentialMessageEscapesSecretsAndRejectsIncompletePayloads(t *testing.T) {
+	valid := json.RawMessage(`{"musicid":123,"str_musicid":"str-id","openid":"open-id","unionid":"union-id","loginType":0,"musickey":"music-key","refresh_key":"refresh-key","refresh_token":"refresh-token","access_token":"<access>&token","expired_at":1234567890}`)
+	message, err := formatQQCredentialMessage(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(message, "&lt;access&gt;&amp;token") || strings.Contains(message, "<access>&token") {
+		t.Fatalf("credential should be safely escaped for HTML: %q", message)
+	}
+	if _, err := formatQQCredentialMessage(json.RawMessage(`{"access_token":"only-one-field"}`)); err == nil {
+		t.Fatal("incomplete credentials must be rejected instead of panicking or sending partial data")
 	}
 }
 

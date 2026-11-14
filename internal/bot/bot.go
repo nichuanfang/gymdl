@@ -36,9 +36,10 @@ type BotApp struct {
 	aiStore                    *aichat.Store
 	aiSkills                   *aichat.SkillRegistry
 	aiMCP                      []*aichat.MCPClient
+	aiMCPMu                    sync.Mutex
 	aiMCPTools                 []aichat.Tool
 	aiTurnMu                   sync.Mutex
-	aiTurnLocks                map[int64]*sync.Mutex
+	aiTurnLocks                map[int64]*aiTurnLockEntry
 	aiBatchRunning             map[int64]struct{}
 	aiPlaylistMu               sync.Mutex
 	aiPlaylistRunning          map[int64]struct{}
@@ -49,6 +50,11 @@ type BotApp struct {
 	emptyTrashMu               sync.Mutex
 	emptyTrashRunning          map[int64]struct{}
 	emptyTrashPending          map[string]pendingEmptyTrash
+}
+
+type aiTurnLockEntry struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // NewBotApp 创建机器人
@@ -117,7 +123,7 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 		musicActions:              make(map[string]pendingMusicAction),
 		playlistAssignments:       make(map[string]pendingPlaylistAssignment),
 		playlistAssignmentByChat:  make(map[int64]string),
-		aiTurnLocks:               make(map[int64]*sync.Mutex),
+		aiTurnLocks:               make(map[int64]*aiTurnLockEntry),
 		aiBatchRunning:            make(map[int64]struct{}),
 		aiPlaylistRunning:         make(map[int64]struct{}),
 		aiPlaylistSessions:        make(map[string]pendingAIPlaylistSession),
@@ -131,8 +137,7 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 	//注册处理器
 	app.registerHandlers()
 	// Publish the menu once at startup. Telegram stores it per bot, so doing it
-	// here means every deploy picks up the new order and wording without the
-	// user having to send /setCommands manually.
+	// here means every deploy picks up the new order and wording automatically.
 	go app.syncCommandMenu()
 	//初始化notifier
 	InitBotNotifier(bot, cfg.Telegram.ChatID, app)
