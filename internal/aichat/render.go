@@ -225,14 +225,14 @@ func truncateRunes(value string, limit int) string {
 // ModeLabel is used by /mode and /ai confirmations.
 func ModeLabel(enabled bool) string {
 	if enabled {
-		return "智能体模式"
+		return "AI 模式"
 	}
 	return "普通模式"
 }
 
 func DefaultModeLabel(defaultMode bool) string {
 	if defaultMode {
-		return "智能体模式"
+		return "AI 模式"
 	}
 	return "普通模式"
 }

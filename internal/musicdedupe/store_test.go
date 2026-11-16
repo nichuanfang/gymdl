@@ -64,6 +64,50 @@ func TestSuccessfulDownloadStoreStartsEmptyAndMatchesAllIdentities(t *testing.T)
 	}
 }
 
+func TestSearchListsTracksByArtistAndTitleFragment(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "music.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	records := []Track{
+		{Title: "晴天", Artist: "周杰伦", Album: "叶惠美", Platform: "qq"},
+		{Title: "七里香", Artist: "周杰伦", Album: "七里香", Platform: "qq"},
+		{Title: "晴天", Artist: "周杰伦", Album: "叶惠美", Platform: "netease"},
+		{Title: "Later", Artist: "Faye Wong", Album: "Fable", Platform: "netease"},
+	}
+	for _, track := range records {
+		if err := store.RecordSuccessfulDownload(ctx, track); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.Search(ctx, LibraryQuery{}); err == nil {
+		t.Fatal("blank search should be rejected")
+	}
+	byArtist, err := store.Search(ctx, LibraryQuery{Artist: "周杰伦"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byArtist) != 2 {
+		t.Fatalf("artist search = %#v, want 2 distinct songs", byArtist)
+	}
+	byTitle, err := store.Search(ctx, LibraryQuery{Artist: "faye", Title: "lat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byTitle) != 1 || byTitle[0].Title != "Later" {
+		t.Fatalf("fragment search = %#v", byTitle)
+	}
+	escaped, err := store.Search(ctx, LibraryQuery{Artist: "%"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(escaped) != 0 {
+		t.Fatalf("wildcard artist should not match everything: %#v", escaped)
+	}
+}
+
 func TestMetadataRequiresCompleteSongArtistAlbumTuple(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "music.sqlite3"))
 	if err != nil {

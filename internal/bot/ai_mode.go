@@ -31,7 +31,7 @@ func (app *BotApp) AIModeCommand(c tb.Context) error {
 			utils.WarnWithFormat("[AI] 更新模式失败 chat=%d: %v", chatID, err)
 			return c.Send("切换失败，请稍后重试。")
 		}
-		return c.Send("✅ <b>智能体模式</b>\n直接说话；发链接仍会下载。", tb.ModeHTML)
+		return c.Send("✅ <b>AI 模式</b>\n直接说话；发链接仍会下载。", tb.ModeHTML)
 	case "normal", "off":
 		if err := app.aiStore.SetMode(userID, chatID, false); err != nil {
 			utils.WarnWithFormat("[AI] 更新模式失败 chat=%d: %v", chatID, err)
@@ -67,7 +67,7 @@ func (app *BotApp) HandleAIModeCallback(c tb.Context) error {
 		utils.WarnWithFormat("[AI] 更新模式失败 chat=%d: %v", chatID, err)
 		return c.Respond(&tb.CallbackResponse{Text: "切换失败", ShowAlert: true})
 	}
-	_ = c.Respond(&tb.CallbackResponse{Text: "已切换到" + aichat.ModeLabel(enable)})
+	_ = c.Respond(&tb.CallbackResponse{Text: "已切换到 " + aichat.ModeLabel(enable)})
 	return c.Edit(aichat.ModeSummary(enable, app.cfg.AI.DefaultMode), tb.ModeHTML)
 }
 

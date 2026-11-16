@@ -217,8 +217,44 @@ func (app *BotApp) aiTools() []aichat.Tool {
 			},
 		},
 		{
+			Name:        "library_search",
+			Description: "按艺人或歌名片段列出本地曲库里的歌。回答“某艺人我有哪些”“库里有没有名字里带某词的歌”时使用。语言、年代、曲风筛选不了。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"artist": map[string]any{"type": "string", "description": "艺人，可只给名字的一部分"},
+					"title":  map[string]any{"type": "string", "description": "歌名片段，可选"},
+					"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
+				},
+			},
+			Run: func(ctx context.Context, args map[string]any) (string, error) {
+				if app.musicDedupe == nil {
+					return `{"available":false,"reason":"查重数据库不可用"}`, nil
+				}
+				artist, _ := args["artist"].(string)
+				title, _ := args["title"].(string)
+				if strings.TrimSpace(artist) == "" && strings.TrimSpace(title) == "" {
+					return `{"error":"需要艺人或歌名"}`, nil
+				}
+				limit := intArg(args["limit"], 8)
+				matches, err := app.musicDedupe.Search(ctx, musicdedupe.LibraryQuery{Artist: artist, Title: title, Limit: limit})
+				if err != nil {
+					return "", err
+				}
+				if len(matches) == 0 {
+					return `{"available":true,"count":0,"items":[]}`, nil
+				}
+				items := make([]string, 0, len(matches))
+				for _, match := range matches {
+					items = append(items, fmt.Sprintf(`{"title":%q,"artist":%q,"album":%q,"platform":%q}`,
+						match.Title, match.Artist, match.Album, match.Platform))
+				}
+				return fmt.Sprintf(`{"available":true,"count":%d,"items":[%s]}`, len(matches), strings.Join(items, ",")), nil
+			},
+		},
+		{
 			Name:        "get_lyrics",
-			Description: "按歌名和艺人查询歌词。用户问歌词、根据歌词找歌时使用；不要凭记忆补全歌词。",
+			Description: "按歌名查询歌词，可附带艺人和专辑。用户只给了一句词、没有歌名时不要调用，先问歌名。不要凭记忆补全歌词。",
 			Parameters: map[string]any{
 				"type":     "object",
 				"required": []string{"title"},

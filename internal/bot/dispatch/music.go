@@ -19,7 +19,7 @@ func (s *Session) HandleMusic(p music.Processor) error {
 	bot := s.Bot
 	msg := s.Msg
 
-	_, _ = bot.Edit(msg, fmt.Sprintf("✅ 已识别【<b>%s</b>】链接\n\n🎵 下载中,请稍候...", p.Name()), tb.ModeHTML)
+	_, _ = bot.Edit(msg, fmt.Sprintf("✅ 已识别【<b>%s</b>】链接\n\n🎵 下载中，请稍候…", p.Name()), tb.ModeHTML)
 
 	// 下载阶段
 	utils.InfoWithFormat("[Telegram] 下载中...")
@@ -34,7 +34,7 @@ func (s *Session) HandleMusic(p music.Processor) error {
 
 	// 文件整理 & 处理
 	utils.InfoWithFormat("[Telegram] 下载成功，整理中...")
-	_, _ = bot.Edit(msg, fmt.Sprintf("✅ 已识别【<b>%s</b>】链接\n\n🎵 %s", p.Name(), "整理中..."), tb.ModeHTML)
+	_, _ = bot.Edit(msg, fmt.Sprintf("✅ 已识别【<b>%s</b>】链接\n\n🎵 %s", p.Name(), "整理中…"), tb.ModeHTML)
 	if err = p.BeforeTidy(); err != nil {
 		utils.ErrorWithFormat("[Telegram] 文件处理失败: %v", err)
 		_, _ = bot.Edit(msg, fmt.Sprintf("⚠️ 文件处理阶段出错：\n<pre>%s</pre>", utils.EscapeHTML(utils.TruncateString(err.Error(), 400))), tb.ModeHTML)
@@ -43,7 +43,7 @@ func (s *Session) HandleMusic(p music.Processor) error {
 
 	// 入库
 	utils.InfoWithFormat("[Telegram] 整理成功，开始入库...")
-	_, _ = bot.Edit(msg, fmt.Sprintf("✅ 已识别【<b>%s</b>】链接\n\n🎵 开始入库...", p.Name()), tb.ModeHTML)
+	_, _ = bot.Edit(msg, fmt.Sprintf("✅ 已识别【<b>%s</b>】链接\n\n🎵 开始入库…", p.Name()), tb.ModeHTML)
 	if err = p.TidyMusic(); err != nil {
 		utils.ErrorWithFormat("[Telegram] 文件入库失败: %v", err)
 		_, _ = bot.Edit(msg, fmt.Sprintf("⚠️ 文件入库失败：\n<pre>%s</pre>", utils.EscapeHTML(utils.TruncateString(err.Error(), 400))), tb.ModeHTML)

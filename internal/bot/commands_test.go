@@ -69,6 +69,9 @@ func TestEveryMenuCommandHasHandler(t *testing.T) {
 		"ai_playlist": true, "empty_trash": true, "qq_login": true,
 	}
 	for _, cmd := range botCommands() {
+		if cmd.Text == "status" {
+			t.Fatal("/status stays off the phone menu")
+		}
 		if !registered[cmd.Text] {
 			t.Errorf("/%s is in the menu but has no handler", cmd.Text)
 		}

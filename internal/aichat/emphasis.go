@@ -9,7 +9,7 @@ import (
 // boldTokens are names worth emphasising in an answer. They are matched after
 // HTML escaping, so the list must not contain characters that escaping rewrites.
 var boldTokens = []string{
-	"智能体模式", "普通模式",
+	"AI 模式", "普通模式",
 	"网易云音乐", "网易云", "QQ 音乐", "QQ音乐", "B 站", "B站",
 	"YouTube Music", "YouTube", "SoundCloud", "Spotify", "Apple Music",
 }
@@ -21,7 +21,7 @@ var codeTokens = []string{
 	"music-recommendation", "music-discovery-by-artist", "music-library-query",
 	"music-download-failure", "music-download-plan", "music-playlist-curation",
 	"music-lyrics-search", "music-metadata-normalize",
-	"search_music", "library_stats", "list_active_downloads", "load_skill",
+	"search_music", "library_stats", "library_search", "library_lookup", "list_active_downloads", "load_skill",
 }
 
 func init() {

@@ -231,6 +231,67 @@ FROM downloaded_tracks WHERE title_key = ?`
 	return match, nil
 }
 
+// LibraryQuery lists downloaded tracks by artist and an optional title fragment.
+// Both fields are matched after the same normalisation used for dedupe keys.
+type LibraryQuery struct {
+	Artist string
+	Title  string
+	Limit  int
+}
+
+// Search returns distinct title/artist rows for "what do I have by this artist".
+// An empty artist and title is rejected so a blank call cannot dump the library.
+func (s *Store) Search(ctx context.Context, query LibraryQuery) ([]Match, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("music dedupe store is not initialized")
+	}
+	artist := normalizeText(query.Artist)
+	title := normalizeText(query.Title)
+	if artist == "" && title == "" {
+		return nil, errors.New("artist or title is required")
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 8
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT title, artist, album, platform
+FROM downloaded_tracks
+WHERE (? = '' OR artist_key LIKE ? ESCAPE '\')
+  AND (? = '' OR title_key LIKE ? ESCAPE '\')
+  AND artist_key <> ''
+GROUP BY title_key, artist_key
+ORDER BY MAX(id) DESC
+LIMIT ?`,
+		artist, likeContains(artist), title, likeContains(title), limit)
+	if err != nil {
+		return nil, fmt.Errorf("search downloaded tracks: %w", err)
+	}
+	defer rows.Close()
+	matches := make([]Match, 0, limit)
+	for rows.Next() {
+		var match Match
+		if err := rows.Scan(&match.Title, &match.Artist, &match.Album, &match.Platform); err != nil {
+			return nil, fmt.Errorf("scan downloaded track: %w", err)
+		}
+		matches = append(matches, match)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("search downloaded tracks: %w", err)
+	}
+	return matches, nil
+}
+
+func likeContains(value string) string {
+	if value == "" {
+		return ""
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
+	return "%" + escaped + "%"
+}
+
 func CanonicalURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

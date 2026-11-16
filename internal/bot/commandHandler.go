@@ -56,7 +56,8 @@ func HelpCommand(c tb.Context) error {
 /empty_trash 预览并确认清理 AI 曲库数据
 
 <b>账号</b>
-/qq_login 扫码登录 QQ 音乐（仅限私聊）`
+/qq_login 扫码登录 QQ 音乐（仅限私聊）
+/status 查看下载、最近失败、待入库和 Cookie`
 
 	if err := c.Send(msg, tb.ModeHTML); err != nil {
 		logger.Error("Failed to send help message", zap.Error(err))
