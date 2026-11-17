@@ -180,7 +180,8 @@ func (app *BotApp) HandleAIPlaylistCallback(c tb.Context) error {
 	action, token := args[0], args[1]
 	session, ok := app.getAIPlaylistSession(token)
 	if !ok {
-		return c.Respond(&tb.CallbackResponse{Text: "AI 歌单会话已过期，请重新发送 /ai_playlist", ShowAlert: true})
+		_ = c.Respond(&tb.CallbackResponse{Text: "AI 歌单会话已过期，旧按钮已失效。", ShowAlert: true})
+		return c.Edit("⌛ 本次 AI 歌单会话已过期，请重新发送 /ai_playlist。", &tb.ReplyMarkup{})
 	}
 	if c.Sender() == nil || c.Sender().ID != session.userID {
 		return c.Respond(&tb.CallbackResponse{Text: "只有发起会话的人可以操作", ShowAlert: true})
@@ -201,7 +202,7 @@ func (app *BotApp) HandleAIPlaylistCallback(c tb.Context) error {
 		if !ok {
 			return c.Respond(&tb.CallbackResponse{Text: "AI 歌单会话已过期", ShowAlert: true})
 		}
-		_ = c.Respond()
+		_ = c.Respond(&tb.CallbackResponse{Text: "请发送新歌单名称"})
 		return c.Edit(formatAIPlaylistSession(updated), aiPlaylistSessionMarkup(updated))
 
 	case "select":
@@ -212,11 +213,12 @@ func (app *BotApp) HandleAIPlaylistCallback(c tb.Context) error {
 		if err != nil || index < 0 || index >= len(session.playlists) {
 			return c.Respond(&tb.CallbackResponse{Text: "歌单选择无效", ShowAlert: true})
 		}
-		updated, ok := app.selectAIPlaylistTarget(token, session.playlists[index])
+		playlist := session.playlists[index]
+		updated, ok := app.selectAIPlaylistTarget(token, playlist)
 		if !ok {
 			return c.Respond(&tb.CallbackResponse{Text: "AI 歌单会话已过期", ShowAlert: true})
 		}
-		_ = c.Respond()
+		_ = c.Respond(&tb.CallbackResponse{Text: "已选中「" + aiPlaylistDisplayValue(playlist.Name, 60) + "」"})
 		return c.Edit(formatAIPlaylistSession(updated), aiPlaylistSessionMarkup(updated))
 
 	case "base":
