@@ -593,16 +593,22 @@ func searchQQWithContext(ctx context.Context, keyword string, limit, offset int)
 
 type qqSearchHTTPStatusError struct {
 	statusCode int
+	final      bool
 }
 
 func (e *qqSearchHTTPStatusError) Error() string {
+	if e.statusCode == http.StatusTooManyRequests {
+		return "QQ Music API HTTP 状态码: 429，请求过于频繁，请稍后再试"
+	}
 	return fmt.Sprintf("QQ Music API HTTP 状态码: %d", e.statusCode)
 }
 
 func requestQQSearchWith429Retry(ctx context.Context, client *http.Client, endpoint, keyword string, limit, page int, cookie string) (qqSearchResponse, error) {
 	for retry := 0; ; retry++ {
 		searchResp, err := requestQQSearch(ctx, client, endpoint, keyword, limit, page, cookie)
-		if err == nil || !isQQSearchHTTPStatus(err, http.StatusTooManyRequests) || retry >= qqSearchMax429Retries {
+		var statusErr *qqSearchHTTPStatusError
+		stop := errors.As(err, &statusErr) && statusErr.final
+		if err == nil || !isQQSearchHTTPStatus(err, http.StatusTooManyRequests) || stop || retry >= qqSearchMax429Retries {
 			return searchResp, err
 		}
 
@@ -645,6 +651,12 @@ func requestQQSearch(ctx context.Context, client *http.Client, endpoint, keyword
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		// QQMusicApi reports upstream 2001 as HTTP 429 and includes feedback_url
+		// when the request must log in or pass a security check. Retrying that
+		// response only multiplies the same failure.
+		if resp.StatusCode == http.StatusTooManyRequests && qqSearchBodyStopsRetry(resp.Body) {
+			return qqSearchResponse{}, &qqSearchHTTPStatusError{statusCode: resp.StatusCode, final: true}
+		}
 		return qqSearchResponse{}, &qqSearchHTTPStatusError{statusCode: resp.StatusCode}
 	}
 
@@ -656,6 +668,23 @@ func requestQQSearch(ctx context.Context, client *http.Client, endpoint, keyword
 		return searchResp, fmt.Errorf("QQ Music API 错误: %s", searchResp.Msg)
 	}
 	return searchResp, nil
+}
+
+func qqSearchBodyStopsRetry(body io.Reader) bool {
+	payload, err := io.ReadAll(io.LimitReader(body, 4096))
+	if err != nil || strings.TrimSpace(string(payload)) == "" {
+		return false
+	}
+	var parsed struct {
+		Data struct {
+			FeedbackURL  string `json:"feedback_url"`
+			UpstreamCode int    `json:"upstream_code"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		return false
+	}
+	return parsed.Data.UpstreamCode == 2001 || strings.TrimSpace(parsed.Data.FeedbackURL) != ""
 }
 
 func isQQRiskControlError(message string) bool {

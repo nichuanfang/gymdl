@@ -11,6 +11,7 @@ import (
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/internal/playlistcatalog"
+	tb "gopkg.in/telebot.v4"
 )
 
 func TestSyncedCatalogReplacesTheYamlPlaylistList(t *testing.T) {
@@ -134,5 +135,50 @@ func TestPlaylistDescActionsStayOffThePlaylistRows(t *testing.T) {
 	}
 	if !sawSyncAlone || !sawCancelAlone {
 		t.Fatal("sync and cancel should each sit on their own row")
+	}
+}
+
+type playlistDescTextContext struct {
+	tb.Context
+	text   string
+	sender *tb.User
+	chat   *tb.Chat
+}
+
+func (c *playlistDescTextContext) Text() string     { return c.text }
+func (c *playlistDescTextContext) Sender() *tb.User { return c.sender }
+func (c *playlistDescTextContext) Chat() *tb.Chat   { return c.chat }
+
+func TestPlaylistDescEditLetsADownloadLinkThrough(t *testing.T) {
+	store, err := playlistcatalog.Open(filepath.Join(t.TempDir(), "gymdl.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app := &BotApp{playlistCatalog: store}
+	app.savePlaylistDesc(pendingPlaylistDesc{
+		token:     "desc-token",
+		userID:    7,
+		chatID:    7,
+		editingID: "zh",
+		expiresAt: time.Now().Add(time.Minute),
+		playlists: []playlistcatalog.Playlist{{ID: "zh", Name: "中文", Desc: "原来的描述"}},
+	})
+	handled, err := app.handlePlaylistDescText(&playlistDescTextContext{
+		text:   "https://y.qq.com/n/ryqq/songDetail/0039MnYb0qxYhV",
+		sender: &tb.User{ID: 7},
+		chat:   &tb.Chat{ID: 7, Type: tb.ChatPrivate},
+	})
+	if err != nil || handled {
+		t.Fatalf("link handled=%v err=%v, want the download path", handled, err)
+	}
+	if _, waiting := app.playlistDescAwaiting(7, 7); waiting {
+		t.Fatal("edit mode still captures the next message")
+	}
+	if reason := app.maintenanceConflict(7, "ai"); !strings.Contains(reason, "歌单描述") {
+		t.Fatalf("open description card should block another command, got %q", reason)
+	}
+	if reason := app.maintenanceConflict(7, "desc"); reason != "" {
+		t.Fatalf("refreshing descriptions should not block itself, got %q", reason)
 	}
 }

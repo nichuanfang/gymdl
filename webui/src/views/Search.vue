@@ -496,9 +496,11 @@ onUnmounted(() => {
 
 <style scoped>
 .search-page { max-width: 1440px; margin: 0 auto; }
+.search-page :deep(.n-space) { width: 100%; }
 
 .search-toolbar {
   display: flex;
+  width: 100%;
   align-items: center;
   gap: 14px;
   min-height: 60px;
@@ -575,6 +577,7 @@ onUnmounted(() => {
   .keyword-group { flex: 1 1 100%; width: 100%; max-width: 560px; }
 }
 @media (max-width: 760px) {
+  .keyword-group { max-width: none; }
   .platform-selectors { width: 100%; flex-wrap: wrap; gap: 8px 12px; }
   .platform-actions { margin-left: auto; }
   .result-toolbar { align-items: stretch; flex-direction: column; }

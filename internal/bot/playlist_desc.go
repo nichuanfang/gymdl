@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/core/linkparser"
 	"github.com/nichuanfang/gymdl/internal/playlistcatalog"
 	"github.com/nichuanfang/gymdl/internal/storage"
 	"github.com/nichuanfang/gymdl/utils"
@@ -82,8 +83,8 @@ func (app *BotApp) PlaylistDescCommand(c tb.Context) error {
 	if app.playlistCatalog == nil {
 		return c.Send("歌单库还没准备好，请检查数据库。")
 	}
-	if app.hasAIPlaylistSessionForChat(c.Chat().ID) || app.hasPendingEmptyTrash(c.Chat().ID) || app.hasPlaylistAssignmentForChat(c.Chat().ID) {
-		return c.Send("当前聊天已有一条歌单维护会话，请先完成或结束它。")
+	if reason := app.maintenanceConflict(c.Chat().ID, "desc"); reason != "" {
+		return c.Send(reason)
 	}
 	session := pendingPlaylistDesc{
 		token:     strings.ReplaceAll(uuid.NewString(), "-", ""),
@@ -189,6 +190,13 @@ func (app *BotApp) handlePlaylistDescText(c tb.Context) (bool, error) {
 	}
 	session, ok := app.playlistDescAwaiting(c.Chat().ID, c.Sender().ID)
 	if !ok {
+		return false, nil
+	}
+	// A link always downloads. Leaving edit mode keeps the description unchanged
+	// and lets HandleText continue with the normal download path.
+	if link, _ := linkparser.ParseLink(c.Text()); link != "" {
+		session.editingID = ""
+		app.savePlaylistDesc(session)
 		return false, nil
 	}
 	if err := app.playlistCatalog.SetDesc(context.Background(), session.editingID, c.Text()); err != nil {
@@ -408,6 +416,33 @@ func (app *BotApp) getPlaylistDesc(token string, userID, chatID int64) (pendingP
 		return pendingPlaylistDesc{}, false
 	}
 	return session, true
+}
+
+// maintenanceConflict names the other open maintenance card so the user knows
+// which message to finish. opening is the command being started and is not
+// treated as a conflict with itself.
+func (app *BotApp) maintenanceConflict(chatID int64, opening string) string {
+	if opening != "trash" && app.hasPendingEmptyTrash(chatID) {
+		return "清空回收站还等你确认。请先在那条消息里确认或取消。"
+	}
+	if opening != "assign" && app.hasPlaylistAssignmentForChat(chatID) {
+		return "歌单整理还开着。请先在那条消息里完成或点取消。"
+	}
+	if opening != "ai" && app.hasAIPlaylistSessionForChat(chatID) {
+		return "AI 歌单还开着。请先在那条消息里完成或点取消。"
+	}
+	if opening != "desc" && app.hasPlaylistDescForChat(chatID) {
+		return "歌单描述还开着。请先在那条消息里保存或点取消。"
+	}
+	return ""
+}
+
+func (app *BotApp) hasPlaylistDescForChat(chatID int64) bool {
+	app.playlistDescMu.Lock()
+	defer app.playlistDescMu.Unlock()
+	app.ensurePlaylistDescLocked(time.Now())
+	_, ok := app.playlistDescByChat[chatID]
+	return ok
 }
 
 func (app *BotApp) playlistDescAwaiting(chatID, userID int64) (pendingPlaylistDesc, bool) {

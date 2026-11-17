@@ -147,7 +147,11 @@ func initialServiceStatuses(cfg *config.Config) []ServiceStatus {
 	}
 	services = append(services, ServiceStatus{Name: "目录监听", Enabled: monitorEnabled, Online: monitorEnabled, Detail: fmt.Sprintf("%d 个目录", monitorCount)})
 	cronEnabled := cfg.AdditionalConfig != nil && cfg.AdditionalConfig.EnableCron
-	services = append(services, ServiceStatus{Name: "定时任务", Enabled: cronEnabled, Online: cronEnabled})
+	cronDetail := "未开启"
+	if cronEnabled {
+		cronDetail = "按计划运行"
+	}
+	services = append(services, ServiceStatus{Name: "定时任务", Enabled: cronEnabled, Online: cronEnabled, Detail: cronDetail})
 	return services
 }
 

@@ -49,7 +49,7 @@
                 <span class="service-name">{{ svc.name }}</span>
                 <span class="service-state">{{ stateLabel(svc) }}</span>
               </div>
-              <p>{{ svc.detail || (svc.enabled ? '等待状态检查' : '未启用') }}</p>
+              <p>{{ serviceDetail(svc) }}</p>
             </article>
           </n-grid-item>
         </n-grid>
@@ -94,6 +94,12 @@ function stateLabel(svc: ServiceStatus): string {
   if (!svc.enabled) return '未启用'
   if (initialCheckPending.value) return '检查中'
   return svc.online ? '在线' : '离线'
+}
+function serviceDetail(svc: ServiceStatus): string {
+  if (svc.detail) return svc.detail
+  if (!svc.enabled) return '未启用'
+  if (svc.online) return '运行中'
+  return '等待状态检查'
 }
 function formatUptime(seconds: number): string {
   const days = Math.floor(seconds / 86400)

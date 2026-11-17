@@ -397,8 +397,8 @@ func (app *BotApp) startEmptyTrash(c tb.Context) error {
 	if c.Chat() == nil || c.Sender() == nil {
 		return c.Send("无法读取 Telegram 会话信息，请在聊天中重新发送 /empty_trash。")
 	}
-	if app.hasPlaylistAssignmentForChat(c.Chat().ID) || app.hasAIPlaylistSessionForChat(c.Chat().ID) {
-		return c.Send("当前聊天已有一条歌单维护会话，请先完成或结束它。")
+	if reason := app.maintenanceConflict(c.Chat().ID, "trash"); reason != "" {
+		return c.Send(reason)
 	}
 	if app.hasPendingEmptyTrash(c.Chat().ID) {
 		return c.Send("当前已有一条待确认的清空回收站请求，请先确认、取消或等待过期。")
@@ -408,10 +408,13 @@ func (app *BotApp) startEmptyTrash(c tb.Context) error {
 		return c.Send("清空回收站服务尚未配置：" + err.Error())
 	}
 	app.playlistMaintenanceStartMu.Lock()
-	if app.hasPlaylistAssignmentForChat(c.Chat().ID) || app.hasAIPlaylistSessionForChat(c.Chat().ID) || app.hasPendingEmptyTrash(c.Chat().ID) {
+	if reason := app.maintenanceConflict(c.Chat().ID, "trash"); reason != "" || app.hasPendingEmptyTrash(c.Chat().ID) {
 		app.playlistMaintenanceStartMu.Unlock()
 		service.organizer.client.CloseIdleConnections()
-		return c.Send("当前聊天已有一条歌单维护会话，请先完成或结束它。")
+		if reason == "" {
+			reason = "当前已有一条待确认的清空回收站请求，请先确认、取消或等待过期。"
+		}
+		return c.Send(reason)
 	}
 	if !app.beginEmptyTrashRun(c.Chat().ID) {
 		app.playlistMaintenanceStartMu.Unlock()

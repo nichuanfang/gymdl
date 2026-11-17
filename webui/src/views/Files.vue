@@ -187,9 +187,12 @@ const filteredEntries = computed(() => {
   })
 })
 const summaryText = computed(() => {
+  const directories = entries.value.filter((entry) => entry.is_dir).length
+  if (loading.value && entries.value.length === 0) return '正在读取目录…'
   const { audio, size } = libraryStats.value
+  if (!audio && directories > 0) return `${directories} 个文件夹，这一层没有音频`
   if (!audio) return '当前目录暂无音频'
-  return `${audio} 首 · ${formatSize(size)}`
+  return directories > 0 ? `${audio} 首 · ${formatSize(size)} · ${directories} 个文件夹` : `${audio} 首 · ${formatSize(size)}`
 })
 const emptyDescription = computed(() => {
   if (quickFilter.value !== 'all' && entries.value.length > 0) return '这个筛选下没有文件'

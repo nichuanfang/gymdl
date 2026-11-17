@@ -159,6 +159,53 @@ func TestSearchQQRetriesHTTP429AndSucceeds(t *testing.T) {
 	}
 }
 
+func TestSearchQQHTTP429LoginWallDoesNotRefreshOrRetry(t *testing.T) {
+	credentialPath := useQQMusicCredentialPath(t)
+	if _, err := saveQQMusicCredential(credentialPath, map[string]interface{}{
+		"musicid": "123456", "str_musicid": "123456", "musickey": "old-key",
+		"refresh_key": "old-refresh-key", "refresh_token": "old-refresh-token",
+		"access_token": "old-access-token", "openid": "old-open-id", "unionid": "old-union-id",
+		"expired_at": "2000000000", "login_type": "0",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previousConfig := GetWebConfig()
+	previousManager := manager
+	manager = nil
+	t.Cleanup(func() {
+		SetWebConfig(previousConfig)
+		manager = previousManager
+	})
+
+	searchCalls, refreshCalls := 0, 0
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/search/search_by_type":
+			searchCalls++
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"code":-1,"msg":"触发风控, 需登录或者安全验证","data":{"upstream_code":2001,"feedback_url":"https://y.qq.com/m/client/login/index.html"}}`))
+		case "/login/refresh_credential":
+			refreshCalls++
+			_, _ = w.Write([]byte(`{"code":0,"msg":"ok","data":{}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+	SetWebConfig(&config.Config{QQMusicApiConfig: &config.QQMusicApiConfig{
+		Enable: true, Endpoint: api.URL, LoginType: 0,
+	}})
+
+	_, err := searchQQ("风控", 10, 0)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 状态码: 429") {
+		t.Fatalf("login-wall HTTP 429 should surface once, got %v", err)
+	}
+	if searchCalls != 1 || refreshCalls != 0 {
+		t.Fatalf("login-wall HTTP 429 must not refresh or retry: search=%d refresh=%d", searchCalls, refreshCalls)
+	}
+}
+
 func TestSearchQQDoesNotRefreshForNonRiskErrors(t *testing.T) {
 	credentialPath := useQQMusicCredentialPath(t)
 	if _, err := saveQQMusicCredential(credentialPath, map[string]interface{}{

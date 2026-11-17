@@ -67,11 +67,11 @@ func (app *BotApp) startAIPlaylist(c tb.Context) error {
 	if c.Chat() == nil || c.Sender() == nil {
 		return c.Send("无法读取 Telegram 会话信息，请在聊天中重新发送 /ai_playlist。")
 	}
-	if app.hasPlaylistAssignmentForChat(c.Chat().ID) || app.hasPendingEmptyTrash(c.Chat().ID) {
-		return c.Send("当前聊天已有一条歌单维护会话，请先完成或结束它。")
-	}
 	if app.hasAIPlaylistSessionForChat(c.Chat().ID) {
-		return c.Send("当前聊天已有一条 AI 歌单会话，请继续原消息中的操作或取消它。")
+		return c.Send("AI 歌单还开着。请在原消息里继续，或点取消。")
+	}
+	if reason := app.maintenanceConflict(c.Chat().ID, "ai"); reason != "" {
+		return c.Send(reason)
 	}
 	service, err := newAIPlaylistService(app.cfg)
 	if err != nil {
@@ -92,10 +92,13 @@ func (app *BotApp) startAIPlaylist(c tb.Context) error {
 		expiresAt:   time.Now().Add(aiPlaylistSessionTTL),
 	}
 	app.playlistMaintenanceStartMu.Lock()
-	if app.hasPlaylistAssignmentForChat(session.chatID) || app.hasPendingEmptyTrash(session.chatID) || app.hasAIPlaylistSessionForChat(session.chatID) || !app.registerAIPlaylistSession(session) {
+	if reason := app.maintenanceConflict(session.chatID, "ai"); reason != "" || app.hasAIPlaylistSessionForChat(session.chatID) || !app.registerAIPlaylistSession(session) {
 		app.playlistMaintenanceStartMu.Unlock()
 		_ = service.close()
-		_, _ = c.Bot().Edit(message, "当前聊天已有一条歌单维护会话，请先完成或结束它。", &tb.ReplyMarkup{})
+		if reason == "" {
+			reason = "AI 歌单还开着。请在原消息里继续，或点取消。"
+		}
+		_, _ = c.Bot().Edit(message, reason, &tb.ReplyMarkup{})
 		return nil
 	}
 	app.playlistMaintenanceStartMu.Unlock()

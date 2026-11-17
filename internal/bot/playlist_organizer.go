@@ -1356,8 +1356,8 @@ func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
 	if c.Chat().Type != tb.ChatPrivate {
 		return c.Send("歌单选择页面仅支持与机器人私聊，请在私聊中发送 /assign_playlist。")
 	}
-	if app.hasAIPlaylistSessionForChat(c.Chat().ID) || app.hasPendingEmptyTrash(c.Chat().ID) {
-		return c.Send("当前聊天已有一条歌单维护会话，请先完成或结束它。")
+	if reason := app.maintenanceConflict(c.Chat().ID, "assign"); reason != "" {
+		return c.Send(reason)
 	}
 	organizer, err := newPlaylistOrganizerService(app.cfg.PlaylistOrganizer)
 	if err != nil {
@@ -1393,7 +1393,7 @@ func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
 		return c.Send("可选歌单超过 100 个，暂时无法打开歌单选择页面。")
 	}
 	if app.hasPlaylistAssignmentForChat(c.Chat().ID) {
-		return c.Send("当前聊天已有一条歌单整理会话，请先完成或结束它。")
+		return c.Send("歌单整理还开着。请先在那条消息里完成或点取消。")
 	}
 	message, err := c.Bot().Send(c.Chat(), "📌 正在查找第一首待整理歌曲…")
 	if err != nil {
@@ -1415,9 +1415,12 @@ func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
 		expiresAt:           time.Now().Add(playlistAssignmentTTL),
 	}
 	app.playlistMaintenanceStartMu.Lock()
-	if app.hasAIPlaylistSessionForChat(assignment.chatID) || app.hasPendingEmptyTrash(assignment.chatID) || app.hasPlaylistAssignmentForChat(assignment.chatID) || !app.registerPlaylistAssignment(assignment) {
+	if reason := app.maintenanceConflict(assignment.chatID, "assign"); reason != "" || app.hasPlaylistAssignmentForChat(assignment.chatID) || !app.registerPlaylistAssignment(assignment) {
 		app.playlistMaintenanceStartMu.Unlock()
-		app.editPlaylistAssignmentMessage(message, "当前聊天已有一条歌单整理会话，请先完成或结束它。", &tb.ReplyMarkup{})
+		if reason == "" {
+			reason = "歌单整理还开着。请先在那条消息里完成或点取消。"
+		}
+		app.editPlaylistAssignmentMessage(message, reason, &tb.ReplyMarkup{})
 		return nil
 	}
 	app.playlistMaintenanceStartMu.Unlock()
