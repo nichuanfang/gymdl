@@ -29,6 +29,23 @@ export const getFileStreamUrl = (path: string) => `/api/web/files/stream?path=${
 export const deleteFile = (path: string) => del('/files', { path })
 export const getCookieCloudStatus = () => get<CookieCloudStatus>('/cookiecloud/status')
 export const syncCookieCloud = () => post('/cookiecloud/sync')
+export const getCronJobs = () => get<CronJobs>('/cron/jobs')
+export const runCronJob = (name: string) => post<{ name: string; started: boolean }>(`/cron/jobs/${encodeURIComponent(name)}/run`)
+
+export interface CronJob {
+  name: string
+  label: string
+  schedule: string
+  running: boolean
+  last_run?: string
+  next_run?: string
+  last_error?: string
+}
+
+export interface CronJobs {
+  enabled: boolean
+  jobs: CronJob[]
+}
 
 export interface AuthSession {
   auth_enabled: boolean
@@ -53,3 +70,118 @@ export interface TaskSubmitResponse extends Task {
   confirmation_required?: boolean
   duplicate?: DuplicateCheckResult
 }
+
+export interface DiscoveryTrack {
+  platform: string
+  id: string
+  url: string
+  title: string
+  artist: string
+  album?: string
+  duration?: number
+  verified: boolean
+}
+
+export interface RediscoverResult {
+  tracks: DiscoveryTrack[]
+  skipped_owned: number
+  unconfirmed: number
+  requested: number
+  notice: string
+}
+
+export const rediscoverTracks = (platform: string, limit: number) =>
+  post<RediscoverResult>('/discovery/rediscover', { platform, limit })
+export const enqueueDiscoveryTracks = (tracks: DiscoveryTrack[]) =>
+  post<{ queued: number; skipped: number }>('/discovery/enqueue', { tracks })
+export const dismissDiscoveryTracks = (tracks: DiscoveryTrack[]) =>
+  post<{ dismissed: number }>('/discovery/dismiss', { tracks })
+
+export interface PlaylistDescription {
+  id: string
+  name: string
+  desc: string
+}
+
+export const listPlaylistDescriptions = () =>
+  get<{ synced: boolean; items: PlaylistDescription[] }>('/playlists')
+export const updatePlaylistDescription = (id: string, desc: string) =>
+  put<{ id: string; desc: string }>(`/playlists/${encodeURIComponent(id)}/desc`, { desc })
+export const syncPlaylistCatalog = () =>
+  post<{ added: number; updated: number; inactive: number; synced: boolean }>('/playlists/sync')
+
+export interface AIPreset {
+  id: string
+  label: string
+  text: string
+}
+
+export interface AIPlaylistItem {
+  id: string
+  name: string
+  description: string
+  song_count: number
+}
+
+export interface AIPlaylistPage {
+  presets: AIPreset[]
+  playlists: AIPlaylistItem[]
+  warning?: string
+}
+
+export interface AIPreviewSong {
+  title: string
+  artist: string
+  reason?: string
+}
+
+export interface AIPreviewPage {
+  token: string
+  name: string
+  description: string
+  intro: string
+  total: number
+  preview: AIPreviewSong[]
+  used_fallback: boolean
+  creating: boolean
+}
+
+export interface AIConfirmPage {
+  name: string
+  count: number
+  intro: string
+  created: boolean
+  replaced: boolean
+  used_fallback: boolean
+}
+
+export const listAIPlaylists = () => get<AIPlaylistPage>('/ai/playlists')
+export const previewAIPlaylist = (body: { playlist_id?: string; name?: string; request: string; preset: string }) =>
+  post<AIPreviewPage>('/ai/playlists/preview', body)
+export const confirmAIPlaylist = (token: string) => post<AIConfirmPage>('/ai/playlists/confirm', { token })
+
+export interface LibraryDuplicateTrack {
+  path: string
+  name: string
+  ext: string
+  size: number
+  mod_unix: number
+}
+
+export interface LibraryDuplicateGroup {
+  kind: 'same' | 'similar' | string
+  tracks: LibraryDuplicateTrack[]
+}
+
+export interface LibraryDuplicateReport {
+  status: string
+  scanned: number
+  total: number
+  skipped: number
+  error?: string
+  updated_at?: string
+  groups: LibraryDuplicateGroup[]
+}
+
+export const getLibraryDuplicates = () => get<LibraryDuplicateReport>('/duplicates')
+export const startLibraryDuplicateScan = () => post<LibraryDuplicateReport>('/duplicates/scan')

@@ -162,7 +162,7 @@ func HandleListFiles(c *gin.Context) {
 	if err != nil {
 		if cfg.Tidy.Mode == 2 && core.PendingWebDAVUploadCount() > 0 {
 			response.Fail(c, http.StatusBadGateway,
-				fmt.Sprintf("NAS 当前不可用，%d 个新文件已安全保存在本地，恢复后会自动补传。文件库暂时只能显示已上传内容。", core.PendingWebDAVUploadCount()))
+				fmt.Sprintf("读取整理目录失败。%d 个文件还在本地待上传队列，会自动补传。", core.PendingWebDAVUploadCount()))
 			return
 		}
 		status := http.StatusInternalServerError
@@ -292,7 +292,10 @@ type fileLibraryRemote interface {
 }
 
 const maxFileSearchDirs = 2000
-const webDAVFileIndexTTL = 15 * time.Second
+
+// A full NAS walk is expensive. Reuse it for repeated searches in the same folder.
+// Delete still drops the index immediately.
+const webDAVFileIndexTTL = 2 * time.Minute
 const maxWebDAVFileIndexes = 24
 const webDAVFileSearchConcurrency = 8
 

@@ -19,11 +19,16 @@ import (
 type Library interface {
 	Contains(context.Context, Track) (bool, error)
 }
+
+// libraryCacheTTL keeps the Navidrome catalog warm across /rediscover and the
+// ownership checks that follow it. Downloads still go through the dedupe store.
+const libraryCacheTTL = 10 * time.Minute
+
 type NavidromeLibrary struct {
 	Config  *config.PlaylistOrganizerConfig
 	Client  *http.Client
 	mu      sync.Mutex
-	tracks  map[string][]Track
+	byTitle map[string][]Track
 	expires time.Time
 }
 
@@ -36,12 +41,24 @@ func (l *NavidromeLibrary) Contains(ctx context.Context, t Track) (bool, error) 
 			return false, err
 		}
 	}
-	for _, other := range l.tracks[Identity(t)] {
-		if SameRecording(t, other) {
-			return true, nil
+	return l.ownsLocked(t), nil
+}
+
+func (l *NavidromeLibrary) ownsLocked(t Track) bool {
+	key := ownershipTitle(t.Title)
+	if key == "" {
+		return false
+	}
+	tracks := l.byTitle[key]
+	for _, other := range tracks {
+		if sameOwnedWork(t, other) {
+			return true
 		}
 	}
-	return false, nil
+	// One library copy of a specific title is the same work. Last.fm often
+	// stores a second credit (composer, translated name, sound team) that
+	// does not match the file tags.
+	return len(tracks) == 1 && specificOwnedTitle(t.Title)
 }
 
 func (l *NavidromeLibrary) load(ctx context.Context) error {
@@ -89,11 +106,15 @@ func (l *NavidromeLibrary) load(ctx context.Context) error {
 			}
 			seen[s.ID] = true
 			t := Track{ID: s.ID, Title: s.Title, Artist: s.Artist, Album: s.Album, Duration: int(s.Duration), Verified: true}
-			index[Identity(t)] = append(index[Identity(t)], t)
+			key := ownershipTitle(t.Title)
+			if key == "" {
+				key = "id:" + s.ID
+			}
+			index[key] = append(index[key], t)
 		}
 		if len(body.Response.Search.Songs) < 500 {
-			l.tracks = index
-			l.expires = time.Now().Add(time.Minute)
+			l.byTitle = index
+			l.expires = time.Now().Add(libraryCacheTTL)
 			return nil
 		}
 	}

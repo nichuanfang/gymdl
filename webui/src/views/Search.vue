@@ -9,7 +9,6 @@
             v-model:value="keyword"
             placeholder="输入歌曲 / 歌手 / 视频关键词"
             size="large"
-            :disabled="searching"
             @focus="selectKeyword"
             @keyup.enter="startSearch"
           />
@@ -26,7 +25,7 @@
         </div>
       </div>
 
-      <div v-if="searching && searchPlatforms.length" class="search-progress" aria-live="polite">
+      <div v-if="searchPlatforms.length && (searching || activeErrors.length)" class="search-progress" aria-live="polite">
         <span class="progress-label">平台状态</span>
         <n-tag
           v-for="platform in searchPlatforms"
@@ -53,12 +52,13 @@
         </div>
       </div>
       <n-data-table
+        v-if="searching || results.length > 0"
         :columns="columns"
         :data="results"
         size="small"
         :bordered="false"
         :row-key="rowKey"
-        :scroll-x="1164"
+        :scroll-x="980"
       />
 
       <div v-if="searched" class="pagination-bar">
@@ -110,7 +110,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, h } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, h, nextTick } from 'vue'
 import {
   NInputGroup, NInput, NButton, NSpace, NTag, NDataTable, NAlert,
   NEmpty, NCheckbox, NCheckboxGroup, NTooltip, NSelect, useMessage,
@@ -123,6 +123,8 @@ import PageHeading from '../components/PageHeading.vue'
 import { watchTaskCompletion } from '../components/taskNotifications'
 import { useTaskSubmission } from '../components/useTaskSubmission'
 import type { SearchResultItem } from '../types/search'
+
+defineOptions({ name: 'Search' })
 
 type SearchRow = SearchResultItem
 
@@ -169,6 +171,9 @@ const vipOptions = [
   { label: '仅 VIP', value: 'vip' },
 ]
 const selectedPlatforms = ref<string[]>(['netease', 'qq', 'youtube', 'bilibili'])
+const downloading = ref<Record<string, boolean>>({})
+let suppressFilterWatch = false
+let pendingRefilter = false
 const chosenPlatforms = computed(() => PLATFORM_ORDER.filter((platform) => selectedPlatforms.value.includes(platform) && (platform !== 'qq' || qqEnabled.value)))
 const searchDefinitionDirty = computed(() =>
   keyword.value.trim() !== lastSearchedKeyword.value || chosenPlatforms.value.join(',') !== lastSearchedPlatforms.value.join(','),
@@ -208,11 +213,23 @@ function applyResultFilters() {
   void loadPage(1, lastSearchedKeyword.value, lastSearchedPlatforms.value, 'filter')
 }
 watch(resultQuery, () => {
+  if (suppressFilterWatch) return
+  if (searching.value) {
+    pendingRefilter = true
+    return
+  }
   clearFilterDebounce()
   if (!canApplyResultFilters()) return
   filterDebounceTimer = setTimeout(applyResultFilters, filterDebounceMs)
 })
-watch([resultPlatform, vipFilter], applyResultFilters)
+watch([resultPlatform, vipFilter], () => {
+  if (suppressFilterWatch) return
+  if (searching.value) {
+    pendingRefilter = true
+    return
+  }
+  applyResultFilters()
+})
 const allPlatformsSelected = computed(() => {
   const enabled = PLATFORM_ORDER.filter((platform) => platform !== 'qq' || qqEnabled.value)
   return enabled.length > 0 && enabled.every((platform) => selectedPlatforms.value.includes(platform))
@@ -260,6 +277,7 @@ async function startSearch() {
     return
   }
 
+  suppressFilterWatch = true
   if (query !== lastSearchedKeyword.value) {
     resultQuery.value = ''
     resultPlatform.value = 'all'
@@ -267,6 +285,8 @@ async function startSearch() {
   } else if (resultPlatform.value !== 'all' && !platforms.includes(resultPlatform.value)) {
     resultPlatform.value = 'all'
   }
+  await nextTick()
+  suppressFilterWatch = false
   searched.value = true
   await loadPage(1, query, platforms, 'search')
 }
@@ -317,6 +337,18 @@ async function loadPage(page: number, query: string, platforms: string[], action
     vip: vipFilter.value,
   }
   let receivedComplete = false
+  const liveBuckets: Record<string, SearchRow[]> = {}
+  const publishLive = () => {
+    const lists = progressPlatforms.map((platform) => liveBuckets[platform] || [])
+    const maxItems = lists.reduce((max, items) => Math.max(max, items.length), 0)
+    const merged: SearchRow[] = []
+    for (let index = 0; index < maxItems; index++) {
+      for (const items of lists) {
+        if (index < items.length) merged.push(items[index])
+      }
+    }
+    results.value = merged.slice(offset, offset + batchSize.value)
+  }
   try {
     await streamSearch(
       {
@@ -332,9 +364,11 @@ async function loadPage(page: number, query: string, platforms: string[], action
         const previous = platformProgress.value[event.platform]
         const items = event.status === 'partial'
           ? [...(previous?.items || []), ...(event.items || [])]
-          : (event.items || previous?.items || [])
+          : (event.items || [])
+        liveBuckets[event.platform] = items
         platformProgress.value = { ...platformProgress.value, [event.platform]: { ...event, items } }
         if (event.error) errors.value = { ...errors.value, [event.platform]: event.error }
+        if (!receivedComplete) publishLive()
       },
       (complete: SearchCompleteEvent) => {
         receivedComplete = true
@@ -368,12 +402,21 @@ async function loadPage(page: number, query: string, platforms: string[], action
       activeSearchController = null
       searching.value = false
       loadingAction.value = ''
+      if (pendingRefilter) {
+        pendingRefilter = false
+        const filtersDiffer = resultQuery.value.trim() !== lastSearchedFilterQuery.value
+          || resultPlatform.value !== lastSearchedFilterPlatform.value
+          || vipFilter.value !== lastSearchedVipFilter.value
+        if (filtersDiffer && canApplyResultFilters()) applyResultFilters()
+      }
     }
   }
   return receivedComplete
 }
 
 async function handleDownload(row: SearchRow) {
+  if (downloading.value[row.url]) return
+  downloading.value = { ...downloading.value, [row.url]: true }
   try {
     const response = await submitWithDuplicateConfirmation(row.url)
     if (response.code === 200) {
@@ -382,6 +425,10 @@ async function handleDownload(row: SearchRow) {
     } else if (response.code !== 499) message.error(response.message || '提交失败')
   } catch (error) {
     message.error(error instanceof Error ? `提交失败：${error.message}` : '提交失败')
+  } finally {
+    const next = { ...downloading.value }
+    delete next[row.url]
+    downloading.value = next
   }
 }
 function openSource(row: SearchRow) {
@@ -400,7 +447,7 @@ async function copyURL(row: SearchRow) {
 
 const columns: DataTableColumns<SearchRow> = [
   {
-    title: '歌曲', key: 'name', minWidth: 500, ellipsis: { tooltip: true },
+    title: '歌曲', key: 'name', minWidth: 240, ellipsis: { tooltip: true },
     render: (row) => h(NTooltip, { trigger: 'hover', placement: 'top' }, {
       trigger: () => h('span', { class: 'song-title' }, [
         row.name,
@@ -417,10 +464,10 @@ const columns: DataTableColumns<SearchRow> = [
     render: (row) => h(NTag, { size: 'small' }, { default: () => platformLabel(row.platform) }),
   },
   {
-    title: '操作', key: 'actions', width: 160,
+    title: '操作', key: 'actions', width: 168, fixed: 'right',
     render: (row) => h(NSpace, { size: 2, wrap: false }, {
       default: () => [
-        h(NButton, { size: 'tiny', type: 'primary', quaternary: true, onClick: () => handleDownload(row) }, { default: () => '下载' }),
+        h(NButton, { size: 'tiny', type: 'primary', quaternary: true, loading: !!downloading.value[row.url], disabled: !!downloading.value[row.url], onClick: () => handleDownload(row) }, { default: () => '下载' }),
         h(NButton, { size: 'tiny', quaternary: true, title: '在来源平台打开试听', onClick: () => openSource(row) }, { default: () => '试听' }),
         h(NButton, { size: 'tiny', quaternary: true, onClick: () => copyURL(row) }, { default: () => '复制' }),
       ],
@@ -457,10 +504,15 @@ onUnmounted(() => {
   min-height: 60px;
   box-sizing: border-box;
   padding: 7px 10px;
-  border: 1px solid rgba(145,160,154,.13);
-  border-radius: 10px;
-  background: linear-gradient(105deg, rgba(25,30,36,.9), rgba(20,24,29,.76));
+  border: 1px solid rgba(186,206,198,.16);
+  border-radius: 16px;
+  background: rgba(16, 22, 26, .46);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  transition: border-color .22s var(--ease, ease), box-shadow .22s var(--ease, ease);
 }
+.search-toolbar:focus-within { border-color: rgba(99,226,183,.38); box-shadow: 0 0 0 3px rgba(99,226,183,.1), inset 0 1px 0 rgba(255,255,255,.05); }
 .keyword-group { width: min(100%, 460px); flex: 0 1 460px; }
 .platform-selectors { display: flex; align-items: center; gap: 12px; white-space: nowrap; }
 .platform-actions { display: flex; align-items: center; padding-left: 8px; border-left: 1px solid rgba(145,160,154,.16); }
@@ -475,9 +527,11 @@ onUnmounted(() => {
   min-height: 42px;
   box-sizing: border-box;
   padding: 5px 8px;
-  border: 1px solid rgba(145,160,154,.1);
-  border-radius: 8px;
-  background: rgba(18,21,26,.62);
+  border: 1px solid rgba(186,206,198,.12);
+  border-radius: 14px;
+  background: rgba(16, 22, 26, .38);
+  backdrop-filter: blur(14px) saturate(1.3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
 }
 .filter-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .filter-query { width: 240px; }
@@ -509,8 +563,8 @@ onUnmounted(() => {
 }
 .history-label { flex: 0 0 auto; color: #87938e; font-size: 11px; }
 .history-items { display: flex; flex: 1 1 auto; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
-.history-tag { flex: 0 0 auto; padding: 3px 8px; border: 1px solid rgba(171,190,184,.18); border-radius: 3px; color: #c1cbc6; background: transparent; font: inherit; font-size: 11px; line-height: 1.4; cursor: pointer; }
-.history-tag:hover:not(:disabled) { border-color: rgba(99,226,183,.48); color: #8de8c8; }
+.history-tag { flex: 0 0 auto; padding: 4px 10px; border: 1px solid rgba(171,190,184,.18); border-radius: 999px; color: #c1cbc6; background: rgba(16,22,26,.35); font: inherit; font-size: 11px; line-height: 1.4; cursor: pointer; transition: border-color .2s var(--ease, ease), color .2s var(--ease, ease), background .2s var(--ease, ease); }
+.history-tag:hover:not(:disabled) { border-color: rgba(99,226,183,.48); color: #8de8c8; background: rgba(99,226,183,.08); }
 .history-tag:disabled { opacity: .5; cursor: not-allowed; }
 .history-tag:focus-visible { outline: 2px solid #63e2b7; outline-offset: 2px; }
 .song-title { cursor: help; font-weight: 500; }

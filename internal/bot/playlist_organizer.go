@@ -397,6 +397,11 @@ func (s *playlistOrganizerService) replaceAIPlaylistTracks(ctx context.Context, 
 
 func (s *playlistOrganizerService) runOliveTinAction(ctx context.Context, action oliveTinActionRequest) (string, error) {
 	base := strings.TrimRight(strings.TrimSpace(s.config.OliveTinURL), "/")
+	if cacheableOliveTinAction(action.ActionID) && len(action.Arguments) == 0 {
+		if output, ok := loadOliveTinRead(base, action.ActionID, time.Now()); ok {
+			return output, nil
+		}
+	}
 	endpoint, err := url.JoinPath(base, "api", "StartActionAndWait")
 	if err != nil {
 		return "", fmt.Errorf("构造 OliveTin 请求地址失败: %w", err)
@@ -419,10 +424,14 @@ func (s *playlistOrganizerService) runOliveTinAction(ctx context.Context, action
 	if response.LogEntry.ExitCode == nil || *response.LogEntry.ExitCode != 0 || response.LogEntry.TimedOut {
 		return "", fmt.Errorf("OliveTin action 失败（exitCode=%v, timedOut=%t）", response.LogEntry.ExitCode, response.LogEntry.TimedOut)
 	}
+	output := response.LogEntry.Stdout
 	if response.LogEntry.Output != "" {
-		return response.LogEntry.Output, nil
+		output = response.LogEntry.Output
 	}
-	return response.LogEntry.Stdout, nil
+	if cacheableOliveTinAction(action.ActionID) && len(action.Arguments) == 0 {
+		storeOliveTinRead(base, action.ActionID, output, time.Now())
+	}
+	return output, nil
 }
 
 func (s *playlistOrganizerService) navidromeLogin(ctx context.Context) (string, error) {
@@ -430,6 +439,9 @@ func (s *playlistOrganizerService) navidromeLogin(ctx context.Context) (string, 
 		return "", err
 	}
 	base := strings.TrimRight(strings.TrimSpace(s.config.NavidromeURL), "/")
+	if token, ok := loadNavidromeToken(base, s.config.NavidromeUsername, s.config.NavidromePassword, time.Now()); ok {
+		return token, nil
+	}
 	endpoint, err := url.JoinPath(base, "auth", "login")
 	if err != nil {
 		return "", fmt.Errorf("构造 Navidrome 登录地址失败: %w", err)
@@ -464,6 +476,7 @@ func (s *playlistOrganizerService) navidromeLogin(ctx context.Context) (string, 
 	if strings.TrimSpace(response.Token) == "" {
 		return "", errors.New("Navidrome 登录响应缺少 token")
 	}
+	storeNavidromeToken(base, s.config.NavidromeUsername, s.config.NavidromePassword, response.Token, time.Now())
 	return response.Token, nil
 }
 
@@ -492,6 +505,7 @@ func (s *playlistOrganizerService) createAIPlaylist(ctx context.Context, name, m
 		if count != 1 {
 			return aiPlaylist{}, errors.New("发现多个相同创建标记的歌单，为避免重复写入已停止")
 		}
+		s.forgetAIPlaylistList()
 		return aiPlaylistFromAPI(found), nil
 	}
 	for _, playlist := range playlists {
@@ -519,6 +533,7 @@ func (s *playlistOrganizerService) createAIPlaylist(ctx context.Context, name, m
 	// reconcile by the persisted marker before deciding whether a retry is safe.
 	created, lookupErr := s.findAIPlaylistByMarker(ctx, token, marker)
 	if lookupErr == nil && created.ID != "" {
+		s.forgetAIPlaylistList()
 		return created, nil
 	}
 	if requestErr != nil {
@@ -755,7 +770,24 @@ func (s *playlistOrganizerService) addSongToPlaylists(ctx context.Context, songI
 	if len(remaining) > 0 {
 		return addedAny, fmt.Errorf("Navidrome still reports %d selected playlists without the song", len(remaining))
 	}
+	if addedAny {
+		s.forgetUnassignedSongs()
+	}
 	return addedAny, nil
+}
+
+func (s *playlistOrganizerService) forgetAIPlaylistList() {
+	if s == nil || s.config == nil {
+		return
+	}
+	dropOliveTinRead(strings.TrimRight(strings.TrimSpace(s.config.OliveTinURL), "/"), "ai_playlists")
+}
+
+func (s *playlistOrganizerService) forgetUnassignedSongs() {
+	if s == nil || s.config == nil {
+		return
+	}
+	dropOliveTinRead(strings.TrimRight(strings.TrimSpace(s.config.OliveTinURL), "/"), "songs_unplaylist")
 }
 
 func newMusicRAGSink(n8n *config.N8NConfig, client *http.Client) *musicRAGSink {
@@ -1338,14 +1370,23 @@ func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
 	if err != nil {
 		return c.Send("歌单选择页面尚未配置：" + err.Error())
 	}
-	var entries []config.PlaylistInfo
+	var fallback []config.PlaylistInfo
 	playlistAssist := false
 	if app.cfg.PlaylistOrganizer != nil {
-		entries = app.cfg.PlaylistOrganizer.TidyPlaylist
+		fallback = app.cfg.PlaylistOrganizer.TidyPlaylist
 		playlistAssist = app.cfg.PlaylistOrganizer.PlaylistAssist
+	}
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	entries, synced, err := loadTidyPlaylists(loadCtx, app.playlistCatalog, fallback)
+	loadCancel()
+	if err != nil {
+		return c.Send("读取歌单库失败，请稍后重试。")
 	}
 	options, skipped := normalizePlaylistOptions(entries)
 	if len(options) == 0 {
+		if synced {
+			return c.Send("没有可用于整理的歌单。发送 /playlist_desc 同步并写上描述。")
+		}
 		return c.Send("没有可用于整理的歌单，请检查 config.playlists.yaml。")
 	}
 	if len(options) > maxPlaylistOptions {

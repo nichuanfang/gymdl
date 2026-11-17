@@ -28,17 +28,22 @@ func registerTasks(c *config.Config, scheduler gocron.Scheduler) {
 		},
 	}
 	// 执行一次依赖安装/更新
-	newTask("installDependency", scheduler, gocron.OneTimeJob(gocron.OneTimeJobStartImmediately()),
+	newTask("installDependency", "启动时一次", scheduler, gocron.OneTimeJob(gocron.OneTimeJobStartImmediately()),
 		gocron.NewTask(installDependency, c, client))
 
 	// 注册依赖更新检测任务(6小时)
-	newTask("updateDependency", scheduler, gocron.DurationJob(time.Hour*6), gocron.NewTask(updateDependency, c, client))
+	newTask("updateDependency", "每 6 小时", scheduler, gocron.DurationJob(time.Hour*6), gocron.NewTask(updateDependency, c, client))
 
-	if c.CookieCloud.Mode == 1 {
+	if c.PlaylistOrganizer != nil && strings.TrimSpace(c.PlaylistOrganizer.NavidromeURL) != "" && strings.TrimSpace(c.PlaylistOrganizer.NavidromeUsername) != "" && c.PlaylistOrganizer.NavidromePassword != "" {
+		newTask("syncPlaylists", "每天 04:10", scheduler, gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 10, 0))), gocron.NewTask(syncPlaylists, c))
+	}
+
+	if c.CookieCloud != nil && c.CookieCloud.Mode == 1 {
 		// 定时刷新
 
 		// 注册cookiecloud同步任务(根据配置的时间)
-		newTask("syncCookieCloud", scheduler, gocron.DurationJob(time.Minute*time.Duration(c.CookieCloud.ExpireTime)),
+		every := fmt.Sprintf("每 %d 分钟", c.CookieCloud.ExpireTime)
+		newTask("syncCookieCloud", every, scheduler, gocron.DurationJob(time.Minute*time.Duration(c.CookieCloud.ExpireTime)),
 			gocron.NewTask(syncCookieCloud, client))
 	}
 }
@@ -81,13 +86,14 @@ func InitScheduler(c *config.Config) gocron.Scheduler {
 	}
 
 	registerTasks(c, newScheduler)
+	setActive(newScheduler)
 	return newScheduler
 }
 
 // newTask 日志任务创建信息
-func newTask(jobName string, scheduler gocron.Scheduler, jobDefinition gocron.JobDefinition, task gocron.Task) {
-	logger.Info("[Job Added]", zap.String("jobName", jobName))
-	_, _ = scheduler.NewJob(jobDefinition, task)
+func newTask(jobName, schedule string, scheduler gocron.Scheduler, jobDefinition gocron.JobDefinition, task gocron.Task) {
+	logger.Info("[Job Added]", zap.String("jobName", jobName), zap.String("schedule", schedule))
+	_, _ = scheduler.NewJob(jobDefinition, task, gocron.WithName(jobName), gocron.WithTags(schedule))
 }
 
 // logJobEvent 日志任务执行信息
@@ -96,6 +102,11 @@ func logJobEvent(event, jobName string, jobID uuid.UUID, start *time.Time, err e
 	if idx := strings.LastIndex(jobName, "."); idx != -1 {
 		name = jobName[idx+1:]
 	}
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+	noteJobEvent(event, name, message)
 
 	fields := []zap.Field{
 		zap.String("job_name", name),

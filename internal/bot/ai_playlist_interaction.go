@@ -60,7 +60,7 @@ var aiPlaylistPresets = []aiPlaylistPreset{
 	{ID: "night", Label: "夜间放松", Text: "适合夜晚放松，温柔舒缓、氛围安静，适合慢慢听。"},
 	{ID: "workout", Label: "运动提神", Text: "适合运动，节奏有推动力、情绪积极，听起来有活力。"},
 	{ID: "rain", Label: "雨天氛围", Text: "适合雨天独处，氛围感强、情绪细腻，整体不宜太激烈。"},
-	{ID: "instrumental", Label: "器乐纯享", Text: "以纯音乐和器乐为主，适合作为背景聆听，避免明显人声。"},
+	{ID: "inst", Label: "器乐纯享", Text: "以纯音乐和器乐为主，适合作为背景聆听，避免明显人声。"},
 }
 
 func (app *BotApp) startAIPlaylist(c tb.Context) error {
@@ -214,10 +214,20 @@ func (app *BotApp) HandleAIPlaylistCallback(c tb.Context) error {
 		}
 		updated, ok := app.selectAIPlaylistTarget(token, session.playlists[index])
 		if !ok {
-			return c.Respond(&tb.CallbackResponse{Text: "AI 歌单会话已过期", ShowAlert: true})
+			current, exists := app.getAIPlaylistSession(token)
+			if exists && current.target.ID != "" && !current.processing {
+				return app.showAIPlaylistSession(c, current, "继续这张歌单")
+			}
+			return c.Respond(&tb.CallbackResponse{Text: "AI 歌单会话已过期，请重新发送 /ai_playlist", ShowAlert: true})
 		}
-		_ = c.Respond()
-		return c.Edit(formatAIPlaylistSession(updated), aiPlaylistSessionMarkup(updated))
+		if err := c.Edit(formatAIPlaylistSession(updated), aiPlaylistSessionMarkup(updated)); err != nil {
+			if telegramMessageUnchanged(err) {
+				return c.Respond(&tb.CallbackResponse{Text: "已选中这张歌单"})
+			}
+			_, _ = app.resetAIPlaylistTarget(token)
+			return c.Respond(&tb.CallbackResponse{Text: "没能打开这张歌单，请再点一次", ShowAlert: true})
+		}
+		return c.Respond(&tb.CallbackResponse{Text: "已选中，直接发送要求或点一个主题"})
 
 	case "base":
 		if len(args) != 2 || session.target.ID == "" || strings.TrimSpace(session.target.Description) == "" {
@@ -1051,11 +1061,22 @@ func cloneAIPlaylistSession(session pendingAIPlaylistSession) pendingAIPlaylistS
 	return session
 }
 
+func (app *BotApp) showAIPlaylistSession(c tb.Context, session pendingAIPlaylistSession, toast string) error {
+	if err := c.Edit(formatAIPlaylistSession(session), aiPlaylistSessionMarkup(session)); err != nil && !telegramMessageUnchanged(err) {
+		return c.Respond(&tb.CallbackResponse{Text: "没能更新这张消息，请再点一次", ShowAlert: true})
+	}
+	return c.Respond(&tb.CallbackResponse{Text: toast})
+}
+
+func telegramMessageUnchanged(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "message is not modified")
+}
+
 func (app *BotApp) editAIPlaylistSessionMessage(session pendingAIPlaylistSession, text string, markup *tb.ReplyMarkup) {
 	if session.message == nil || app.bot == nil {
 		return
 	}
-	if _, err := app.bot.Edit(session.message, text, markup); err != nil {
+	if _, err := app.bot.Edit(session.message, text, markup); err != nil && !telegramMessageUnchanged(err) {
 		logger.Warn("[Telegram] 更新 AI 歌单消息失败", zap.Error(err))
 	}
 }

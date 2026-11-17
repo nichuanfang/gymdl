@@ -1,7 +1,11 @@
 <template>
   <TaskNotificationBridge />
-  <main v-if="authLoading" class="auth-loading"><span class="auth-loader-mark">♫ GYMDL</span></main>
+  <main v-if="authLoading" class="auth-loading">
+    <div class="ambient" aria-hidden="true"><span class="orb orb-a" /><span class="orb orb-b" /></div>
+    <span class="auth-loader-mark">♫ GYMDL</span>
+  </main>
   <main v-else-if="authSessionUnavailable" class="login-screen">
+    <div class="ambient" aria-hidden="true"><span class="orb orb-a" /><span class="orb orb-b" /></div>
     <section class="login-card" aria-labelledby="session-unavailable-title">
       <div class="login-mark">GYMDL <span>WEB CONSOLE</span></div>
       <p class="login-kicker">CONNECTION / SESSION CHECK</p>
@@ -13,6 +17,7 @@
     </section>
   </main>
   <main v-else-if="authRequired && !authenticated" class="login-screen">
+    <div class="ambient" aria-hidden="true"><span class="orb orb-a" /><span class="orb orb-b" /></div>
     <section class="login-card">
       <div class="login-mark">GYMDL <span>WEB CONSOLE</span></div>
       <p class="login-kicker">PRIVATE MUSIC LIBRARY</p>
@@ -42,13 +47,16 @@
       </div>
     </n-layout-sider>
     <n-layout-content class="content-shell">
-      <router-view v-slot="{ Component, route }">
-        <transition name="page-fade" mode="out-in">
-          <KeepAlive include="Search,History,Files,Settings">
-            <component :is="Component" :key="route.path" />
-          </KeepAlive>
-        </transition>
-      </router-view>
+      <div class="ambient" aria-hidden="true"><span class="orb orb-a" /><span class="orb orb-b" /></div>
+      <div class="content-frame">
+        <router-view v-slot="{ Component, route }">
+          <transition name="page-fade" mode="out-in">
+            <KeepAlive include="Search,History,Files,Settings,Rediscover,PlaylistDesc,AIPlaylist,Duplicates">
+              <component :is="Component" :key="route.path" />
+            </KeepAlive>
+          </transition>
+        </router-view>
+      </div>
     </n-layout-content>
   </n-layout>
 </template>
@@ -63,7 +71,8 @@ import {
 import type { MenuOption } from 'naive-ui'
 import {
   HomeOutline, DownloadOutline, TimeOutline, FolderOpenOutline, SettingsOutline,
-  DocumentTextOutline, ChatboxEllipsesOutline, SearchOutline, MusicalNotesOutline,
+  DocumentTextOutline, ChatboxEllipsesOutline, SearchOutline, MusicalNotesOutline, TimerOutline,
+  CompassOutline, CreateOutline, ColorWandOutline, GitCompareOutline,
 } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
 import { getAuthSession, login, logout } from '../api'
@@ -94,11 +103,16 @@ const menuOptions: MenuOption[] = [
   { label: '仪表盘', key: '/', icon: renderIcon(HomeOutline) },
   { label: '搜索', key: '/search', icon: renderIcon(SearchOutline) },
   { label: '听歌报告', key: '/listening', icon: renderIcon(MusicalNotesOutline) },
+  { label: '找回遗珠', key: '/rediscover', icon: renderIcon(CompassOutline) },
+  { label: '歌单描述', key: '/playlist-desc', icon: renderIcon(CreateOutline) },
+  { label: '生成歌单', key: '/ai-playlist', icon: renderIcon(ColorWandOutline) },
+  { label: '重复歌曲', key: '/duplicates', icon: renderIcon(GitCompareOutline) },
   { label: '下载', key: '/download', icon: renderIcon(DownloadOutline) },
   { label: '历史', key: '/history', icon: renderIcon(TimeOutline) },
   { label: '文件库', key: '/files', icon: renderIcon(FolderOpenOutline) },
   { label: '设置', key: '/settings', icon: renderIcon(SettingsOutline) },
   { label: '日志', key: '/logs', icon: renderIcon(DocumentTextOutline) },
+  { label: '定时任务', key: '/cron', icon: renderIcon(TimerOutline) },
   { label: 'QQ 登录', key: '/qqlogin', icon: renderIcon(ChatboxEllipsesOutline) },
 ]
 const activeKey = computed(() => route.path)
@@ -174,23 +188,36 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.app-shell { height: 100vh; background: #0c0e12; }
-.app-sider { position: relative; background: #11141a; }
+.app-shell { height: 100vh; background: #0b0d11; }
+.app-sider {
+  position: relative;
+  background: rgba(12, 16, 20, .62) !important;
+  backdrop-filter: blur(26px) saturate(1.5);
+  -webkit-backdrop-filter: blur(26px) saturate(1.5);
+  box-shadow: inset -1px 0 0 rgba(255,255,255,.05);
+}
 .brand-lockup { padding: 24px 20px 30px; display: flex; align-items: center; gap: 10px; color: #edf2f3; font-size: 17px; letter-spacing: .16em; font-weight: 700; }
-.brand-note { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 9px; color: #06140f; background: #63e2b7; font-size: 20px; }
+.brand-note { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 9px; color: #06140f; background: #63e2b7; font-size: 20px; box-shadow: 0 0 22px rgba(99,226,183,.35); }
 .sider-footer { position: absolute; right: 14px; bottom: 18px; left: 14px; display: grid; gap: 8px; color: #8b959c; font-size: 11px; }
 .session-indicator { display: flex; align-items: center; gap: 8px; padding: 8px; border-top: 1px solid rgba(255,255,255,.08); }
-.session-indicator span { width: 7px; height: 7px; border-radius: 50%; background: #63e2b7; box-shadow: 0 0 10px rgba(99,226,183,.7); }
-.content-shell { overflow: auto; padding: 30px clamp(20px, 3vw, 48px); background: radial-gradient(1100px 500px at 70% -10%, rgba(59,116,102,.10), transparent 60%), #0c0e12; }
-.page-fade-enter-active, .page-fade-leave-active { transition: opacity .22s ease, transform .22s cubic-bezier(.22,.8,.32,1); }
-.page-fade-enter-from { opacity: 0; transform: translateY(8px); }
-.page-fade-leave-to { opacity: 0; transform: translateY(-4px); }
-.app-sider :deep(.n-menu-item-content) { border-radius: 9px; transition: background .18s, color .18s; }
-.app-sider :deep(.n-menu-item-content:hover) { background: rgba(99,226,183,.08) !important; }
-.app-sider :deep(.n-menu-item-content--selected) { background: rgba(99,226,183,.12) !important; }
+.session-indicator span { width: 7px; height: 7px; border-radius: 50%; background: #63e2b7; box-shadow: 0 0 10px rgba(99,226,183,.7); animation: pulse 2.4s ease-in-out infinite; }
+.content-shell { position: relative; overflow: auto; background: #0b0d11; }
+.content-frame { position: relative; z-index: 1; padding: 30px clamp(20px, 3vw, 48px); }
+.ambient { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.content-shell > .ambient { position: sticky; top: 0; height: 0; overflow: visible; z-index: 0; }
+.orb { position: absolute; border-radius: 50%; filter: blur(28px); opacity: .7; }
+.orb-a { width: 420px; height: 420px; left: -80px; top: -120px; background: rgba(99,226,183,.16); animation: drift 18s ease-in-out infinite alternate; }
+.orb-b { width: 360px; height: 360px; right: -60px; bottom: -80px; background: rgba(88,140,196,.14); animation: drift 22s ease-in-out infinite alternate-reverse; }
+.page-fade-enter-active, .page-fade-leave-active { transition: opacity .32s var(--ease, ease), transform .32s cubic-bezier(.22,.8,.32,1), filter .32s ease; }
+.page-fade-enter-from { opacity: 0; transform: translateY(12px); filter: blur(6px); }
+.page-fade-leave-to { opacity: 0; transform: translateY(-6px); filter: blur(4px); }
+.app-sider :deep(.n-menu) { padding-bottom: 78px; }
+.app-sider :deep(.n-menu-item-content) { border-radius: 10px; transition: background .22s, color .22s, transform .22s; }
+.app-sider :deep(.n-menu-item-content:hover) { background: rgba(99,226,183,.1) !important; transform: translateX(2px); }
+.app-sider :deep(.n-menu-item-content--selected) { background: rgba(99,226,183,.16) !important; box-shadow: inset 0 0 0 1px rgba(99,226,183,.18); }
 .app-sider :deep(.n-menu-item-content-header) { letter-spacing: .02em; }
-.login-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 35%, rgba(44, 81, 73, .22), transparent 52%), #0a0c10; }
-.login-card { width: min(100%, 410px); padding: 36px; border: 1px solid rgba(141, 167, 160, .18); border-radius: 18px; background: rgba(20, 24, 30, .94); box-shadow: 0 30px 100px rgba(0,0,0,.45); }
+.login-screen { position: relative; min-height: 100vh; display: grid; place-items: center; padding: 24px; overflow: hidden; background: #0a0c10; }
+.login-card { position: relative; z-index: 1; width: min(100%, 410px); padding: 36px; border: 1px solid rgba(186,206,198,.18); border-radius: 22px; background: rgba(16, 20, 25, .62); backdrop-filter: blur(24px) saturate(1.45); -webkit-backdrop-filter: blur(24px) saturate(1.45); box-shadow: 0 30px 90px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.06); }
 .login-mark { color: #edf2f3; font-size: 14px; font-weight: 700; letter-spacing: .2em; }
 .login-mark span { margin-left: 8px; color: #82918d; font-size: 9px; letter-spacing: .16em; }
 .login-kicker { margin: 36px 0 8px; color: #63e2b7; font-size: 10px; font-weight: 700; letter-spacing: .22em; }
@@ -199,13 +226,19 @@ onUnmounted(() => {
 .login-submit { margin-top: 8px; letter-spacing: .06em; }
 .login-footnote { margin: 22px 0 0; color: #657076; font-size: 11px; text-align: center; }
 .auth-loading { position: fixed; inset: 0; display: grid; place-items: center; background: #0a0c10; }
-.auth-loader-mark { color: #63e2b7; font-size: 13px; font-weight: 700; letter-spacing: .2em; animation: breathe 1.3s ease-in-out infinite alternate; }
+.auth-loader-mark { position: relative; z-index: 1; color: #63e2b7; font-size: 13px; font-weight: 700; letter-spacing: .2em; animation: breathe 1.3s ease-in-out infinite alternate; }
 @keyframes breathe { to { opacity: .42; transform: translateY(-2px); } }
+@keyframes pulse { 50% { opacity: .45; transform: scale(.8); } }
+@keyframes drift { to { transform: translate3d(36px, 24px, 0) scale(1.08); } }
+@media (prefers-reduced-motion: reduce) {
+  .orb, .session-indicator span, .page-fade-enter-active, .page-fade-leave-active { animation: none; transition: none; }
+  .app-sider :deep(.n-menu-item-content:hover) { transform: none; }
+}
 @media (max-width: 760px) {
   .brand-lockup { justify-content: center; padding: 20px 0 22px; }
   .brand-lockup > span:last-child { display: none; }
   .sider-footer { right: 0; bottom: 12px; left: 0; display: flex; justify-content: center; }
   .session-indicator { justify-content: center; padding: 7px 0; border-top: 0; font-size: 0; }
-  .content-shell { padding: 20px 14px; }
+  .content-frame { padding: 20px 14px; }
 }
 </style>

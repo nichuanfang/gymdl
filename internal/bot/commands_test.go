@@ -10,6 +10,18 @@ import (
 // Telegram caps command descriptions at 256 chars, but on a phone the "/" menu
 // only shows about 20 CJK characters before truncating. Keep every entry short
 // so entries stay readable even when the complete menu needs scrolling.
+func TestHelpNamesEmptyTrashEffects(t *testing.T) {
+	text := helpText()
+	for _, part := range []string{"回收站", "歌曲文件", "MusicRAG", "Pinecone"} {
+		if !strings.Contains(text, part) {
+			t.Fatalf("help omits %s: %s", part, text)
+		}
+	}
+	if strings.Contains(text, "清理 AI 曲库数据") {
+		t.Fatal("help still understates emptying the trash playlist")
+	}
+}
+
 func TestBotCommandsFitPhoneMenu(t *testing.T) {
 	commands := botCommands()
 	if len(commands) == 0 {
@@ -65,13 +77,10 @@ func TestQQCredentialMessageEscapesSecretsAndRejectsIncompletePayloads(t *testin
 func TestEveryMenuCommandHasHandler(t *testing.T) {
 	registered := map[string]bool{
 		"rediscover": true, "favorites": true, "start": true, "help": true, "mode": true, "ai": true,
-		"clear": true, "new": true, "assign_playlist": true,
-		"ai_playlist": true, "empty_trash": true, "qq_login": true,
+		"clear": true, "new": true, "assign_playlist": true, "playlist_desc": true,
+		"ai_playlist": true, "empty_trash": true, "qq_login": true, "status": true,
 	}
 	for _, cmd := range botCommands() {
-		if cmd.Text == "status" {
-			t.Fatal("/status stays off the phone menu")
-		}
 		if !registered[cmd.Text] {
 			t.Errorf("/%s is in the menu but has no handler", cmd.Text)
 		}
@@ -80,7 +89,7 @@ func TestEveryMenuCommandHasHandler(t *testing.T) {
 
 // Preserve the user's chosen menu order and all daily control actions.
 func TestBotCommandsKeepUserPreferredOrder(t *testing.T) {
-	want := []string{"ai", "mode", "clear", "assign_playlist", "ai_playlist", "rediscover", "favorites", "qq_login", "empty_trash", "help"}
+	want := []string{"ai", "mode", "clear", "assign_playlist", "playlist_desc", "ai_playlist", "rediscover", "favorites", "qq_login", "empty_trash", "status", "help"}
 	commands := botCommands()
 	if len(commands) != len(want) {
 		t.Fatalf("got %d commands, want %d", len(commands), len(want))

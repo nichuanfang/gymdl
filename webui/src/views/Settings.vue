@@ -28,7 +28,7 @@
 
     <n-spin :show="loading">
       <div v-if="config" class="settings-layout">
-        <n-tabs v-model:value="activeSection" type="line" placement="left" class="settings-tabs">
+        <n-tabs v-model:value="activeSection" type="line" :placement="tabsPlacement" class="settings-tabs" :class="{ 'settings-tabs-compact': compactSettings }">
           <n-tab-pane v-for="key in sectionKeys" :key="key" :name="key" :tab="sectionLabel(key)">
             <n-card size="small" :title="sectionLabel(key)" class="section-card">
               <p class="section-help">修改后统一校验并安全写回配置文件；密钥字段不会回显，留空保持原值。</p>
@@ -61,7 +61,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   NButton, NCard, NSpace, NSpin, NTabs, NTabPane, NAlert, NTag, NText, NPopconfirm, useMessage,
 } from 'naive-ui'
@@ -88,7 +88,7 @@ const restartFields = ref<string[]>([])
 const hotReloadFields = ref<string[]>([])
 const sectionOrder = [
   'web_config', 'log', 'proxy',
-  'additional_config',
+  'additional_config', 'favorites',
   'telegram', 'qq_music_api', 'lrc_api', 'cookie_cloud',
   'tidy', 'webdav', 'playlist_organizer',
   'ai', 'ai_playlist', 'n8n_config',
@@ -96,6 +96,7 @@ const sectionOrder = [
 const sectionLabels: Record<string, string> = {
   web_config: '运行 · Web 服务', log: '运行 · 日志', proxy: '网络 · 代理',
   additional_config: '运行 · 下载与后台任务',
+  favorites: '收藏 · 自动同步',
   telegram: '平台 · Telegram', qq_music_api: '平台 · QQ 音乐 API',
   lrc_api: '平台 · LrcAPI', cookie_cloud: '账号 · CookieCloud',
   tidy: '曲库 · 资源整理', webdav: '曲库 · WebDAV',
@@ -192,7 +193,22 @@ async function handleSync() {
   }
 }
 
-onMounted(() => void load())
+const compactSettings = ref(false)
+const settingsQuery = typeof window !== 'undefined' ? window.matchMedia('(max-width: 760px)') : null
+const tabsPlacement = computed(() => (compactSettings.value ? 'top' : 'left'))
+
+function updateSettingsLayout() {
+  compactSettings.value = settingsQuery?.matches ?? false
+}
+
+onMounted(() => {
+  updateSettingsLayout()
+  settingsQuery?.addEventListener('change', updateSettingsLayout)
+  void load()
+})
+onUnmounted(() => {
+  settingsQuery?.removeEventListener('change', updateSettingsLayout)
+})
 </script>
 
 <style scoped>
@@ -200,8 +216,9 @@ onMounted(() => void load())
 .settings-layout { min-height: 540px; }
 .settings-tabs { min-height: 540px; }
 .settings-tabs :deep(.n-tabs-nav) { width: 185px; }
-.section-card { min-height: 500px; background: rgba(20,24,29,.65); }
+.settings-tabs-compact :deep(.n-tabs-nav) { width: auto; }
+.section-card { min-height: 500px; background: transparent; }
 .section-help { margin: 0 0 20px; color: #75817b; font-size: 11px; line-height: 1.7; }
 .restart-alert { margin-bottom: 14px; }
-.cookie-card { margin-top: 20px; background: rgba(20,24,29,.65); }
+.cookie-card { margin-top: 20px; background: transparent; }
 </style>

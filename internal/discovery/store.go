@@ -247,6 +247,25 @@ func (s *Store) SaveCard(ctx context.Context, c Card) (Card, error) {
 	return c, nil
 }
 
+func (s *Store) ReplaceCard(ctx context.Context, c Card) error {
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE discovery_cards SET payload=? WHERE token=? AND user_id=? AND chat_id=? AND expires>?`, string(raw), c.Token, c.User, c.Chat, time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return fmt.Errorf("按钮已过期或不属于当前会话，请重新发送指令")
+	}
+	return nil
+}
+
 func (s *Store) Card(ctx context.Context, tok string, user, chat int64) (Card, error) {
 	var raw string
 	err := s.db.QueryRowContext(ctx, `SELECT payload FROM discovery_cards WHERE token=? AND user_id=? AND chat_id=? AND expires>?`, tok, user, chat, time.Now().Unix()).Scan(&raw)

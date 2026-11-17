@@ -40,7 +40,15 @@ func StartCommand(c tb.Context) error {
 // HelpCommand 给一份手机上能一屏看完的用法说明。命令菜单本身已经列出全部
 // 指令，这里只解释最常用的三条路径，不再重复堆一遍命令表。
 func HelpCommand(c tb.Context) error {
-	msg := `📖 <b>GymDL 使用指南</b>
+	if err := c.Send(helpText(), tb.ModeHTML); err != nil {
+		logger.Error("Failed to send help message", zap.Error(err))
+		return err
+	}
+	return nil
+}
+
+func helpText() string {
+	return `📖 <b>GymDL 使用指南</b>
 
 <b>下载</b>
 发送歌曲链接或音频文件，机器人会自动整理入库。完成后可试听或删除本地文件。
@@ -52,20 +60,15 @@ func HelpCommand(c tb.Context) error {
 
 <b>歌单</b>
 /assign_playlist 为新歌选择目标歌单
+/playlist_desc 同步歌单并修改每张歌单的描述
 /ai_playlist 预览后创建或更新 AI 歌单
 /rediscover 找回听过或收藏过、当前曲库缺少的歌曲
 /favorites 管理平台收藏自动入库
-/empty_trash 预览并确认清理 AI 曲库数据
+/empty_trash 预览并确认清空回收站：删除其中的歌曲文件，并清理 MusicRAG 状态与 Pinecone 向量
 
 <b>账号</b>
 /qq_login 扫码登录 QQ 音乐（仅限私聊）
 /status 查看下载、最近失败、待入库和 Cookie`
-
-	if err := c.Send(msg, tb.ModeHTML); err != nil {
-		logger.Error("Failed to send help message", zap.Error(err))
-		return err
-	}
-	return nil
 }
 
 /* ------------------------ /qq_login ------------------------ */
@@ -317,18 +320,20 @@ func qqCredentialValue(raw json.RawMessage) (string, error) {
 
 // botCommands 是 / 菜单的唯一来源。按用户指定的常用顺序排列，
 // 找歌与对话控制在前，其后是歌单、遗珠、同步、账号维护及帮助。
-// /start 由 Start 按钮进入；/new 是 /clear 别名；内部菜单刷新和低频状态指令见帮助。
+// /start 由 Start 按钮进入；/new 是 /clear 别名。/status 放在帮助前面。
 func botCommands() []tb.Command {
 	return []tb.Command{
 		{Text: "ai", Description: "对话找歌"},
 		{Text: "mode", Description: "切换模式"},
 		{Text: "clear", Description: "清空对话"},
 		{Text: "assign_playlist", Description: "整理歌单"},
+		{Text: "playlist_desc", Description: "歌单描述"},
 		{Text: "ai_playlist", Description: "生成歌单"},
 		{Text: "rediscover", Description: "找回遗珠"},
 		{Text: "favorites", Description: "收藏同步"},
 		{Text: "qq_login", Description: "QQ 登录"},
 		{Text: "empty_trash", Description: "清空回收站"},
+		{Text: "status", Description: "服务状态"},
 		{Text: "help", Description: "使用帮助"},
 	}
 }

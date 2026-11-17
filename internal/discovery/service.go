@@ -32,6 +32,23 @@ type Service struct {
 	SummaryInterval time.Duration
 	syncMu          sync.Mutex
 	workMu          sync.Mutex
+	cacheMu         sync.Mutex
+	historyTracks   []Track
+	historyAt       time.Time
+	historyReady    bool
+	resolveCache    map[string]resolveCacheEntry
+}
+
+const (
+	historyCacheTTL = 15 * time.Minute
+	resolveHitTTL   = 12 * time.Hour
+	resolveMissTTL  = 30 * time.Minute
+)
+
+type resolveCacheEntry struct {
+	track Track
+	err   error
+	at    time.Time
 }
 
 func (s *Service) Sync(ctx context.Context, user int64) error {
@@ -73,15 +90,57 @@ func (s *Service) Sync(ctx context.Context, user int64) error {
 }
 
 func (s *Service) Recommend(ctx context.Context, user int64) ([]Track, error) {
-	favorites, err := s.Store.Favorites(ctx, user)
+	tracks, _, _, err := s.recommend(ctx, user, "", 10)
+	return tracks, err
+}
+
+// RediscoverBatch is one platform search. SkippedOwned counts distinct works
+// already in the library, including different artist credits of the same title.
+// Unconfirmed counts distinct works whose platform search had no single version.
+type RediscoverBatch struct {
+	Tracks       []Track
+	SkippedOwned int
+	Unconfirmed  int
+}
+
+// RecommendLimited searches one download platform and stops after limit songs.
+// limit is 3, 6, or 9. History, library identity, and search results are cached.
+func (s *Service) RecommendLimited(ctx context.Context, user int64, platform string, limit int) ([]Track, error) {
+	batch, err := s.Rediscover(ctx, user, platform, limit)
 	if err != nil {
 		return nil, err
+	}
+	return batch.Tracks, nil
+}
+
+func (s *Service) Rediscover(ctx context.Context, user int64, platform string, limit int) (RediscoverBatch, error) {
+	switch platform {
+	case "netease", "qq", "youtube":
+	default:
+		return RediscoverBatch{}, fmt.Errorf("请选择网易云、QQ 音乐或 YouTube")
+	}
+	switch limit {
+	case 3, 6, 9:
+	default:
+		return RediscoverBatch{}, fmt.Errorf("数量只能是 3、6 或 9")
+	}
+	tracks, skipped, unconfirmed, err := s.recommend(ctx, user, platform, limit)
+	if err != nil {
+		return RediscoverBatch{}, err
+	}
+	return RediscoverBatch{Tracks: tracks, SkippedOwned: skipped, Unconfirmed: unconfirmed}, nil
+}
+
+func (s *Service) recommend(ctx context.Context, user int64, platform string, limit int) ([]Track, int, int, error) {
+	favorites, err := s.Store.Favorites(ctx, user)
+	if err != nil {
+		return nil, 0, 0, err
 	}
 	// Enrich a bounded number of old YouTube favourites per request and cache
 	// the result. Unstructured video titles never become invented song names.
 	enriched := 0
 	for i, t := range favorites {
-		if t.Platform == "youtube" && !t.Verified && !t.NonMusic && enriched < 10 {
+		if (platform == "" || platform == "youtube") && t.Platform == "youtube" && !t.Verified && !t.NonMusic && enriched < 10 {
 			updated, skip, e := s.Provider.Enrich(ctx, t)
 			enriched++
 			if e != nil {
@@ -90,13 +149,13 @@ func (s *Service) Recommend(ctx context.Context, user int64) ([]Track, error) {
 			updated.NonMusic = skip
 			favorites[i] = updated
 			if e = s.Store.RememberFavorite(ctx, user, updated); e != nil {
-				return nil, e
+				return nil, 0, 0, e
 			}
 		}
 	}
-	history, historyErr := s.History(ctx)
+	history, historyErr := s.cachedHistory(ctx)
 	if historyErr != nil && len(favorites) == 0 {
-		return nil, historyErr
+		return nil, 0, 0, historyErr
 	}
 	merged := map[string]Track{}
 	for _, t := range append(history, favorites...) {
@@ -126,7 +185,7 @@ func (s *Service) Recommend(ctx context.Context, user int64) ([]Track, error) {
 	}
 	excluded, err := s.Store.Excluded(ctx, user)
 	if err != nil {
-		return nil, err
+		return nil, 0, 0, err
 	}
 	var ranked []Track
 	for key, t := range merged {
@@ -149,34 +208,67 @@ func (s *Service) Recommend(ctx context.Context, user int64) ([]Track, error) {
 	})
 	var out []Track
 	artists := map[string]int{}
+	skippedOwned := map[string]struct{}{}
+	unconfirmed := map[string]struct{}{}
+	markDistinct := func(dst map[string]struct{}, t Track) {
+		key := ownershipTitle(t.Title)
+		if key == "" {
+			key = Identity(t)
+		}
+		dst[key] = struct{}{}
+	}
+	markOwned := func(t Track) { markDistinct(skippedOwned, t) }
+	attempts := 0
+	maxAttempts := 0
+	if platform != "" {
+		maxAttempts = limit * 8
+	}
 	for _, t := range ranked {
 		if err := ctx.Err(); err != nil {
 			if len(out) > 0 {
-				return out, nil
+				return out, len(skippedOwned), len(unconfirmed), nil
 			}
-			return nil, err
+			return nil, 0, 0, err
 		}
 		if artists[Normalize(t.Artist)] >= 2 {
 			continue
 		}
 		owned, e := s.Library.Contains(ctx, t)
 		if e != nil {
-			return nil, e
+			return nil, 0, 0, e
 		}
 		if owned {
+			markOwned(t)
 			continue
 		}
 		if s.Pending != nil {
 			pending, e := s.Pending(ctx, t)
 			if e != nil {
-				return nil, e
+				return nil, 0, 0, e
 			}
 			if pending {
 				continue
 			}
 		}
-		resolved, e := s.Provider.Resolve(ctx, t, "")
+		attempts++
+		if maxAttempts > 0 && attempts > maxAttempts {
+			break
+		}
+		resolved, e := s.resolveCandidate(ctx, t, platform)
 		if e != nil {
+			if errors.Is(e, ErrAmbiguousRecording) || errors.Is(e, ErrNoUniqueRecording) {
+				markDistinct(unconfirmed, t)
+			}
+			continue
+		}
+		owned, e = s.Library.Contains(ctx, resolved)
+		if e != nil {
+			return nil, 0, 0, e
+		}
+		if owned || batchHasWork(out, resolved) {
+			if owned {
+				markOwned(resolved)
+			}
 			continue
 		}
 		resolved.Plays = t.Plays
@@ -184,13 +276,81 @@ func (s *Service) Recommend(ctx context.Context, user int64) ([]Track, error) {
 		resolved.Favorite = t.Favorite
 		out = append(out, resolved)
 		artists[Normalize(t.Artist)]++
-		if len(out) == 10 {
+		if len(out) == limit {
 			break
 		}
 	}
 	// Rendering, not selection, commits shown timestamps. A Telegram delivery
 	// failure must not hide this batch for a month.
-	return out, nil
+	return out, len(skippedOwned), len(unconfirmed), nil
+}
+
+func batchHasWork(out []Track, candidate Track) bool {
+	for _, have := range out {
+		if sameOwnedWork(have, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) cachedHistory(ctx context.Context) ([]Track, error) {
+	if s.History == nil {
+		return nil, fmt.Errorf("尚未配置收听历史")
+	}
+	s.cacheMu.Lock()
+	if s.historyReady && time.Since(s.historyAt) < historyCacheTTL {
+		tracks := append([]Track(nil), s.historyTracks...)
+		s.cacheMu.Unlock()
+		return tracks, nil
+	}
+	s.cacheMu.Unlock()
+	tracks, err := s.History(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.cacheMu.Lock()
+	s.historyTracks = append([]Track(nil), tracks...)
+	s.historyAt = time.Now()
+	s.historyReady = true
+	s.cacheMu.Unlock()
+	return tracks, nil
+}
+
+func (s *Service) resolveCandidate(ctx context.Context, track Track, platform string) (Track, error) {
+	key := platform + "\n" + Normalize(track.Title) + "\n" + Normalize(track.Artist) + "\n" + Normalize(track.Album)
+	s.cacheMu.Lock()
+	if entry, ok := s.resolveCache[key]; ok {
+		ttl := resolveMissTTL
+		if entry.err == nil {
+			ttl = resolveHitTTL
+		}
+		if time.Since(entry.at) < ttl {
+			cached, err := entry.track, entry.err
+			s.cacheMu.Unlock()
+			return cached, err
+		}
+	}
+	s.cacheMu.Unlock()
+	var resolved Track
+	var err error
+	if platform == "" {
+		resolved, err = s.Provider.Resolve(ctx, track, "")
+	} else {
+		resolved, err = s.Provider.ResolveOn(ctx, track, platform)
+	}
+	if ctx.Err() == nil && (err == nil || errors.Is(err, ErrAmbiguousRecording) || errors.Is(err, ErrNoUniqueRecording)) {
+		s.cacheMu.Lock()
+		if s.resolveCache == nil {
+			s.resolveCache = map[string]resolveCacheEntry{}
+		}
+		if len(s.resolveCache) > 4000 {
+			s.resolveCache = map[string]resolveCacheEntry{}
+		}
+		s.resolveCache[key] = resolveCacheEntry{track: resolved, err: err, at: time.Now()}
+		s.cacheMu.Unlock()
+	}
+	return resolved, err
 }
 
 func (s *Service) Run(ctx context.Context) error {

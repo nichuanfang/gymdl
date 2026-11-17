@@ -27,7 +27,9 @@ defineProps<{
   gap: 16px;
   min-width: 0;
   margin: 0 0 24px;
+  animation: heading-in .45s cubic-bezier(.22,.8,.32,1) both;
 }
+@keyframes heading-in { from { opacity: 0; transform: translateY(8px); } }
 .page-heading-copy { min-width: 0; }
 .page-eyebrow {
   margin: 0 0 7px;
@@ -47,6 +49,9 @@ defineProps<{
   align-items: center;
   justify-content: flex-end;
   min-width: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-heading { animation: none; }
 }
 @media (max-width: 600px) {
   .page-heading {

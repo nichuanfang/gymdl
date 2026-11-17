@@ -181,7 +181,7 @@ onUnmounted(stopPolling)
 
 <style scoped>
 .qq-page { max-width: 1000px; margin: 0 auto; }
-.login-card, .status-card { width: min(100%, 560px); margin: 10vh auto 0; padding: 28px 30px; border: 1px solid rgba(141,167,160,.12); background: linear-gradient(150deg, rgba(24,29,34,.98), rgba(17,20,25,.98)); text-align: center; }
+.login-card, .status-card { width: min(100%, 560px); margin: 10vh auto 0; padding: 28px 30px; border: 1px solid rgba(186,206,198,.16); background: rgba(16,20,25,.48) !important; backdrop-filter: blur(22px) saturate(1.4); -webkit-backdrop-filter: blur(22px) saturate(1.4); box-shadow: inset 0 1px 0 rgba(255,255,255,.05); text-align: center; }
 .login-card h3, .status-card h3 { margin: 0 0 10px; color: #edf3f0; font-size: 20px; font-weight: 600; }
 .status-copy { max-width: 390px; margin: 12px auto 22px; color: #87938e; font-size: 12px; line-height: 1.75; }
 .qr-mark, .status-orbit { display: grid; place-items: center; width: 84px; height: 84px; margin: 0 auto 20px; border: 1px solid rgba(99,226,183,.24); border-radius: 24px; color: #63e2b7; background: radial-gradient(circle at 35% 25%, rgba(99,226,183,.18), rgba(25,35,33,.65)); font-size: 38px; }

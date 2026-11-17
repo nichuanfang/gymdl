@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -86,70 +87,205 @@ func (app *BotApp) RediscoverCommand(c tb.Context) error {
 	if err := app.discoveryAvailable(c); err != nil {
 		return c.Send(err.Error())
 	}
+	text, markup := discoveryPlatformMenu()
+	return c.Send(text, markup)
+}
+
+func discoveryPlatformMenu() (string, *tb.ReplyMarkup) {
+	markup := &tb.ReplyMarkup{}
+	appendDiscoveryRows(markup,
+		markup.Row(markup.Data("网易云", discoveryCallbackUnique, "source", "netease"), markup.Data("QQ 音乐", discoveryCallbackUnique, "source", "qq")),
+		markup.Row(markup.Data("YouTube", discoveryCallbackUnique, "source", "youtube")),
+		markup.Row(markup.Data("取消", discoveryCallbackUnique, "cancel", "menu")),
+	)
+	return "遗珠\n先选平台。只查这一个，找够就停。", markup
+}
+
+func discoveryCountMenu(platform string) (string, *tb.ReplyMarkup) {
+	markup := &tb.ReplyMarkup{}
+	appendDiscoveryRows(markup,
+		markup.Row(
+			markup.Data("3 首", discoveryCallbackUnique, "find", platform, "3"),
+			markup.Data("6 首", discoveryCallbackUnique, "find", platform, "6"),
+			markup.Data("9 首", discoveryCallbackUnique, "find", platform, "9"),
+		),
+		markup.Row(markup.Data("换平台", discoveryCallbackUnique, "source", "menu"), markup.Data("取消", discoveryCallbackUnique, "cancel", "menu")),
+	)
+	return "遗珠 · " + aichat.PlatformLabel(platform) + "\n要找几首？找到这么多就停。", markup
+}
+
+func validRediscoverPlatform(platform string) bool {
+	return platform == "netease" || platform == "qq" || platform == "youtube"
+}
+
+func validRediscoverLimit(limit int) bool {
+	return limit == 3 || limit == 6 || limit == 9
+}
+
+func (app *BotApp) startRediscover(c tb.Context, platform string, args []string) error {
+	if len(args) != 3 || !validRediscoverPlatform(platform) {
+		return c.Respond(&tb.CallbackResponse{Text: "请重新选择数量", ShowAlert: true})
+	}
+	limit, err := strconv.Atoi(args[2])
+	if err != nil || !validRediscoverLimit(limit) {
+		return c.Respond(&tb.CallbackResponse{Text: "数量只能是 3、6 或 9", ShowAlert: true})
+	}
 	if !app.discoveryCommandMu.TryLock() {
-		return c.Send("⏳ 正在处理上一条遗珠或收藏请求，请稍后再试。")
+		return c.Respond(&tb.CallbackResponse{Text: "正在处理上一条遗珠或收藏请求", ShowAlert: true})
 	}
 	defer app.discoveryCommandMu.Unlock()
-	status, err := c.Bot().Send(c.Chat(), "⌛ 正在核对历史、收藏和实际曲库…")
-	if err != nil {
+	if err = c.Respond(&tb.CallbackResponse{Text: "开始找了"}); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	if c.Message() == nil {
+		return c.Send("找不到原来的消息，请重新发送 /rediscover。")
+	}
+	if _, err = c.Bot().Edit(c.Message(), fmt.Sprintf("⌛ 正在从%s找 %d 首…", aichat.PlatformLabel(platform), limit)); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	tracks, err := app.discovery.Recommend(ctx, c.Sender().ID)
+	batch, err := app.discovery.Rediscover(ctx, c.Sender().ID, platform, limit)
 	if err != nil {
-		_, err = c.Bot().Edit(status, "❌ "+err.Error())
-		return err
+		_, editErr := c.Bot().Edit(c.Message(), "❌ "+err.Error(), &tb.ReplyMarkup{})
+		if editErr != nil {
+			return editErr
+		}
+		return nil
 	}
+	tracks := batch.Tracks
 	if len(tracks) == 0 {
-		_, err = c.Bot().Edit(status, "这批可读取的历史与收藏中，暂未找到可确认的缺失歌曲。可稍后再试或先绑定平台收藏。", &tb.ReplyMarkup{})
+		_, err = c.Bot().Edit(c.Message(), rediscoverEmptyCopy(platform, batch), &tb.ReplyMarkup{})
 		return err
 	}
-	card, err := app.discovery.Store.SaveCard(ctx, discovery.Card{User: c.Sender().ID, Chat: c.Chat().ID, Kind: "recommend", Tracks: tracks})
+	card, err := app.discovery.Store.SaveCard(ctx, discovery.Card{User: c.Sender().ID, Chat: c.Chat().ID, Kind: "recommend", Tracks: tracks, SkippedOwned: batch.SkippedOwned, Unconfirmed: batch.Unconfirmed, Requested: limit})
 	if err != nil {
-		return c.Send("保存推荐失败，请重试。")
+		_, editErr := c.Bot().Edit(c.Message(), "保存推荐失败，请重试。", &tb.ReplyMarkup{})
+		if editErr != nil {
+			return editErr
+		}
+		return nil
 	}
-	text, markup := discoveryRecommendationCard(card)
-	if _, err = c.Bot().Edit(status, text, markup); err != nil {
+	text, markup := discoveryRecommendationCard(card, 0)
+	if _, err = c.Bot().Edit(c.Message(), text, tb.ModeHTML, markup); err != nil {
 		return err
 	}
-	for _, t := range tracks {
-		if err = app.discovery.Store.Preference(ctx, c.Sender().ID, t, false); err != nil {
+	for _, track := range tracks {
+		if err = app.discovery.Store.Preference(ctx, c.Sender().ID, track, false); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func discoveryRecommendationCard(card discovery.Card) (string, *tb.ReplyMarkup) {
+const discoveryPageSize = 3
+
+func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.ReplyMarkup) {
+	if page < 0 {
+		page = 0
+	}
+	start := page * discoveryPageSize
+	if start > len(card.Tracks) {
+		start = 0
+		page = 0
+	}
+	end := min(start+discoveryPageSize, len(card.Tracks))
+	visible := card.Tracks[start:end]
+	pages := 1
+	if len(card.Tracks) > 0 {
+		pages = (len(card.Tracks) + discoveryPageSize - 1) / discoveryPageSize
+	}
 	var text strings.Builder
-	text.WriteString("🎵 找回遗珠\n以下歌曲目前未在实际曲库中找到：\n")
+	waiting := 0
+	for _, t := range visible {
+		if t.CardAction == "" {
+			waiting++
+		}
+	}
+	fmt.Fprintf(&text, "遗珠\n第 %d 组 · 还剩 %d 首\n", page+1, waiting)
+	if card.SkippedOwned > 0 {
+		fmt.Fprintf(&text, "已避开曲库里的 %d 首\n", card.SkippedOwned)
+	}
+	if line := rediscoverShortfallLine(card); line != "" {
+		text.WriteString(line)
+	}
+	for _, t := range visible {
+		if strings.TrimSpace(t.URL) != "" {
+			text.WriteString("点歌名试听。\n")
+			break
+		}
+	}
 	markup := &tb.ReplyMarkup{}
-	for i, t := range card.Tracks {
-		reason := ""
+	for offset, t := range visible {
+		index := start + offset
+		reason := "听过"
 		if t.Favorite {
-			reason = "平台收藏"
+			reason = "收藏"
 		}
 		if t.Plays > 0 {
-			if reason != "" {
-				reason += "；"
-			}
-			reason += fmt.Sprintf("听过 %d 次", t.Plays)
+			reason += fmt.Sprintf(" · %d 次", t.Plays)
 		}
-		if !t.LastPlayed.IsZero() {
-			reason += "；上次 " + t.LastPlayed.Format("2006-01-02")
+		switch t.CardAction {
+		case "queued":
+			reason += " · 已提交入库"
+		case "dismissed":
+			reason += " · 不再推荐"
 		}
-		fmt.Fprintf(&text, "\n%d. %s — %s\n%s\n", i+1, utils.TruncateString(t.Title, 65), utils.TruncateString(t.Artist, 45), reason)
-		row := tb.Row{}
-		if t.URL != "" {
-			row = append(row, markup.URL("试听·"+aichat.PlatformLabel(t.Platform), t.URL))
+		fmt.Fprintf(&text, "\n%s\n%s\n%s\n", discoveryListenTitle(t.Title, t.URL), utils.EscapeHTML(utils.TruncateString(t.Artist, 32)), reason)
+		if t.CardAction == "" {
+			appendDiscoveryRows(markup, markup.Row(
+				markup.Data("入库", discoveryCallbackUnique, "download", card.Token, strconv.Itoa(index)),
+				markup.Data("不再推荐", discoveryCallbackUnique, "ignore", card.Token, strconv.Itoa(index)),
+			))
 		}
-		row = append(row, markup.Data(fmt.Sprintf("下载 %d", i+1), discoveryCallbackUnique, "download", card.Token, strconv.Itoa(i)), markup.Data("不再推荐", discoveryCallbackUnique, "ignore", card.Token, strconv.Itoa(i)))
-		appendDiscoveryRows(markup, row)
 	}
-	appendDiscoveryRows(markup, markup.Row(markup.Data("下载前 3 首", discoveryCallbackUnique, "batch", card.Token, "3"), markup.Data("全部下载", discoveryCallbackUnique, "batch", card.Token, "all")), markup.Row(markup.Data("换一批", discoveryCallbackUnique, "next", card.Token)))
-	text.WriteString("\n先点试听确认喜欢，再选择下载。下载前会再次查重；下载等操作按钮 30 分钟内有效。")
+	footer := tb.Row{}
+	if end < len(card.Tracks) {
+		footer = append(footer, markup.Data("下一组", discoveryCallbackUnique, "page", card.Token, strconv.Itoa(page+1)))
+	} else if page > 0 {
+		footer = append(footer, markup.Data("回到第一组", discoveryCallbackUnique, "page", card.Token, "0"))
+	}
+	if waiting > 0 {
+		footer = append(footer, markup.Data("这组入库", discoveryCallbackUnique, "batch", card.Token, "p"+strconv.Itoa(page)))
+	}
+	if len(footer) > 0 {
+		appendDiscoveryRows(markup, footer)
+	}
+	if pages > 1 {
+		fmt.Fprintf(&text, "\n共 %d 组，换组不重新检索。", pages)
+	}
 	return text.String(), markup
+}
+
+func rediscoverShortfallLine(card discovery.Card) string {
+	if card.Unconfirmed <= 0 || card.Requested <= 0 || len(card.Tracks) >= card.Requested {
+		return ""
+	}
+	return fmt.Sprintf("有 %d 首对不上唯一版本，所以没有找满 %d 首。\n", card.Unconfirmed, card.Requested)
+}
+
+func rediscoverEmptyCopy(platform string, batch discovery.RediscoverBatch) string {
+	name := aichat.PlatformLabel(platform)
+	switch {
+	case batch.SkippedOwned > 0 && batch.Unconfirmed > 0:
+		return fmt.Sprintf("这批里有 %d 首曲库已经有了，另有 %d 首在%s对不上唯一版本，没有新的可入库歌曲。可以换个平台或稍后再试。", batch.SkippedOwned, batch.Unconfirmed, name)
+	case batch.SkippedOwned > 0:
+		return fmt.Sprintf("这批里有 %d 首曲库已经有了，没有新的可入库歌曲。可以换个平台或稍后再试。", batch.SkippedOwned)
+	case batch.Unconfirmed > 0:
+		return fmt.Sprintf("有 %d 首在%s对不上唯一版本，没有新的可入库歌曲。可以换个平台或稍后再试。", batch.Unconfirmed, name)
+	default:
+		return "在" + name + "里，这批历史和收藏暂时没有可确认的缺失歌曲。可以换个平台或稍后再试。"
+	}
+}
+
+func discoveryListenTitle(title, rawURL string) string {
+	shown := utils.EscapeHTML(utils.TruncateString(title, 42))
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return shown
+	}
+	href := strings.ReplaceAll(utils.EscapeHTML(rawURL), `"`, "&quot;")
+	return `<a href="` + href + `">` + shown + `</a>`
 }
 
 func (app *BotApp) FavoritesCommand(c tb.Context) error {
@@ -164,88 +300,131 @@ func (app *BotApp) FavoritesCommand(c tb.Context) error {
 }
 
 func (app *BotApp) showFavorites(c tb.Context) error {
-	ctx := context.Background()
-	bindings, err := app.discovery.Store.Bindings(ctx, c.Sender().ID)
+	return app.presentFavorites(c, "")
+}
+
+func (app *BotApp) presentFavorites(c tb.Context, notice string) error {
+	text, markup, err := app.renderFavorites(context.Background(), c.Sender().ID)
 	if err != nil {
-		return c.Send("读取收藏状态失败")
+		return answerOnCard(c, err.Error(), nil, false)
+	}
+	if notice != "" {
+		text = notice + "\n\n" + text
+	}
+	return answerOnCard(c, text, markup, false)
+}
+
+func answerOnCard(c tb.Context, text string, markup *tb.ReplyMarkup, html bool) error {
+	if c.Callback() != nil && c.Message() != nil {
+		return editDiscoveryMessage(c, text, markup, html)
+	}
+	if markup != nil {
+		return c.Send(text, markup)
+	}
+	return c.Send(text)
+}
+
+func editDiscoveryMessage(c tb.Context, text string, markup *tb.ReplyMarkup, html bool) error {
+	opts := []any{}
+	if html {
+		opts = append(opts, tb.ModeHTML)
+	}
+	if markup != nil {
+		opts = append(opts, markup)
+	} else {
+		opts = append(opts, &tb.ReplyMarkup{})
+	}
+	err := c.Edit(text, opts...)
+	if err != nil && strings.Contains(err.Error(), "message is not modified") {
+		return nil
+	}
+	return err
+}
+
+func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb.ReplyMarkup, error) {
+	bindings, err := app.discovery.Store.Bindings(ctx, user)
+	if err != nil {
+		return "", nil, errors.New("读取收藏状态失败")
+	}
+	jobs, err := app.discovery.Store.Jobs(ctx, user, false)
+	if err != nil {
+		return "", nil, errors.New("读取入库队列失败")
+	}
+	counts := map[string]int{}
+	for _, job := range jobs {
+		counts[job.State]++
 	}
 	var text strings.Builder
-	text.WriteString("🎵 收藏同步\n")
+	text.WriteString("收藏\n")
 	if app.discovery.Enabled {
-		fmt.Fprintf(&text, "已绑定来源每 %d 分钟检查新增喜欢。\n", max(1, int(app.discovery.PollInterval/time.Minute)))
+		fmt.Fprintf(&text, "每 %d 分钟看一次新喜欢。\n", max(1, int(app.discovery.PollInterval/time.Minute)))
 	} else {
-		text.WriteString("自动同步尚未开启：先预览、绑定，再配置 favorites.enable: true 并重启。\n")
+		text.WriteString("自动同步还没开。绑定后，新增喜欢不会自动入库。\n")
 	}
-	text.WriteString("首次绑定只建立基线，历史收藏通过“预览历史收藏”选择下载。\n")
 	byPlatform := map[string]discovery.Binding{}
-	for _, b := range bindings {
-		byPlatform[b.Platform] = b
+	for _, binding := range bindings {
+		byPlatform[binding.Platform] = binding
 	}
 	markup := &tb.ReplyMarkup{}
 	for _, platform := range []string{"netease", "qq", "youtube"} {
-		b, ok := byPlatform[platform]
-		label := platform
-		if ok {
-			state := "同步中"
-			if b.Paused {
-				state = "已暂停"
-			}
-			if !app.discovery.Enabled {
-				state = "等待全局开启"
-			}
-			fmt.Fprintf(&text, "\n%s：%s · 账号 %s", platform, state, maskedDiscoveryAccount(b.Account))
-			if b.LastSync > 0 {
-				text.WriteString("\n上次读取：" + time.Unix(b.LastSync, 0).Format("01-02 15:04"))
-			}
-			if b.Error != "" {
-				text.WriteString("\n" + utils.TruncateString(b.Error, 120))
-			}
-			label += " 重新绑定"
-		} else {
-			fmt.Fprintf(&text, "\n%s：未绑定", platform)
-			label += " 绑定"
+		binding, ok := byPlatform[platform]
+		name := aichat.PlatformLabel(platform)
+		if !ok {
+			fmt.Fprintf(&text, "\n%s  未绑定", name)
+			appendDiscoveryRows(markup, markup.Row(markup.Data("绑定 "+name, discoveryCallbackUnique, "probe", platform)))
+			continue
 		}
-		row := markup.Row(markup.Data(label, discoveryCallbackUnique, "probe", platform))
-		if ok {
-			action, button := "pause", "暂停"
-			if b.Paused {
-				action, button = "resume", "恢复"
-			}
-			row = append(row, markup.Data(button, discoveryCallbackUnique, action, platform))
+		state := "同步中"
+		if binding.Paused {
+			state = "已暂停"
 		}
-		appendDiscoveryRows(markup, row)
+		if !app.discovery.Enabled {
+			state = "已绑定"
+		}
+		fmt.Fprintf(&text, "\n%s  %s", name, state)
+		if account := maskedDiscoveryAccount(binding.Account); account != "" {
+			fmt.Fprintf(&text, "  %s", account)
+		}
+		if binding.Error != "" {
+			fmt.Fprintf(&text, "\n%s", utils.TruncateString(binding.Error, 60))
+		}
+		action, button := "pause", "暂停"
+		if binding.Paused {
+			action, button = "resume", "恢复"
+		}
+		appendDiscoveryRows(markup, markup.Row(
+			markup.Data("重新绑定", discoveryCallbackUnique, "probe", platform),
+			markup.Data(button, discoveryCallbackUnique, action, platform),
+		))
 	}
-	jobs, err := app.discovery.Store.Jobs(ctx, c.Sender().ID, false)
-	if err != nil {
-		return c.Send("读取入库队列失败")
-	}
-	counts := map[string]int{}
-	for _, j := range jobs {
-		counts[discovery.StateLabel(j.State)]++
-	}
-	if len(jobs) > 0 {
-		fmt.Fprintf(&text, "\n\n最近 %d 个任务：", len(jobs))
-		for _, state := range []string{"queued", "running", "pending_upload", "completed", "owned", "needs_confirmation", "failed", "ignored"} {
-			label := discovery.StateLabel(state)
-			if counts[label] > 0 {
-				fmt.Fprintf(&text, "\n%s：%d", label, counts[label])
-			}
+	var queue []string
+	for _, state := range []string{discovery.Queued, discovery.Running, discovery.PendingUpload, discovery.NeedsConfirmation, discovery.Failed} {
+		if counts[state] > 0 {
+			queue = append(queue, fmt.Sprintf("%d %s", counts[state], discovery.StateLabel(state)))
 		}
 	}
-	shown := 0
-	for _, j := range jobs {
-		if (j.State == discovery.Failed || j.State == discovery.NeedsConfirmation) && shown < 8 {
-			fmt.Fprintf(&text, "\n\n%s — %s\n%s：%s", utils.TruncateString(j.Track.Title, 60), utils.TruncateString(j.Track.Artist, 40), discovery.StateLabel(j.State), utils.TruncateString(j.Error, 100))
-			if j.State == discovery.NeedsConfirmation {
-				fmt.Fprintf(&text, "\n%s", j.Track.URL)
-				appendDiscoveryRows(markup, markup.Row(markup.Data(fmt.Sprintf("确认此原链接 %d", shown+1), discoveryCallbackUnique, "accept", j.ID), markup.Data("跳过", discoveryCallbackUnique, "reject", j.ID)))
-			}
-			shown++
-		}
+	if len(queue) > 0 {
+		fmt.Fprintf(&text, "\n\n%s", strings.Join(queue, " · "))
 	}
-	appendDiscoveryRows(markup, markup.Row(markup.Data("立即同步", discoveryCallbackUnique, "sync", "menu"), markup.Data("预览历史收藏", discoveryCallbackUnique, "history", "menu")), markup.Row(markup.Data("重试失败", discoveryCallbackUnique, "retry", "menu"), markup.Data("刷新状态", discoveryCallbackUnique, "status", "menu")))
-	appendDiscoveryRows(markup, markup.Row(markup.Data("查看全部待确认", discoveryCallbackUnique, "pending", "0")))
-	return c.Send(text.String(), markup)
+	actions := tb.Row{markup.Data("找回遗珠", discoveryCallbackUnique, "history", "menu")}
+	if app.discovery.Enabled {
+		actions = append(actions, markup.Data("现在同步", discoveryCallbackUnique, "sync", "menu"))
+	}
+	appendDiscoveryRows(markup, actions)
+	extra := tb.Row{}
+	if counts[discovery.NeedsConfirmation] > 0 {
+		extra = append(extra, markup.Data("待确认", discoveryCallbackUnique, "pending", "0"))
+	}
+	if counts[discovery.Failed] > 0 {
+		extra = append(extra, markup.Data("重试失败", discoveryCallbackUnique, "retry", "menu"))
+	}
+	if counts[discovery.PendingUpload] > 0 {
+		extra = append(extra, markup.Data("刷新状态", discoveryCallbackUnique, "status", "menu"))
+	}
+	if len(extra) > 0 {
+		appendDiscoveryRows(markup, extra)
+	}
+	return text.String(), markup, nil
 }
 
 func maskedDiscoveryAccount(s string) string {
@@ -291,6 +470,29 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 	}
 	action, key := args[0], args[1]
 	switch action {
+	case "source":
+		if key == "menu" {
+			text, markup := discoveryPlatformMenu()
+			if err := c.Respond(); err != nil {
+				return err
+			}
+			return c.Edit(text, markup)
+		}
+		if !validRediscoverPlatform(key) {
+			return c.Respond(&tb.CallbackResponse{Text: "平台无效", ShowAlert: true})
+		}
+		text, markup := discoveryCountMenu(key)
+		if err := c.Respond(&tb.CallbackResponse{Text: aichat.PlatformLabel(key)}); err != nil {
+			return err
+		}
+		return c.Edit(text, markup)
+	case "find":
+		return app.startRediscover(c, key, args)
+	case "cancel":
+		if err := c.Respond(); err != nil {
+			return err
+		}
+		return c.Edit("已取消。", &tb.ReplyMarkup{})
 	case "probe", "pause", "resume", "sync", "history", "retry", "status", "accept", "reject", "pending":
 		if err := c.Respond(&tb.CallbackResponse{Text: "已收到，正在处理…"}); err != nil {
 			return err
@@ -307,35 +509,36 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			return app.previewFavoriteBinding(c, key)
 		case "pause", "resume":
 			if err := app.discovery.Store.Pause(ctx, c.Sender().ID, key, action == "pause"); err != nil {
-				return c.Send("更新暂停状态失败")
+				return app.presentFavorites(c, "更新暂停状态失败")
 			}
-			return app.showFavorites(c)
+			return app.presentFavorites(c, "")
 		case "sync":
 			if !app.discoveryCommandMu.TryLock() {
-				return c.Send("⏳ 已有请求正在处理。")
+				return answerOnCard(c, "⏳ 已有请求正在处理。", nil, false)
 			}
 			defer app.discoveryCommandMu.Unlock()
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
 			if err := app.discovery.Sync(ctx, c.Sender().ID); err != nil {
-				return c.Send(err.Error())
+				return app.presentFavorites(c, "❌ "+err.Error())
 			}
-			return c.Send("✅ 收藏读取完成，新增歌曲已进入队列。首次接入请先绑定账号。")
+			return app.presentFavorites(c, "✅ 收藏读取完成，新增歌曲已进入队列。首次接入请先绑定账号。")
 		case "history":
-			return app.RediscoverCommand(c)
+			text, markup := discoveryPlatformMenu()
+			return answerOnCard(c, text, markup, false)
 		case "retry":
 			if err := app.discovery.Store.Retry(ctx, c.Sender().ID); err != nil {
-				return c.Send("重试失败")
+				return app.presentFavorites(c, "重试失败")
 			}
-			return c.Send("✅ 失败任务已重新排队。")
+			return app.presentFavorites(c, "✅ 失败任务已重新排队。")
 		case "status":
 			_ = app.discovery.Reconcile(ctx, c.Sender().ID)
-			return app.showFavorites(c)
+			return app.presentFavorites(c, "")
 		case "accept", "reject":
 			if err := app.discovery.Store.ResolveJob(ctx, key, c.Sender().ID, action == "accept"); err != nil {
-				return c.Send(err.Error())
+				return answerOnCard(c, err.Error(), nil, false)
 			}
-			return c.Send("✅ 已更新待确认任务。")
+			return app.showDiscoveryPending(c, 0)
 		}
 	}
 	card, err := app.discovery.Store.Card(context.Background(), key, c.Sender().ID, c.Chat().ID)
@@ -368,7 +571,26 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		}
 		return app.RediscoverCommand(c)
 	}
-	var selected []discovery.Track
+	if action == "page" {
+		if len(args) != 3 {
+			return c.Respond(&tb.CallbackResponse{Text: "按钮参数无效", ShowAlert: true})
+		}
+		page, e := strconv.Atoi(args[2])
+		if e != nil || page < 0 || page > 100 {
+			return c.Respond(&tb.CallbackResponse{Text: "分组无效", ShowAlert: true})
+		}
+		if err = c.Respond(&tb.CallbackResponse{Text: "已换到下一组"}); err != nil {
+			return err
+		}
+		text, markup := discoveryRecommendationCard(card, page)
+		return editDiscoveryMessage(c, text, markup, true)
+	}
+	type cardChoice struct {
+		index int
+		track discovery.Track
+	}
+	var choices []cardChoice
+	page := 0
 	switch action {
 	case "download", "ignore":
 		if len(args) != 3 {
@@ -378,38 +600,68 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		if e != nil || index < 0 || index >= len(card.Tracks) {
 			return c.Respond(&tb.CallbackResponse{Text: "曲目编号无效", ShowAlert: true})
 		}
-		selected = []discovery.Track{card.Tracks[index]}
+		choices = []cardChoice{{index: index, track: card.Tracks[index]}}
+		page = index / discoveryPageSize
 	case "batch":
 		if len(args) != 3 {
 			return c.Respond(&tb.CallbackResponse{Text: "批量参数无效", ShowAlert: true})
 		}
-		n := len(card.Tracks)
-		if args[2] == "3" {
-			n = min(n, 3)
-		} else if args[2] != "all" {
+		var picked []discovery.Track
+		switch {
+		case args[2] == "all":
+			picked = card.Tracks
+		case args[2] == "3":
+			picked = card.Tracks[:min(3, len(card.Tracks))]
+		case strings.HasPrefix(args[2], "p"):
+			parsed, e := strconv.Atoi(strings.TrimPrefix(args[2], "p"))
+			if e != nil || parsed < 0 {
+				return c.Respond(&tb.CallbackResponse{Text: "批量参数无效", ShowAlert: true})
+			}
+			page = parsed
+			start := page * discoveryPageSize
+			if start >= len(card.Tracks) {
+				return c.Respond(&tb.CallbackResponse{Text: "这一组已经没有歌曲", ShowAlert: true})
+			}
+			picked = card.Tracks[start:min(start+discoveryPageSize, len(card.Tracks))]
+			for offset := range picked {
+				choices = append(choices, cardChoice{index: start + offset, track: picked[offset]})
+			}
+		default:
 			return c.Respond(&tb.CallbackResponse{Text: "批量参数无效", ShowAlert: true})
 		}
-		selected = card.Tracks[:n]
+		if !strings.HasPrefix(args[2], "p") {
+			for index, track := range picked {
+				choices = append(choices, cardChoice{index: index, track: track})
+			}
+		}
 	default:
 		return c.Respond(&tb.CallbackResponse{Text: "未知操作", ShowAlert: true})
 	}
 	if err = c.Respond(&tb.CallbackResponse{Text: "已收到，正在保存…"}); err != nil {
 		return err
 	}
-	for _, t := range selected {
+	for _, choice := range choices {
+		if choice.track.CardAction != "" {
+			continue
+		}
+		track := choice.track
+		track.CardAction = ""
 		if action == "ignore" {
-			err = app.discovery.Store.Preference(context.Background(), card.User, t, true)
+			err = app.discovery.Store.Preference(context.Background(), card.User, track, true)
+			card.Tracks[choice.index].CardAction = "dismissed"
 		} else {
-			err = app.discovery.Store.Enqueue(context.Background(), card.User, card.Chat, t)
+			err = app.discovery.Store.Enqueue(context.Background(), card.User, card.Chat, track)
+			card.Tracks[choice.index].CardAction = "queued"
 		}
 		if err != nil {
 			return c.Send("保存操作失败，请重试。")
 		}
 	}
-	if action == "ignore" {
-		return c.Send("✅ 已加入不再推荐列表。")
+	if err = app.discovery.Store.ReplaceCard(context.Background(), card); err != nil {
+		return c.Send("保存操作失败，请重试。")
 	}
-	return c.Send(fmt.Sprintf("✅ 已提交 %d 首到入库队列；重复提交会自动合并。发送 /favorites 查看进度。", len(selected)))
+	text, markup := discoveryRecommendationCard(card, page)
+	return editDiscoveryMessage(c, text, markup, true)
 }
 
 func appendDiscoveryRows(markup *tb.ReplyMarkup, rows ...tb.Row) {
@@ -426,14 +678,14 @@ func appendDiscoveryRows(markup *tb.ReplyMarkup, rows ...tb.Row) {
 
 func (app *BotApp) showDiscoveryPending(c tb.Context, page int) error {
 	if page < 0 || page > 10000 {
-		return c.Send("页码无效")
+		return answerOnCard(c, "页码无效", nil, false)
 	}
 	jobs, err := app.discovery.Store.Confirmations(context.Background(), c.Sender().ID, page*8)
 	if err != nil {
-		return c.Send("无法读取待确认任务")
+		return answerOnCard(c, "无法读取待确认任务", nil, false)
 	}
 	if len(jobs) == 0 {
-		return c.Send("没有待确认任务。")
+		return answerOnCard(c, "没有待确认任务。", &tb.ReplyMarkup{}, false)
 	}
 	markup := &tb.ReplyMarkup{}
 	var text strings.Builder
@@ -452,5 +704,5 @@ func (app *BotApp) showDiscoveryPending(c tb.Context, page int) error {
 	if len(row) > 0 {
 		appendDiscoveryRows(markup, row)
 	}
-	return c.Send(text.String(), markup)
+	return answerOnCard(c, text.String(), markup, false)
 }

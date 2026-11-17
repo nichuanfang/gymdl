@@ -67,6 +67,25 @@ func SetupWebRoutesWithTaskManager(rg *gin.RouterGroup, c *config.Config, tm *ta
 	group.GET("/logs", web.HandleListLogs)
 	group.GET("/logs/levels", web.HandleLogLevels)
 
+	// 已注册的定时任务。只查看和立即执行，不改时间表。
+	group.GET("/cron/jobs", web.HandleCronJobs)
+	group.POST("/cron/jobs/:name/run", web.HandleRunCronJob)
+
+	// 歌单描述、找回遗珠、AI 歌单。确认前不会写入 Navidrome。
+	group.GET("/playlists", web.HandlePlaylistDescriptions)
+	group.PUT("/playlists/:id/desc", web.HandleUpdatePlaylistDescription)
+	group.POST("/playlists/sync", web.HandleSyncPlaylists)
+	group.POST("/discovery/rediscover", web.HandleRediscover)
+	group.POST("/discovery/enqueue", web.HandleRediscoverEnqueue)
+	group.POST("/discovery/dismiss", web.HandleRediscoverDismiss)
+	group.GET("/ai/playlists", web.HandleAIPlaylists)
+	group.POST("/ai/playlists/preview", web.HandleAIPlaylistPreview)
+	group.POST("/ai/playlists/confirm", web.HandleAIPlaylistConfirm)
+
+	// 曲库重复检测只扫描和分组，不删除文件，也不参与下载或找回遗珠判断。
+	group.GET("/duplicates", web.HandleLibraryDuplicates)
+	group.POST("/duplicates/scan", web.HandleStartLibraryDuplicateScan)
+
 	// 文件
 	group.GET("/files", web.HandleListFiles)
 	group.GET("/files/stream", web.HandleStreamFile)

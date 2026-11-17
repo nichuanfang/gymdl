@@ -19,6 +19,10 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /app/discovery-c
 # The base image supplies Python and media tooling required by download processors.
 FROM --platform=linux/amd64 ghcr.io/nichuanfang/gymdl-base
 WORKDIR /app
+# fpcalc fingerprints local audio for the library duplicate review. It does not call AcoustID.
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends libchromaprint-tools \
+	&& rm -rf /var/lib/apt/lists/*
 # Personal likes and metadata checks also need yt-dlp before the first download.
 ARG YT_DLP_VERSION=2026.10.26
 RUN python3 -m pip install --no-cache-dir --break-system-packages "yt-dlp[default]==${YT_DLP_VERSION}"

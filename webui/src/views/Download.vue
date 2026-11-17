@@ -2,10 +2,12 @@
   <div>
     <PageHeading eyebrow="TASKS / DOWNLOAD QUEUE" title="下载" />
     <n-space vertical :size="16">
-      <n-input-group>
-        <n-input v-model:value="url" placeholder="粘贴音乐/视频链接，支持 Apple Music / Spotify / QQ / 网易云 / YouTube 等" size="large" @keyup.enter="handleSubmit" />
-        <n-button type="primary" size="large" @click="handleSubmit" :loading="submitting">提交</n-button>
-      </n-input-group>
+      <div class="download-bar">
+        <n-input-group>
+          <n-input v-model:value="url" placeholder="粘贴音乐/视频链接，支持 Apple Music / Spotify / QQ / 网易云 / YouTube 等" size="large" @keyup.enter="handleSubmit" />
+          <n-button type="primary" size="large" @click="handleSubmit" :loading="submitting">提交</n-button>
+        </n-input-group>
+      </div>
 
       <n-card title="活跃任务" size="small" v-if="activeTasks.length > 0">
         <n-space vertical :size="12">
@@ -115,3 +117,17 @@ onUnmounted(() => {
   if (timer) clearInterval(timer)
 })
 </script>
+
+<style scoped>
+.download-bar {
+  padding: 8px;
+  border: 1px solid rgba(186,206,198,.16);
+  border-radius: 16px;
+  background: rgba(16, 22, 26, .46);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  transition: border-color .22s var(--ease, ease), box-shadow .22s var(--ease, ease);
+}
+.download-bar:focus-within { border-color: rgba(99,226,183,.38); box-shadow: 0 0 0 3px rgba(99,226,183,.1), inset 0 1px 0 rgba(255,255,255,.05); }
+</style>

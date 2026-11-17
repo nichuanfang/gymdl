@@ -29,6 +29,7 @@ import (
 type Provider interface {
 	Fetch(context.Context, string) (Snapshot, error)
 	Resolve(context.Context, Track, string) (Track, error)
+	ResolveOn(context.Context, Track, string) (Track, error)
 	Enrich(context.Context, Track) (Track, bool, error)
 }
 type Providers struct {
@@ -319,6 +320,7 @@ func (p *Providers) Enrich(ctx context.Context, t Track) (Track, bool, error) {
 // Resolve returns a unique matching recording from real provider results.
 // An explicit source URL is preserved; searches never invent links or editions.
 var ErrAmbiguousRecording = errors.New("跨平台存在多个可能版本，需要确认")
+var ErrNoUniqueRecording = errors.New("未找到可唯一确认的同歌手、同版本曲目")
 
 func (p *Providers) Resolve(ctx context.Context, t Track, exclude string) (Track, error) {
 	if t.URL != "" && t.Verified && t.Platform != exclude {
@@ -335,34 +337,60 @@ func (p *Providers) Resolve(ctx context.Context, t Track, exclude string) (Track
 		if platform == exclude {
 			continue
 		}
-		if platform == "qq" && (p.Config.QQMusicApiConfig == nil || !p.Config.QQMusicApiConfig.Enable) {
+		if platform == "qq" && (p.Config == nil || p.Config.QQMusicApiConfig == nil || !p.Config.QQMusicApiConfig.Enable) {
 			continue
 		}
-		hits, _, err := web.SearchSinglesForAgent(ctx, t.Title+" "+t.Artist, []string{platform}, 10)
-		if err != nil {
-			continue
+		hit, err := p.matchOnPlatform(ctx, t, platform)
+		if errors.Is(err, ErrAmbiguousRecording) {
+			return Track{}, err
 		}
-		matches := map[string]Track{}
-		for _, h := range hits {
-			other := fromSearch(h.SearchResultItem)
-			if !SameRecording(t, other) {
-				continue
-			}
-			if t.Album != "" && Normalize(t.Album) != Normalize(other.Album) {
-				continue
-			}
-			matches[other.ID] = other
-		}
-		if len(matches) > 1 {
-			return Track{}, ErrAmbiguousRecording
-		}
-		if len(matches) == 1 {
-			for _, hit := range matches {
-				return hit, nil
-			}
+		if err == nil {
+			return hit, nil
 		}
 	}
-	return Track{}, fmt.Errorf("未找到可唯一确认的同歌手、同版本曲目")
+	return Track{}, ErrNoUniqueRecording
+}
+
+// ResolveOn searches a single platform. A track that already has a verified
+// link on that platform is returned without another lookup.
+func (p *Providers) ResolveOn(ctx context.Context, t Track, platform string) (Track, error) {
+	if platform != "netease" && platform != "qq" && platform != "youtube" {
+		return Track{}, fmt.Errorf("不支持的平台")
+	}
+	if t.URL != "" && t.Verified && t.Platform == platform {
+		return t, nil
+	}
+	if platform == "qq" && (p.Config == nil || p.Config.QQMusicApiConfig == nil || !p.Config.QQMusicApiConfig.Enable) {
+		return Track{}, fmt.Errorf("QQ 音乐未启用")
+	}
+	return p.matchOnPlatform(ctx, t, platform)
+}
+
+func (p *Providers) matchOnPlatform(ctx context.Context, t Track, platform string) (Track, error) {
+	hits, _, err := web.SearchSinglesForAgent(ctx, t.Title+" "+t.Artist, []string{platform}, 10)
+	if err != nil {
+		return Track{}, err
+	}
+	matches := map[string]Track{}
+	for _, h := range hits {
+		other := fromSearch(h.SearchResultItem)
+		if !SameRecording(t, other) {
+			continue
+		}
+		if t.Album != "" && Normalize(t.Album) != Normalize(other.Album) {
+			continue
+		}
+		matches[other.ID] = other
+	}
+	if len(matches) > 1 {
+		return Track{}, ErrAmbiguousRecording
+	}
+	if len(matches) == 1 {
+		for _, hit := range matches {
+			return hit, nil
+		}
+	}
+	return Track{}, ErrNoUniqueRecording
 }
 
 // Personal special playlists do not always expose a channel owner. DATASYNC_ID

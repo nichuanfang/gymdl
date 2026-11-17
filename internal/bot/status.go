@@ -25,7 +25,6 @@ type serviceStatus struct {
 }
 
 // StatusCommand reports download, upload and cookie state without calling the model.
-// It stays off the phone menu; /help mentions it.
 func (app *BotApp) StatusCommand(c tb.Context) error {
 	return c.Send(formatServiceStatus(app.collectServiceStatus(time.Now())))
 }

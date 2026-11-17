@@ -229,7 +229,7 @@ func TestAIPlaylistEndToEndUsesLiveCandidatesAndVerifiesWrite(t *testing.T) {
 	if firstResult.NoPlaylists || firstResult.NoEmpty || len(firstResult.Failed) != 1 || len(firstResult.Succeeded) != 0 {
 		t.Fatalf("partial write should remain retryable: %#v", firstResult)
 	}
-	if !strings.Contains(firstResult.Failed[0].Err.Error(), "续跑计划已保存") || !reflect.DeepEqual(playlistIDs, []string{"song2"}) {
+	if !strings.Contains(firstResult.Failed[0].Err.Error(), "续跑计划已保存") || !reflect.DeepEqual(playlistIDs, []string{"song1"}) {
 		t.Fatalf("first partial write was not recorded safely: result=%#v playlist=%#v", firstResult, playlistIDs)
 	}
 	playlistIDs = append(playlistIDs, "manual-song")
@@ -267,10 +267,10 @@ func TestAIPlaylistEndToEndUsesLiveCandidatesAndVerifiesWrite(t *testing.T) {
 	if chatCalls != 2 || listCalls != 2 || playlistTrackReads != 3 || !deletedVector || len(deletedStateIDs) != 1 || deletedStateIDs[0] != "missing" {
 		t.Fatalf("expected one AI plan reused across restart and three playlist reads: chat=%d list=%d trackReads=%d vector=%v states=%#v", chatCalls, listCalls, playlistTrackReads, deletedVector, deletedStateIDs)
 	}
-	if len(addRequests) != 2 || !reflect.DeepEqual(addRequests[0], []string{"song2", "song1"}) || !reflect.DeepEqual(addRequests[1], []string{"song1"}) {
+	if len(addRequests) != 2 || !reflect.DeepEqual(addRequests[0], []string{"song1", "song2"}) || !reflect.DeepEqual(addRequests[1], []string{"song2"}) {
 		t.Fatalf("resume must only append the missing song: %#v", addRequests)
 	}
-	if !reflect.DeepEqual(playlistIDs, []string{"song2", "manual-song", "song1"}) {
+	if !reflect.DeepEqual(playlistIDs, []string{"song1", "manual-song", "song2"}) {
 		t.Fatalf("unexpected Navidrome playlist after resume: %#v", playlistIDs)
 	}
 }
@@ -670,7 +670,7 @@ func TestAIPlaylistFallsBackToRuleOrderWhenPlannerFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plan, usedFallback, err := service.planPlaylistOrFallback(t.Context(), "安静氛围", []aiPlaylistCandidate{
+	plan, usedFallback, err := service.planPlaylistOrFallback(t.Context(), "安静氛围", aiPlaylistSemanticQuery{}, []aiPlaylistCandidate{
 		{ID: "song1", Genre: "ambient", Language: "instrumental", VectorScore: 0.99},
 		{ID: "song2", Genre: "ambient", Language: "English", VectorScore: 0.98},
 		{ID: "song3", Genre: "jazz", Language: "instrumental", VectorScore: 0.97},
@@ -691,6 +691,27 @@ func TestAIPlaylistFallsBackToRuleOrderWhenPlannerFails(t *testing.T) {
 	}
 }
 
+func TestPreparePlaylistCandidatesKeepsInstrumentalWhenEnough(t *testing.T) {
+	candidates := []aiPlaylistCandidate{
+		{ID: "vocal-high", Language: "国语", VectorScore: 0.99},
+		{ID: "pure-1", Language: "纯音乐", VectorScore: 0.80},
+		{ID: "pure-2", Language: "instrumental", VectorScore: 0.70},
+		{ID: "vocal-low", Language: "英语", VectorScore: 0.60},
+	}
+	kept := preparePlaylistCandidates(candidates, aiPlaylistSemanticQuery{PreferInstrumental: true}, 2)
+	if len(kept) != 2 || kept[0].ID != "pure-1" || kept[1].ID != "pure-2" {
+		t.Fatalf("enough instrumental tracks should replace the vocal pool: %#v", kept)
+	}
+	mixed := preparePlaylistCandidates(candidates, aiPlaylistSemanticQuery{PreferInstrumental: true}, 3)
+	if len(mixed) != 4 || mixed[0].ID != "pure-1" || mixed[1].ID != "pure-2" || mixed[2].ID != "vocal-high" {
+		t.Fatalf("short instrumental pool should lead, then fill with vocals: %#v", mixed)
+	}
+	unchanged := preparePlaylistCandidates(candidates, aiPlaylistSemanticQuery{}, 2)
+	if len(unchanged) != len(candidates) || unchanged[0].ID != "vocal-high" {
+		t.Fatalf("vocal requests should keep vector order: %#v", unchanged)
+	}
+}
+
 func TestAIPlaylistPlanDropsUnknownAndDuplicateIDs(t *testing.T) {
 	content := `{"playlist":[{"id":"not-in-candidates"},{"id":"song1"},{"id":"song1"},{"id":"song2"}],"intro":"简介"}`
 	var plan aiPlaylistPlan
@@ -700,6 +721,57 @@ func TestAIPlaylistPlanDropsUnknownAndDuplicateIDs(t *testing.T) {
 	plan = validateAIPlaylistPlan(plan, []aiPlaylistCandidate{{ID: "song1"}, {ID: "song2"}}, 2)
 	if len(plan.Playlist) != 2 || plan.Playlist[0].ID != "song1" || plan.Playlist[1].ID != "song2" {
 		t.Fatalf("unexpected candidate validation result: %#v", plan.Playlist)
+	}
+}
+
+func TestPlaylistRecallFusesQueriesAndKeepsOneCopyOfAWork(t *testing.T) {
+	fused := fusePlaylistCandidates([][]aiPlaylistCandidate{
+		{{ID: "only-a", Title: "Only", Artist: "A", VectorScore: 0.99}, {ID: "shared", Title: "Shared", Artist: "B", VectorScore: 0.5}},
+		{{ID: "shared", Title: "Shared", Artist: "B", VectorScore: 0.4}, {ID: "only-c", Title: "Other", Artist: "C", VectorScore: 0.2}},
+	})
+	if len(fused) != 3 || fused[0].ID != "shared" {
+		t.Fatalf("a song ranked on both queries should lead: %#v", fused)
+	}
+	unique := uniquePlaylistCandidates([]aiPlaylistCandidate{
+		{ID: "low", Title: "Wound Up", Artist: "Jordyn Edmonds", VectorScore: 0.2},
+		{ID: "high", Title: "Wound Up", Artist: "Jordyn Edmonds", VectorScore: 0.9},
+		{ID: "other", Title: "Other", Artist: "Someone", VectorScore: 0.8},
+	})
+	if len(unique) != 2 || unique[0].ID != "high" || unique[1].ID != "other" {
+		t.Fatalf("same title and artist should collapse to the stronger copy: %#v", unique)
+	}
+}
+
+func TestPlaylistDiversityCapsARepeatedArtist(t *testing.T) {
+	pool := []aiPlaylistCandidate{
+		{ID: "a1", Title: "A1", Artist: "Same", VectorScore: 0.99},
+		{ID: "a2", Title: "A2", Artist: "Same", VectorScore: 0.98},
+		{ID: "a3", Title: "A3", Artist: "Same", VectorScore: 0.97},
+		{ID: "a4", Title: "A4", Artist: "Same", VectorScore: 0.96},
+		{ID: "a5", Title: "A5", Artist: "Same", VectorScore: 0.95},
+		{ID: "b1", Title: "B1", Artist: "Other", VectorScore: 0.70},
+		{ID: "c1", Title: "C1", Artist: "Third", VectorScore: 0.69},
+		{ID: "d1", Title: "D1", Artist: "Fourth", VectorScore: 0.68},
+	}
+	picked := takeDiversePlaylist(pool, 6, "安静的夜晚")
+	same := 0
+	for _, song := range picked {
+		if song.Artist == "Same" {
+			same++
+		}
+	}
+	if len(picked) != 6 || same != 3 {
+		t.Fatalf("artist cap = %d in %#v", same, picked)
+	}
+	focused := takeDiversePlaylist(pool, 6, "我想听 Same 的歌")
+	focusedSame := 0
+	for _, song := range focused {
+		if song.Artist == "Same" {
+			focusedSame++
+		}
+	}
+	if focusedSame < 4 {
+		t.Fatalf("a named artist should stay together: %#v", focused)
 	}
 }
 

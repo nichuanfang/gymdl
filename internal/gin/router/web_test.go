@@ -44,4 +44,12 @@ func TestSearchStreamRouteUsesExistingWebAuthMiddleware(t *testing.T) {
 	if recorder.Header().Get("Content-Type") == "text/event-stream; charset=utf-8" {
 		t.Fatal("unauthenticated request unexpectedly started an SSE response")
 	}
+	for _, path := range []string{"/api/web/playlists", "/api/web/duplicates", "/api/web/ai/playlists"} {
+		recorder = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodGet, path, nil)
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("%s must require auth, got %d", path, recorder.Code)
+		}
+	}
 }

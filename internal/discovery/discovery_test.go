@@ -191,6 +191,20 @@ func (p stubProvider) Resolve(_ context.Context, t Track, exclude string) (Track
 	return t, nil
 }
 
+func (p stubProvider) ResolveOn(ctx context.Context, t Track, platform string) (Track, error) {
+	if p.resolveErr != nil {
+		return Track{}, p.resolveErr
+	}
+	out, err := p.Resolve(ctx, t, "")
+	if err != nil {
+		return Track{}, err
+	}
+	if platform != "" {
+		out.Platform = platform
+	}
+	return out, nil
+}
+
 func (p stubProvider) Enrich(_ context.Context, t Track) (Track, bool, error) {
 	if p.enrich != nil {
 		return p.enrich(t)
@@ -234,6 +248,87 @@ func TestRecommendRanksEvidenceAndExcludesOwnedShownDismissed(t *testing.T) {
 	if _, err = svc.Recommend(ctx, 1); err == nil {
 		t.Fatal("offline library treated as empty")
 	}
+}
+
+func TestRediscoverCountsVersionsThePlatformCannotConfirm(t *testing.T) {
+	s := testStore(t)
+	tracks := []Track{
+		testTrack("1", "Known", "A"),
+		testTrack("2", "Ambiguous", "B"),
+		testTrack("3", "Missing", "C"),
+		testTrack("4", "Also", "D"),
+	}
+	tracks[0].Plays, tracks[1].Plays, tracks[2].Plays, tracks[3].Plays = 40, 30, 20, 10
+	provider := &countingProvider{}
+	provider.resolveOn = func(track Track, platform string) (Track, error) {
+		switch track.Title {
+		case "Ambiguous":
+			return Track{}, ErrAmbiguousRecording
+		case "Missing":
+			return Track{}, ErrNoUniqueRecording
+		case "Offline":
+			return Track{}, errors.New("timeout")
+		}
+		track.Platform = platform
+		track.Verified = true
+		return track, nil
+	}
+	svc := Service{Store: s, Provider: provider, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
+		return tracks, nil
+	}}
+	batch, err := svc.Rediscover(context.Background(), 1, "netease", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Tracks) != 2 || batch.Unconfirmed != 2 || batch.SkippedOwned != 0 {
+		t.Fatalf("batch=%+v", batch)
+	}
+}
+
+func TestRecommendLimitedUsesOnePlatformAndReusesCachedHistory(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	var tracks []Track
+	for i := 0; i < 5; i++ {
+		tr := testTrack(fmt.Sprint(i), fmt.Sprint("Song", i), fmt.Sprint("Artist", i))
+		tr.Plays = 10 - i
+		tracks = append(tracks, tr)
+	}
+	historyCalls := 0
+	resolveCalls := 0
+	provider := &countingProvider{}
+	provider.resolveOn = func(track Track, platform string) (Track, error) {
+		resolveCalls++
+		if platform != "netease" {
+			t.Fatalf("resolved on %s", platform)
+		}
+		track.Platform = platform
+		return track, nil
+	}
+	svc := Service{Store: s, Provider: provider, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
+		historyCalls++
+		return tracks, nil
+	}}
+	out, err := svc.RecommendLimited(ctx, 1, "netease", 3)
+	if err != nil || len(out) != 3 || resolveCalls != 3 || historyCalls != 1 {
+		t.Fatalf("first limited result=%d resolve=%d history=%d err=%v", len(out), resolveCalls, historyCalls, err)
+	}
+	out, err = svc.RecommendLimited(ctx, 1, "netease", 3)
+	if err != nil || len(out) != 3 || resolveCalls != 3 || historyCalls != 1 {
+		t.Fatalf("cache missed result=%d resolve=%d history=%d err=%v", len(out), resolveCalls, historyCalls, err)
+	}
+}
+
+type countingProvider struct {
+	stubProvider
+	resolveOn func(Track, string) (Track, error)
+}
+
+func (p *countingProvider) ResolveOn(_ context.Context, t Track, platform string) (Track, error) {
+	if p.resolveOn != nil {
+		return p.resolveOn(t, platform)
+	}
+	return p.stubProvider.ResolveOn(context.Background(), t, platform)
 }
 
 func TestWorkerFallbackConfirmationRetriesAndDeferredUpload(t *testing.T) {

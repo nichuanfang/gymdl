@@ -17,11 +17,12 @@ func (app *BotApp) registerHandlers() {
 	// qq音乐登录
 	app.bot.Handle("/qq_login", app.QQLoginCommand)
 
-	// 服务状态。不进手机菜单，避免挤掉常用指令。
 	app.bot.Handle("/status", app.StatusCommand)
 
 	// 歌单整理
 	app.bot.Handle("/assign_playlist", app.AssignPlaylistCommand)
+	app.bot.Handle("/playlist_desc", app.PlaylistDescCommand)
+	app.bot.Handle(&playlistDescEndpoint, app.HandlePlaylistDescCallback)
 
 	// AI智能歌单
 	app.bot.Handle("/ai_playlist", app.AIPlaylistCommand)

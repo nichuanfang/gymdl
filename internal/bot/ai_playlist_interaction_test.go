@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ type aiPlaylistInteractionTestContext struct {
 	chat     *tb.Chat
 	response int
 	edited   interface{}
+	editErr  error
 }
 
 func (c *aiPlaylistInteractionTestContext) Args() []string { return c.args }
@@ -33,7 +35,7 @@ func (c *aiPlaylistInteractionTestContext) Respond(...*tb.CallbackResponse) erro
 
 func (c *aiPlaylistInteractionTestContext) Edit(what interface{}, _ ...interface{}) error {
 	c.edited = what
-	return nil
+	return c.editErr
 }
 
 func TestAIPlaylistInitialMenuKeepsCancelAndShortResumeCallbacks(t *testing.T) {
@@ -56,10 +58,45 @@ func TestAIPlaylistInitialMenuKeepsCancelAndShortResumeCallbacks(t *testing.T) {
 	if !strings.HasSuffix(resume.Data, "|0") {
 		t.Fatalf("resume callback should carry a short session index, got %q", resume.Data)
 	}
+	assertTelegramButtons(t, markup)
+}
+
+func TestAIPlaylistThemeKeyboardFitsTelegramCallbackLimit(t *testing.T) {
+	session := pendingAIPlaylistSession{
+		token:  strings.Repeat("a", 32),
+		target: aiPlaylist{ID: "playlist", Name: "[AI] 夜间", Description: "安静", SongCount: 12},
+	}
+	markup := aiPlaylistSessionMarkup(session)
+	assertTelegramButtons(t, markup)
+	found := false
 	for _, row := range markup.InlineKeyboard {
 		for _, button := range row {
-			if button.Unique != aiPlaylistCallbackUnique || len(button.Data) > 64 {
-				t.Errorf("invalid callback button: %#v (data bytes=%d)", button, len(button.Data))
+			if strings.HasSuffix(button.Data, "|inst") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("instrumental theme callback was not shortened")
+	}
+}
+
+func assertTelegramButtons(t *testing.T, markup *tb.ReplyMarkup) {
+	t.Helper()
+	if markup == nil {
+		t.Fatal("missing keyboard")
+	}
+	for _, row := range markup.InlineKeyboard {
+		for _, button := range row {
+			if button.URL != "" {
+				continue
+			}
+			wire := "\f" + button.Unique + "|" + button.Data
+			if len(wire) == 0 || len(wire) > 64 {
+				t.Errorf("callback_data is %d bytes, Telegram allows 1-64: %q", len(wire), wire)
+			}
+			if n := len([]rune(button.Text)); n == 0 || n > 64 {
+				t.Errorf("button text is %d characters, Telegram allows 1-64: %q", n, button.Text)
 			}
 		}
 	}
@@ -212,6 +249,35 @@ func TestAIPlaylistRejectsUnauthorizedAndMismatchedCallbacks(t *testing.T) {
 				t.Fatal("rejected callback consumed the session")
 			}
 		})
+	}
+}
+
+func TestSelectingPlaylistRollsBackWhenTelegramRejectsTheKeyboard(t *testing.T) {
+	app := &BotApp{}
+	message := &tb.Message{ID: 42, Chat: &tb.Chat{ID: 10}}
+	if !app.registerAIPlaylistSession(pendingAIPlaylistSession{
+		token:     "token",
+		userID:    20,
+		chatID:    10,
+		message:   message,
+		playlists: []aiPlaylist{{ID: "playlist-1", Name: "[AI] 夜间"}},
+		expiresAt: time.Now().Add(time.Minute),
+	}) {
+		t.Fatal("failed to register")
+	}
+	ctx := &aiPlaylistInteractionTestContext{
+		args:     []string{"select", "token", "0"},
+		sender:   &tb.User{ID: 20},
+		callback: &tb.Callback{Message: message},
+		chat:     message.Chat,
+		editErr:  errors.New("telegram: BUTTON_DATA_INVALID (400)"),
+	}
+	if err := app.HandleAIPlaylistCallback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	session, ok := app.getAIPlaylistSession("token")
+	if !ok || session.target.ID != "" {
+		t.Fatalf("rejected keyboard left the session selected: %#v", session.target)
 	}
 }
 

@@ -39,7 +39,7 @@
       </n-alert>
       <n-alert v-if="pendingUploads.length > 0" type="warning" :show-icon="false">
         <div class="pending-heading">
-          <span>NAS 暂不可用，{{ pendingUploads.length }} 个文件已安全保存在本地，网络恢复后会自动补传。</span>
+          <span>{{ pendingUploads.length }} 个文件还在本地待上传队列，会自动补传。</span>
           <n-button size="tiny" @click="refreshPending">刷新</n-button>
         </div>
         <ul class="pending-list">
@@ -56,9 +56,10 @@
         </n-space>
       </n-alert>
       <n-data-table
-        v-if="entries.length > 0 || (!loadError && loading)"
+        v-if="filteredEntries.length > 0 || ((loading || searching) && !loadError)"
         :columns="columns"
         :data="visibleEntries"
+        :loading="loading || searching"
         :bordered="false"
         :row-key="(row: FileEntry) => row.path"
         :scroll-x="1120"
@@ -67,12 +68,13 @@
         <n-pagination v-model:page="filePage" :page-size="filePageSize" :item-count="filteredEntries.length" />
       </div>
       <n-empty
-        v-else-if="!loadError"
+        v-if="!loading && !searching && !loadError && filteredEntries.length === 0"
         style="margin-top: 44px"
-        :description="appliedQuery ? '当前目录及其子目录没有匹配的音频文件' : (currentPath ? '此目录为空' : '整理目录为空')"
+        :description="emptyDescription"
       >
         <template #extra>
-          <n-button v-if="appliedQuery" size="small" @click="clearSearch">清除搜索条件</n-button>
+          <n-button v-if="quickFilter !== 'all' && entries.length > 0" size="small" @click="setQuickFilter('all')">查看全部</n-button>
+          <n-button v-else-if="appliedQuery" size="small" @click="clearSearch">清除搜索条件</n-button>
           <n-button v-else-if="!currentPath" size="small" type="primary" @click="$router.push('/search')">去搜索下载</n-button>
         </template>
       </n-empty>
@@ -115,6 +117,8 @@ import { listFiles, getFileStreamUrl, deleteFile, getPendingWebDAVUploads } from
 import PageHeading from '../components/PageHeading.vue'
 import type { FileEntry, PendingWebDAVUpload } from '../types'
 
+defineOptions({ name: 'Files' })
+
 const message = useMessage()
 const loading = ref(true)
 const searching = ref(false)
@@ -137,6 +141,9 @@ const pendingUploads = ref<PendingWebDAVUpload[]>([])
 const maxResults = 5000
 const quickFilter = ref<'all' | 'recent' | 'lossless' | 'large'>('all')
 const lastPathKey = 'gymdl_files_path'
+const loadedAt = ref(0)
+const loadedKey = ref('')
+const fileFreshMs = 30_000
 const previewOpen = ref(false)
 const audioElement = ref<HTMLAudioElement | null>(null)
 const selectedFile = ref<FileEntry | null>(null)
@@ -148,12 +155,27 @@ const fieldOptions = [
   { label: '歌手', value: 'artist' },
   { label: '专辑', value: 'album' },
 ]
-const audioEntries = computed(() => entries.value.filter((entry) => !entry.is_dir))
+const libraryStats = computed(() => {
+  let audio = 0
+  let recent = 0
+  let lossless = 0
+  let large = 0
+  let size = 0
+  for (const entry of entries.value) {
+    if (entry.is_dir) continue
+    audio++
+    size += entry.size
+    if (isRecent(entry)) recent++
+    if (isLossless(entry)) lossless++
+    if (entry.size > 30 * 1024 * 1024) large++
+  }
+  return { audio, recent, lossless, large, size }
+})
 const quickFilters = computed(() => [
-  { label: '全部', value: 'all' as const, count: audioEntries.value.length },
-  { label: '最近 7 天', value: 'recent' as const, count: audioEntries.value.filter(isRecent).length },
-  { label: '无损', value: 'lossless' as const, count: audioEntries.value.filter(isLossless).length },
-  { label: '大于 30 MB', value: 'large' as const, count: audioEntries.value.filter((entry) => entry.size > 30 * 1024 * 1024).length },
+  { label: '全部', value: 'all' as const, count: libraryStats.value.audio },
+  { label: '最近 7 天', value: 'recent' as const, count: libraryStats.value.recent },
+  { label: '无损', value: 'lossless' as const, count: libraryStats.value.lossless },
+  { label: '大于 30 MB', value: 'large' as const, count: libraryStats.value.large },
 ])
 const filteredEntries = computed(() => {
   if (quickFilter.value === 'all') return entries.value
@@ -165,10 +187,14 @@ const filteredEntries = computed(() => {
   })
 })
 const summaryText = computed(() => {
-  const total = audioEntries.value.length
-  if (!total) return '当前目录暂无音频'
-  const size = audioEntries.value.reduce((sum, entry) => sum + entry.size, 0)
-  return `${total} 首 · ${formatSize(size)}`
+  const { audio, size } = libraryStats.value
+  if (!audio) return '当前目录暂无音频'
+  return `${audio} 首 · ${formatSize(size)}`
+})
+const emptyDescription = computed(() => {
+  if (quickFilter.value !== 'all' && entries.value.length > 0) return '这个筛选下没有文件'
+  if (appliedQuery.value) return '当前目录及其子目录没有匹配的音频文件'
+  return currentPath.value ? '此目录为空' : '整理目录为空'
 })
 
 const parentPath = computed(() => {
@@ -194,6 +220,9 @@ function isRecent(entry: FileEntry) {
 }
 function isLossless(entry: FileEntry) {
   return ['.flac', '.wav', '.alac', '.ape'].includes(entry.ext.toLowerCase())
+}
+function browseKey(path: string) {
+  return `${path.replace(/^\/+|\/+$/g, '')}|${appliedQuery.value}|${appliedField.value}`
 }
 function setQuickFilter(value: 'all' | 'recent' | 'lossless' | 'large') {
   quickFilter.value = value
@@ -266,6 +295,8 @@ async function load(path = '/', options: { showPageLoading?: boolean; preserveEn
       localStorage.setItem(lastPathKey, currentPath.value || '/')
       target.value = response.data.target || 'local'
       truncated.value = !!response.data.truncated
+      loadedAt.value = Date.now()
+      loadedKey.value = browseKey(currentPath.value)
       return true
     } else {
       if (!options.preserveEntriesOnError) entries.value = []
@@ -339,7 +370,9 @@ async function refreshPending() {
 
 onActivated(() => {
   const remembered = currentPath.value || localStorage.getItem(lastPathKey) || '/'
-  void load(remembered)
+  const key = browseKey(currentPath.value || remembered)
+  const fresh = entries.value.length > 0 && loadedKey.value === key && Date.now() - loadedAt.value < fileFreshMs
+  if (!fresh) void load(remembered)
   void refreshPending()
 })
 onDeactivated(deactivateFiles)
@@ -349,14 +382,14 @@ onDeactivated(deactivateFiles)
 .files-page { max-width: 1480px; margin: 0 auto; }
 .file-pagination { display: flex; justify-content: flex-end; margin-top: 14px; }
 .path-toolbar { display: flex; align-items: center; gap: 10px; min-height: 32px; }
-.path-chip { color: #7e8985; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; overflow-wrap: anywhere; }
-.search-card { background: rgba(23,27,32,.75); }
+.path-chip { padding: 4px 10px; border: 1px solid rgba(186,206,198,.14); border-radius: 999px; color: #9aa8a2; background: rgba(16,22,26,.42); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; overflow-wrap: anywhere; }
+.search-card { background: transparent; }
 .library-search { width: min(100%, 520px); }
 .field-select { width: 130px; }
 .search-hint { margin-top: 10px; color: #788580; font-size: 11px; }
 .search-hint strong { color: #b8c8c1; font-weight: 500; }
 .quick-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 2px 0; }
-.quick-filter { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 11px; border: 1px solid rgba(171,190,184,.14); border-radius: 999px; color: #8c9a94; background: rgba(20,24,29,.7); font-size: 11px; cursor: pointer; transition: color .18s, border-color .18s, background .18s, transform .18s; }
+.quick-filter { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 4px 11px; border: 1px solid rgba(171,190,184,.16); border-radius: 999px; color: #8c9a94; background: rgba(16,22,26,.4); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); font-size: 11px; cursor: pointer; transition: color .22s var(--ease, ease), border-color .22s var(--ease, ease), background .22s var(--ease, ease), transform .22s var(--ease, ease); }
 .quick-filter:hover { color: #d5e5df; border-color: rgba(99,226,183,.35); transform: translateY(-1px); }
 .quick-filter.active { color: #06140f; border-color: #63e2b7; background: #63e2b7; }
 .quick-count { min-width: 16px; padding: 0 5px; border-radius: 999px; background: rgba(255,255,255,.1); font-size: 9px; line-height: 16px; text-align: center; }
@@ -376,6 +409,9 @@ onDeactivated(deactivateFiles)
 .preview-name { margin: 0; color: #edf4f1; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 .preview-subtitle { margin: 7px 0 20px; color: #7d8984; font-size: 10px; letter-spacing: .12em; }
 .audio-player { width: 100%; height: 42px; }
+@media (prefers-reduced-motion: reduce) {
+  .quick-filter:hover { transform: none; }
+}
 @media (max-width: 700px) {
   .library-search { width: 100%; }
   .field-select { width: 100%; }

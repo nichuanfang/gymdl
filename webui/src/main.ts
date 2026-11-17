@@ -11,9 +11,14 @@ const router = createRouter({
     { path: '/files', component: () => import('./views/Files.vue') },
     { path: '/settings', component: () => import('./views/Settings.vue') },
     { path: '/logs', component: () => import('./views/Logs.vue') },
+    { path: '/cron', component: () => import('./views/Cron.vue') },
     { path: '/qqlogin', component: () => import('./views/QQLogin.vue') },
     { path: '/search', component: () => import('./views/Search.vue') },
     { path: '/listening', component: () => import('./views/Listening.vue') },
+    { path: '/rediscover', component: () => import('./views/Rediscover.vue') },
+    { path: '/playlist-desc', component: () => import('./views/PlaylistDesc.vue') },
+    { path: '/ai-playlist', component: () => import('./views/AIPlaylist.vue') },
+    { path: '/duplicates', component: () => import('./views/Duplicates.vue') },
   ],
 })
 

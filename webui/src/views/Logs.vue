@@ -231,6 +231,12 @@ async function pollLogs(currentGeneration: number) {
       signal: requestController.signal,
       cache: 'no-store',
     })
+    if (response.status === 401) {
+      window.dispatchEvent(new CustomEvent('gymdl:unauthorized'))
+      connecting.value = false
+      connected.value = false
+      return
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
     const result = await response.json() as ApiResponse<LogPage>

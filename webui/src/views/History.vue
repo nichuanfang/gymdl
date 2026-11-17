@@ -198,5 +198,5 @@ onUnmounted(deactivateHistory)
 <style scoped>
 .history-page { max-width: 1440px; margin: 0 auto; }
 .total-count { color: #7b8882; font-size: 12px; }
-.filter-card { margin-bottom: 14px; background: rgba(23,27,32,.75); }
+.filter-card { margin-bottom: 14px; background: transparent; }
 </style>

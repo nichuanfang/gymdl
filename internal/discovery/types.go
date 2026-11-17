@@ -28,6 +28,9 @@ type Track struct {
 	// Verified means metadata identifies one music recording, not a video title/uploader.
 	Verified bool `json:"verified"`
 	Approved bool `json:"approved,omitempty"`
+	// CardAction is only for a saved recommendation card: "queued" or "dismissed".
+	// Clear it before enqueueing the track.
+	CardAction string `json:"card_action,omitempty"`
 }
 
 func Normalize(s string) string {
@@ -103,6 +106,12 @@ type Card struct {
 	Tracks   []Track
 	Snapshot *Snapshot
 	Expires  int64
+	// SkippedOwned is how many distinct library works were left off this card.
+	SkippedOwned int `json:"skipped_owned,omitempty"`
+	// Unconfirmed is how many distinct works had no single version on the chosen platform.
+	Unconfirmed int `json:"unconfirmed,omitempty"`
+	// Requested is the 3, 6, or 9 the user asked for.
+	Requested int `json:"requested,omitempty"`
 }
 
 const (

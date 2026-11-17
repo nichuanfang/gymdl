@@ -26,7 +26,21 @@ func LoadHistory(ctx context.Context, dsn, table string) ([]Track, error) {
 		return nil, fmt.Errorf("无法打开收听历史")
 	}
 	defer db.Close()
-	rows, err := db.QueryContext(ctx, `SELECT name,artist,COALESCE(MAX(album),''),count(*),MAX(date::timestamptz) FROM `+table+` WHERE COALESCE(name,'')<>'' AND COALESCE(artist,'')<>'' GROUP BY name,artist ORDER BY count(*) DESC,name,artist LIMIT 20001`)
+	// The album is the one this title/artist was scrobbled with most often.
+	// MAX(album) used to pick the lexicographic name, so a single stray album
+	// tag replaced the real one. Plays stay the total across albums.
+	rows, err := db.QueryContext(ctx, `WITH albums AS (
+  SELECT name, artist, COALESCE(album, '') AS album, count(*) AS album_plays, MAX(date::timestamptz) AS album_last
+  FROM `+table+` WHERE COALESCE(name, '') <> '' AND COALESCE(artist, '') <> ''
+  GROUP BY name, artist, COALESCE(album, '')
+), picked AS (
+  SELECT name, artist, album,
+         SUM(album_plays) OVER (PARTITION BY name, artist) AS plays,
+         MAX(album_last) OVER (PARTITION BY name, artist) AS last_played,
+         row_number() OVER (PARTITION BY name, artist ORDER BY album_plays DESC, album) AS rn
+  FROM albums
+)
+SELECT name, artist, album, plays, last_played FROM picked WHERE rn = 1 ORDER BY plays DESC, name, artist LIMIT 20001`)
 	if err != nil {
 		return nil, fmt.Errorf("收听历史不可用，请检查连接及表结构")
 	}
@@ -34,9 +48,11 @@ func LoadHistory(ctx context.Context, dsn, table string) ([]Track, error) {
 	var out []Track
 	for rows.Next() {
 		var t Track
-		if err = rows.Scan(&t.Title, &t.Artist, &t.Album, &t.Plays, &t.LastPlayed); err != nil {
+		var plays int64
+		if err = rows.Scan(&t.Title, &t.Artist, &t.Album, &plays, &t.LastPlayed); err != nil {
 			return nil, fmt.Errorf("收听历史数据无法读取")
 		}
+		t.Plays = int(plays)
 		out = append(out, t)
 	}
 	if rows.Err() != nil {

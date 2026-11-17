@@ -12,6 +12,7 @@ import (
 	"github.com/nichuanfang/gymdl/internal/discovery"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
 	"github.com/nichuanfang/gymdl/internal/musicdedupe"
+	"github.com/nichuanfang/gymdl/internal/playlistcatalog"
 	"github.com/nichuanfang/gymdl/utils"
 	"go.uber.org/zap"
 	tb "gopkg.in/telebot.v4"
@@ -56,6 +57,12 @@ type BotApp struct {
 	emptyTrashMu               sync.Mutex
 	emptyTrashRunning          map[int64]struct{}
 	emptyTrashPending          map[string]pendingEmptyTrash
+	playlistCatalog            *playlistcatalog.Store
+	playlistDescMu             sync.Mutex
+	playlistDescSessions       map[string]pendingPlaylistDesc
+	playlistDescByChat         map[int64]string
+	webAIPreviewMu             sync.Mutex
+	webAIPreviews              map[string]webAIPreview
 }
 
 type aiTurnLockEntry struct {
@@ -141,6 +148,8 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 	web.SetPlaylistAssignmentSelectionHandler(app.HandlePlaylistAssignmentWebAppSelection)
 	app.initAI()
 	app.initDiscovery()
+	app.initPlaylistCatalog()
+	app.registerWebStudio()
 	//注册处理器
 	app.registerHandlers()
 	// Publish the menu once at startup. Telegram stores it per bot, so doing it
