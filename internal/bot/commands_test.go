@@ -78,23 +78,16 @@ func TestEveryMenuCommandHasHandler(t *testing.T) {
 	}
 }
 
-// Menu compactness must not silently remove frequently used control actions.
-func TestBotCommandsKeepDailyActionsAndPutMaintenanceLast(t *testing.T) {
-	positions := map[string]int{}
-	for i, cmd := range botCommands() {
-		positions[cmd.Text] = i
+// Preserve the user's chosen menu order and all daily control actions.
+func TestBotCommandsKeepUserPreferredOrder(t *testing.T) {
+	want := []string{"ai", "mode", "clear", "assign_playlist", "ai_playlist", "rediscover", "favorites", "qq_login", "empty_trash", "help"}
+	commands := botCommands()
+	if len(commands) != len(want) {
+		t.Fatalf("got %d commands, want %d", len(commands), len(want))
 	}
-	for _, name := range []string{"ai", "rediscover", "ai_playlist", "assign_playlist", "favorites", "mode", "clear", "qq_login", "help", "empty_trash"} {
-		if _, ok := positions[name]; !ok {
-			t.Fatalf("daily/menu action /%s disappeared", name)
+	for i, name := range want {
+		if commands[i].Text != name {
+			t.Errorf("menu position %d: got /%s, want /%s", i+1, commands[i].Text, name)
 		}
-	}
-	for _, pair := range [][2]string{{"ai", "rediscover"}, {"rediscover", "favorites"}, {"ai_playlist", "favorites"}, {"assign_playlist", "favorites"}, {"favorites", "mode"}, {"mode", "clear"}, {"clear", "qq_login"}, {"qq_login", "help"}, {"help", "empty_trash"}} {
-		if positions[pair[0]] >= positions[pair[1]] {
-			t.Errorf("/%s should precede /%s", pair[0], pair[1])
-		}
-	}
-	if positions["empty_trash"] != len(botCommands())-1 {
-		t.Fatal("destructive maintenance should be last")
 	}
 }

@@ -315,21 +315,21 @@ func qqCredentialValue(raw json.RawMessage) (string, error) {
 
 /* ------------------------ 初始化指令集 ------------------------ */
 
-// botCommands 是 / 菜单的唯一来源。常用找歌、歌单入口靠前，
-// 设置、账号、帮助和维护操作靠后。保留常用控制指令，不为条目数量隐藏它们。
+// botCommands 是 / 菜单的唯一来源。按用户指定的常用顺序排列，
+// 找歌与对话控制在前，其后是歌单、遗珠、同步、账号维护及帮助。
 // /start 由 Start 按钮进入；/new 是 /clear 别名；内部菜单刷新和低频状态指令见帮助。
 func botCommands() []tb.Command {
 	return []tb.Command{
 		{Text: "ai", Description: "对话找歌"},
-		{Text: "rediscover", Description: "找回遗珠"},
-		{Text: "ai_playlist", Description: "生成歌单"},
-		{Text: "assign_playlist", Description: "整理歌单"},
-		{Text: "favorites", Description: "收藏同步"},
 		{Text: "mode", Description: "切换模式"},
 		{Text: "clear", Description: "清空对话"},
+		{Text: "assign_playlist", Description: "整理歌单"},
+		{Text: "ai_playlist", Description: "生成歌单"},
+		{Text: "rediscover", Description: "找回遗珠"},
+		{Text: "favorites", Description: "收藏同步"},
 		{Text: "qq_login", Description: "QQ 登录"},
-		{Text: "help", Description: "使用帮助"},
 		{Text: "empty_trash", Description: "清空回收站"},
+		{Text: "help", Description: "使用帮助"},
 	}
 }
 
