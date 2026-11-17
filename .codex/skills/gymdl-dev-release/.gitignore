@@ -1,0 +1,4 @@
+# Parent rules ignore YAML; keep this skill's UI metadata available to Git.
+!agents/openai.yaml
+__pycache__/
+*.py[cod]

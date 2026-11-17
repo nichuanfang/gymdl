@@ -9,14 +9,14 @@ import (
 
 // Telegram caps command descriptions at 256 chars, but on a phone the "/" menu
 // only shows about 20 CJK characters before truncating. Keep every entry short
-// so the menu stays one screen and stays tappable.
+// so entries stay readable even when the complete menu needs scrolling.
 func TestBotCommandsFitPhoneMenu(t *testing.T) {
 	commands := botCommands()
 	if len(commands) == 0 {
 		t.Fatal("command menu is empty")
 	}
-	if len(commands) > 7 {
-		t.Fatalf("%d commands will scroll off a phone screen", len(commands))
+	if len(commands) > 100 {
+		t.Fatalf("%d commands exceeds Telegram's limit", len(commands))
 	}
 	seen := make(map[string]bool, len(commands))
 	for _, cmd := range commands {
@@ -75,5 +75,26 @@ func TestEveryMenuCommandHasHandler(t *testing.T) {
 		if !registered[cmd.Text] {
 			t.Errorf("/%s is in the menu but has no handler", cmd.Text)
 		}
+	}
+}
+
+// Menu compactness must not silently remove frequently used control actions.
+func TestBotCommandsKeepDailyActionsAndPutMaintenanceLast(t *testing.T) {
+	positions := map[string]int{}
+	for i, cmd := range botCommands() {
+		positions[cmd.Text] = i
+	}
+	for _, name := range []string{"ai", "rediscover", "ai_playlist", "assign_playlist", "favorites", "mode", "clear", "qq_login", "help", "empty_trash"} {
+		if _, ok := positions[name]; !ok {
+			t.Fatalf("daily/menu action /%s disappeared", name)
+		}
+	}
+	for _, pair := range [][2]string{{"ai", "rediscover"}, {"rediscover", "favorites"}, {"ai_playlist", "favorites"}, {"assign_playlist", "favorites"}, {"favorites", "mode"}, {"mode", "clear"}, {"clear", "qq_login"}, {"qq_login", "help"}, {"help", "empty_trash"}} {
+		if positions[pair[0]] >= positions[pair[1]] {
+			t.Errorf("/%s should precede /%s", pair[0], pair[1])
+		}
+	}
+	if positions["empty_trash"] != len(botCommands())-1 {
+		t.Fatal("destructive maintenance should be last")
 	}
 }

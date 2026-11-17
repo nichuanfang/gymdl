@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gymdl 开发与上线"
+  short_description: "在 gymdl 项目执行省磁盘、可持续迭代的开发测试与 CI/CD 上线流程"
+  default_prompt: "使用 $gymdl-dev-release 完成当前 gymdl 任务，按授权范围开发、测试和上线，并控制磁盘占用。"
