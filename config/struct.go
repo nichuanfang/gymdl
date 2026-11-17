@@ -22,6 +22,8 @@ type Config struct {
 	// 歌单整理
 	PlaylistOrganizer *PlaylistOrganizerConfig `yaml:"playlist_organizer"` // 歌单整理与 Navidrome / OliveTin 连接
 
+	Favorites *FavoritesConfig `yaml:"favorites"` // 收藏自动入库与遗珠找回
+
 	// AI 功能
 	AI         *AIConfig         `yaml:"ai"`          // AI 助手配置
 	AIPlaylist *AIPlaylistConfig `yaml:"ai_playlist"` // AI 智能歌单配置
@@ -194,4 +196,11 @@ type ProxyConfig struct {
 	User   string `yaml:"user"`   // 代理用户名
 	Pass   string `yaml:"pass"`   // 代理密码
 	Auth   bool   `yaml:"auth"`   // 是否需要认证
+}
+
+// FavoritesConfig controls background polling; binding still requires a preview.
+type FavoritesConfig struct {
+	Enable                 bool `yaml:"enable"`                   // 是否启用已绑定账号的新增收藏自动同步
+	PollIntervalMinutes    int  `yaml:"poll_interval_minutes"`    // 收藏轮询间隔（分钟）
+	SummaryIntervalMinutes int  `yaml:"summary_interval_minutes"` // 处理结果汇总间隔（分钟）
 }

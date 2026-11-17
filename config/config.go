@@ -184,6 +184,15 @@ func (c *Config) setDefaults() {
 			Enable: false,
 		}
 	}
+	if c.Favorites == nil {
+		c.Favorites = &FavoritesConfig{}
+	}
+	if c.Favorites.PollIntervalMinutes <= 0 {
+		c.Favorites.PollIntervalMinutes = 10
+	}
+	if c.Favorites.SummaryIntervalMinutes <= 0 {
+		c.Favorites.SummaryIntervalMinutes = 30
+	}
 	if c.AI == nil {
 		c.AI = &AIConfig{
 			Enable:                false,

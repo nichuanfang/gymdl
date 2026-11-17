@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"context"
 	"fmt"
 	"path"
 	"path/filepath"
@@ -21,38 +22,29 @@ func (s *Session) HandleMusic(p music.Processor) error {
 
 	_, _ = bot.Edit(msg, fmt.Sprintf("✅ 已识别【<b>%s</b>】链接\n\n🎵 下载中，请稍候…", p.Name()), tb.ModeHTML)
 
-	// 下载阶段
-	utils.InfoWithFormat("[Telegram] 下载中...")
-	err := p.DownloadMusic(s.Link, func(progress string) {
-		_, _ = bot.Edit(msg, fmt.Sprintf("✅ 已识别【<b>%s</b>】链接\n\n🎵 %s", p.Name(), utils.EscapeHTML(progress)), tb.ModeHTML)
-	})
+	preflightStopped := false
+	_, err := music.RunWorkflowWithHooks(context.Background(), p, s.Link, func(progress string) {
+		_, _ = bot.Edit(msg, fmt.Sprintf("🎵 %s", utils.EscapeHTML(progress)), tb.ModeHTML)
+	}, music.WorkflowHooks{Before: func() error {
+		if s.BeforeDownload != nil {
+			err := s.BeforeDownload()
+			preflightStopped = err != nil
+			return err
+		}
+		return nil
+	}, After: func(songs []*music.SongInfo) error {
+		s.setStoredMusicPaths(songs)
+		if s.OnMusicDownloaded != nil {
+			s.OnMusicDownloaded(songs)
+		}
+		return nil
+	}})
 	if err != nil {
-		utils.ErrorWithFormat("[Telegram] 下载失败: %v", err)
-		_, _ = bot.Edit(msg, fmt.Sprintf("❌ 下载失败：\n<pre>%s</pre>", utils.EscapeHTML(utils.TruncateString(err.Error(), 400))), tb.ModeHTML)
-		return nil
-	}
-
-	// 文件整理 & 处理
-	utils.InfoWithFormat("[Telegram] 下载成功，整理中...")
-	_, _ = bot.Edit(msg, fmt.Sprintf("✅ 已识别【<b>%s</b>】链接\n\n🎵 %s", p.Name(), "整理中…"), tb.ModeHTML)
-	if err = p.BeforeTidy(); err != nil {
-		utils.ErrorWithFormat("[Telegram] 文件处理失败: %v", err)
-		_, _ = bot.Edit(msg, fmt.Sprintf("⚠️ 文件处理阶段出错：\n<pre>%s</pre>", utils.EscapeHTML(utils.TruncateString(err.Error(), 400))), tb.ModeHTML)
-		return nil
-	}
-
-	// 入库
-	utils.InfoWithFormat("[Telegram] 整理成功，开始入库...")
-	_, _ = bot.Edit(msg, fmt.Sprintf("✅ 已识别【<b>%s</b>】链接\n\n🎵 开始入库…", p.Name()), tb.ModeHTML)
-	if err = p.TidyMusic(); err != nil {
-		utils.ErrorWithFormat("[Telegram] 文件入库失败: %v", err)
-		_, _ = bot.Edit(msg, fmt.Sprintf("⚠️ 文件入库失败：\n<pre>%s</pre>", utils.EscapeHTML(utils.TruncateString(err.Error(), 400))), tb.ModeHTML)
-		return nil
-	}
-	songs := nonNilMusicSongs(p.Songs())
-	s.setStoredMusicPaths(songs)
-	if s.OnMusicDownloaded != nil {
-		s.OnMusicDownloaded(songs)
+		if preflightStopped {
+			return err
+		}
+		_, _ = bot.Edit(msg, fmt.Sprintf("❌ %s", utils.EscapeHTML(utils.TruncateString(err.Error(), 400))), tb.ModeHTML)
+		return err
 	}
 
 	// 成功反馈

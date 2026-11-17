@@ -131,6 +131,18 @@ cd webui && npm run dev
 
 默认挂载 8 个音乐技能：`music-recommendation`（按场景/情绪推荐并回查真实单曲）、`music-discovery-by-artist`（按艺人/单曲找相似）、`music-library-query`（查是否已入库、曲库内容）、`music-download-failure`（判断失败环节）、`music-download-plan`（批量下载顺序与风险）、`music-playlist-curation`（主题歌单整理）、`music-lyrics-search`（查歌词/按歌词找歌）、`music-metadata-normalize`（标签规范化）。`ai.enabled_skills` 为空时不会挂载任何技能；部署、运维类技能不要放进这个白名单。
 
+### 找回遗珠与 CarPlay 收藏入库
+
+- **`/rediscover`**：从全部可读取的 Last.fm 历史和已绑定收藏中，找出 Navidrome 实际曲库缺少的歌曲。每批最多 10 首、同艺人最多两首，优先收藏和高频老歌；显示收听次数及最后收听日期。每首提供「试听·平台」按钮，跳转到对应平台歌曲页，便于试听后再选择单首、前三首或全部下载，也可设为不再推荐。换批默认避开最近 30 天已展示的歌曲，下载等操作按钮有效期 30 分钟。
+- **`/favorites`**：在授权私聊中绑定网易云、QQ 和 YouTube 收藏。先用 CookieCloud 登录网易云／YouTube，QQ 使用 `/qq_login`；选择来源后先核对账号和完整收藏数量，确认才建立基线。也可使用 `/favorites bind netease`、`/favorites bind qq`、`/favorites bind youtube`。
+- **首次接入不会批量下载已有收藏**。历史收藏通过“预览历史收藏”进入推荐后选择下载；设置 `favorites.enable: true` 并重启后，后台默认每 10 分钟检查新喜欢。原来的 `/mode`、`/clear` 仍可直接发送，手机菜单优先展示遗珠和收藏入口。
+- CarPlay 中在音乐 App 点“喜欢／收藏”即可触发后续同步，无需分享到 TG；车辆有收藏按钮不代表支持 Siri 语音收藏。YouTube 与 YouTube Music 合并相同视频 ID；普通视频点赞会过滤非音乐内容，身份不明确的歌曲留待确认。
+- 优先原平台下载；跨平台仅接受明确的同歌手、同版本候选。现场、翻唱、混音不自动互换。不确定项可在 `/favorites` 核对原链接后确认或跳过。取消喜欢不删除曲库文件。
+- 来源分页失败、登录失效或账号变化时保留原基线；换账号需重新预览绑定。暂停来源也暂停其未开始的自动任务。登录失效后重新登录，再点恢复；历史快照仍保留。
+- 自动任务串行执行，并与 Bot／WebUI 共用音乐执行锁。状态与基线保存在 `data/gymdl.sqlite3`，重启可恢复；下载后 NAS 离线的任务显示“待上传／待曲库确认”，不提前报告入库成功。临时失败最多重试三次，结果每 30 分钟汇总，无变化不通知。
+- 启用前先执行镜像内的只读检查：`docker exec gymdl ./discovery-check -c config.yaml -platform all`。它只读取历史、曲库和平台收藏，输出连接结果及数量，不建立基线、不下载、不改 SQLite。可将 `all` 改为 `history`、`library`、`netease`、`qq` 或 `youtube` 单独排查。镜像会预装 yt-dlp；本机运行需要先安装 requirements.txt 中的媒体工具。平台拒绝完整读取或未返回稳定账号标识时，该来源会明确报错，不能以空收藏建立基线。
+
+
 ---
 
 ## ⚙️ 快速开始
@@ -269,8 +281,13 @@ playlist_organizer:
   playlist_assist: false # 是否使用 AI 为歌单整理预选分类
   # 歌单列表保存在同目录的 config.playlists.yaml，示例见 config.playlists.example.yaml
 
-# AI 能力
-# AI 配置
+# 收藏自动入库与遗珠找回
+favorites:
+  enable: false # 先通过 /favorites 预览并绑定，再开启新增收藏自动入库
+  poll_interval_minutes: 10 # 收藏轮询间隔（分钟）
+  summary_interval_minutes: 30 # 处理结果汇总间隔（分钟）
+
+# AI 助手配置
 ai:
   enable: false # 是否启用 AI 功能
   base_url: '' # AI 接口的 Base URL

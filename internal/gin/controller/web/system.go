@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -335,6 +336,8 @@ func credentialString(credential map[string]interface{}, keys ...string) string 
 		switch typed := value.(type) {
 		case string:
 			return strings.TrimSpace(typed)
+		case json.Number:
+			return typed.String()
 		case float64:
 			return strconv.FormatInt(int64(typed), 10)
 		case int, int32, int64, uint, uint32, uint64:
@@ -348,6 +351,13 @@ func credentialInt(credential map[string]interface{}, keys ...string) (int, bool
 	for _, key := range keys {
 		value, ok := credential[key]
 		if !ok || value == nil {
+			continue
+		}
+		if number, ok := value.(json.Number); ok {
+			n, err := strconv.Atoi(number.String())
+			if err == nil {
+				return n, true
+			}
 			continue
 		}
 		if numeric, ok := numericConfigValue(value); ok {

@@ -363,7 +363,7 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 	}
 	utils.DebugWithFormat("[QQMusic] 下载链接: %s", songUrl)
 
-	sanitizeFileName := qm.safeFileName(songData.Title, songData.Singer[0].Name, fileMetadata.Ext)
+	sanitizeFileName := qm.safeFileName(songData.Title, qqSongArtists(songData), fileMetadata.Ext)
 	tempPath := filepath.Join(qm.tempDir, sanitizeFileName)
 	utils.InfoWithFormat("[QQMusic] ⬇️ 开始下载文件: %s", tempPath)
 
@@ -378,7 +378,7 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 		defer wg.Done()
 		coverUrl = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", songData.Album.Pmid)
 		// 下载封面
-		tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, songData.Singer[0].Name))
+		tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, qqSongArtists(songData)))
 		utils.DebugWithFormat("[QQMusic] ⬇️ 下载封面: %s", tempCoverPath)
 		coverErr = utils.DownloadFile(qmApi.downloadClient, coverUrl, tempCoverPath)
 	}()
@@ -496,7 +496,7 @@ func (qmApi *QQMusicAPI) downloadPlaylistSong(qm *QQMusicProcessor, songData QQS
 		return err
 	}
 
-	sanitizeFileName := qm.safeFileName(songData.Title, songData.Singer[0].Name, fileMetadata.Ext)
+	sanitizeFileName := qm.safeFileName(songData.Title, qqSongArtists(songData), fileMetadata.Ext)
 	tempPath := filepath.Join(qm.tempDir, sanitizeFileName)
 
 	// 并发下载封面和歌词
@@ -515,7 +515,7 @@ func (qmApi *QQMusicAPI) downloadPlaylistSong(qm *QQMusicProcessor, songData QQS
 		// 下载封面
 		defer wg.Done()
 		var coverUrl = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", songData.Album.Pmid)
-		tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, songData.Singer[0].Name))
+		tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, qqSongArtists(songData)))
 		coverErr = utils.DownloadFile(qmApi.downloadClient, coverUrl, tempCoverPath)
 	}()
 
@@ -726,7 +726,7 @@ func (qmApi *QQMusicAPI) updateSongInfo(qm *QQMusicProcessor, data QQSong, fileM
 	// 组装元信息
 	songInfo := &SongInfo{
 		SongName:        data.Title,
-		SongArtists:     data.Singer[0].Name,
+		SongArtists:     qqSongArtists(data),
 		SongAlbum:       data.Album.Name,
 		SongAlbumArtist: data.Singer[0].Name,
 		Year:            utils.ParseQQYear(data.TimePublic),
@@ -1117,13 +1117,26 @@ func ResolveQQSingleMetadata(cfg *config.Config, rawURL string) (*SongInfo, erro
 	}
 	info := &SongInfo{
 		SongName:    song.Title,
-		SongArtists: song.Singer[0].Name,
+		SongArtists: qqSongArtists(song),
 		SongAlbum:   song.Album.Name,
 		FileExt:     metadata.Ext,
 		MusicSize:   metadata.MusicSize,
+		Duration:    song.Interval,
 	}
 	if info.SongName == "" || info.SongArtists == "" || info.SongAlbum == "" || info.FileExt == "" {
 		return nil, errors.New("QQ 音乐歌曲元数据不完整，无法确认是否重复")
 	}
 	return info, nil
+}
+
+// qqSongArtists preserves duet/featured artists consistently in preflight,
+// temporary filenames and final tags.
+func qqSongArtists(song QQSong) string {
+	names := make([]string, 0, len(song.Singer))
+	for _, artist := range song.Singer {
+		if strings.TrimSpace(artist.Name) != "" {
+			names = append(names, utils.ToSimpleChinese(artist.Name))
+		}
+	}
+	return strings.Join(names, " / ")
 }

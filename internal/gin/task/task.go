@@ -1,6 +1,7 @@
 package task
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sync"
@@ -206,24 +207,10 @@ func (tm *TaskManager) runTask(task *Task, executor processor.Processor, cfg *co
 func (tm *TaskManager) execMusicTask(task *Task, p music.Processor) {
 	tm.updateTask(task.ID, func(t *Task) { t.Status = TaskStatusRunning })
 
-	err := p.DownloadMusic(task.URL, func(progress string) {
+	_, err := music.RunWorkflow(context.Background(), p, task.URL, func(progress string) {
 		tm.updateTask(task.ID, func(t *Task) { t.Progress = progress })
 	})
-	if err != nil {
-		tm.finishWithError(task.ID, err)
-		return
-	}
-
-	if err = p.BeforeTidy(); err != nil {
-		tm.finishWithError(task.ID, err)
-		return
-	}
-
-	if err = p.TidyMusic(); err != nil {
-		tm.finishMusicTask(task.ID, p, err)
-		return
-	}
-	tm.finishMusicTask(task.ID, p, nil)
+	tm.finishMusicTask(task.ID, p, err)
 }
 
 // execVideoTask 执行视频下载任务

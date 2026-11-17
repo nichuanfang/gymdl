@@ -68,3 +68,17 @@ func TestQQApiResponseSupportsCurrentErrorMessage(t *testing.T) {
 		t.Fatalf("error message = %q", got)
 	}
 }
+
+func TestQQDuetArtistsAgreeAcrossPreflightAndFilenames(t *testing.T) {
+	var song QQSong
+	if err := json.Unmarshal([]byte(`{"title":"Song","singer":[{"name":"甲"},{"name":"乙"}],"album":{"name":"Album"}}`), &song); err != nil {
+		t.Fatal(err)
+	}
+	if got := qqSongArtists(song); got != "甲 / 乙" {
+		t.Fatal("duet lost credited artist", got)
+	}
+	p := &QQMusicProcessor{}
+	if p.safeFileName(song.Title, qqSongArtists(song), "flac") == p.safeFileName(song.Title, song.Singer[0].Name, "flac") {
+		t.Fatal("duet filename collapsed into solo recording")
+	}
+}

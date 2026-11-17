@@ -53,6 +53,8 @@ func HelpCommand(c tb.Context) error {
 <b>歌单</b>
 /assign_playlist 为新歌选择目标歌单
 /ai_playlist 预览后创建或更新 AI 歌单
+/rediscover 找回听过或收藏过、当前曲库缺少的歌曲
+/favorites 管理平台收藏自动入库
 /empty_trash 预览并确认清理 AI 曲库数据
 
 <b>账号</b>
@@ -319,8 +321,8 @@ func qqCredentialValue(raw json.RawMessage) (string, error) {
 func botCommands() []tb.Command {
 	return []tb.Command{
 		{Text: "ai", Description: "对话找歌"},
-		{Text: "mode", Description: "切换模式"},
-		{Text: "clear", Description: "清空对话"},
+		{Text: "rediscover", Description: "找回遗珠"},
+		{Text: "favorites", Description: "收藏同步"},
 		{Text: "assign_playlist", Description: "整理歌单"},
 		{Text: "ai_playlist", Description: "生成歌单"},
 		{Text: "empty_trash", Description: "清空回收站"},

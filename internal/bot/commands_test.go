@@ -64,7 +64,7 @@ func TestQQCredentialMessageEscapesSecretsAndRejectsIncompletePayloads(t *testin
 // except /start which Telegram shows as its own Start button.
 func TestEveryMenuCommandHasHandler(t *testing.T) {
 	registered := map[string]bool{
-		"start": true, "help": true, "mode": true, "ai": true,
+		"rediscover": true, "favorites": true, "start": true, "help": true, "mode": true, "ai": true,
 		"clear": true, "new": true, "assign_playlist": true,
 		"ai_playlist": true, "empty_trash": true, "qq_login": true,
 	}

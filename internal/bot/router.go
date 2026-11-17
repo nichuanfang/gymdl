@@ -26,6 +26,10 @@ func (app *BotApp) registerHandlers() {
 	// AI智能歌单
 	app.bot.Handle("/ai_playlist", app.AIPlaylistCommand)
 
+	app.bot.Handle("/rediscover", app.RediscoverCommand)
+	app.bot.Handle("/favorites", app.FavoritesCommand)
+	app.bot.Handle(&discoveryEndpoint, app.HandleDiscoveryCallback)
+
 	// AI 模式切换
 	app.bot.Handle("/mode", app.AIModeCommand)
 	app.bot.Handle("/ai", app.AICommand)

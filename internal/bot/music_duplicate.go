@@ -86,6 +86,20 @@ func (app *BotApp) handleMusicWithDuplicateCheck(session *dispatch.Session, p mu
 		return errDuplicateConfirmationPending
 	}
 
+	session.BeforeDownload = func() error {
+		match, err := app.musicDedupe.FindDuplicate(context.Background(), track)
+		if err != nil {
+			return errMusicDedupeUnavailable
+		}
+		if match != nil {
+			if err = app.askDuplicateConfirmation(session, track, *match, reservationKey); err != nil {
+				return err
+			}
+			reserved = false
+			return errDuplicateConfirmationPending
+		}
+		return nil
+	}
 	app.attachDownloadRecorder(session, p.Name(), track)
 	return session.HandleMusic(p)
 }

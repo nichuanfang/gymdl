@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/internal/aichat"
+	"github.com/nichuanfang/gymdl/internal/discovery"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
 	"github.com/nichuanfang/gymdl/internal/musicdedupe"
 	"github.com/nichuanfang/gymdl/utils"
@@ -21,6 +23,10 @@ var (
 )
 
 type BotApp struct {
+	discovery                  *discovery.Service
+	discoveryCancel            context.CancelFunc
+	discoveryDone              chan struct{}
+	discoveryCommandMu         sync.Mutex
 	bot                        *tb.Bot
 	cfg                        *config.Config
 	musicDedupe                *musicdedupe.Store
@@ -134,6 +140,7 @@ func NewBotApp(cfg *config.Config) (*BotApp, error) {
 	}
 	web.SetPlaylistAssignmentSelectionHandler(app.HandlePlaylistAssignmentWebAppSelection)
 	app.initAI()
+	app.initDiscovery()
 	//注册处理器
 	app.registerHandlers()
 	// Publish the menu once at startup. Telegram stores it per bot, so doing it
@@ -177,6 +184,17 @@ func signalWebhookStop(stop chan struct{}) {
 
 // Start 启动机器人
 func (app *BotApp) Start() {
+	if app.discovery != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		app.discoveryCancel = cancel
+		app.discoveryDone = make(chan struct{})
+		go func() {
+			defer close(app.discoveryDone)
+			if err := app.discovery.Run(ctx); err != nil {
+				utils.WarnWithFormat("[Discovery] 后台任务退出: %v", err)
+			}
+		}()
+	}
 	// In webhook mode telebot registers the webhook as part of Poll; removing it
 	// here would delete the endpoint we are about to serve. Polling mode still
 	// needs the removal so a stale webhook cannot swallow updates.
@@ -199,6 +217,13 @@ func (app *BotApp) syncCommandMenu() {
 
 // Stop 关闭机器人
 func (app *BotApp) Stop() {
+	if app.discoveryCancel != nil {
+		app.discoveryCancel()
+		<-app.discoveryDone
+	}
+	if app.discovery != nil {
+		_ = app.discovery.Store.Close()
+	}
 	app.bot.Stop()
 	if app.musicDedupe != nil {
 		_ = app.musicDedupe.Close()

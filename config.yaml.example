@@ -112,8 +112,13 @@ playlist_organizer:
   playlist_assist: false  # 是否使用 AI 为歌单整理预选分类
   # 歌单列表保存在同目录的 config.playlists.yaml，示例见 config.playlists.example.yaml
 
-# AI 能力
-# AI 配置
+# 收藏自动入库与遗珠找回
+favorites:
+  enable: false # 先通过 /favorites 预览并绑定，再开启新增收藏自动入库
+  poll_interval_minutes: 10 # 收藏轮询间隔（分钟）
+  summary_interval_minutes: 30 # 处理结果汇总间隔（分钟）
+
+# AI 助手配置
 ai:
   enable: false  # 是否启用 AI 功能
   base_url: ""  # AI 接口的 Base URL

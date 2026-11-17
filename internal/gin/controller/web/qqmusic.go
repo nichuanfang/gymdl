@@ -120,7 +120,9 @@ func (q *qqMusicClient) getEnvelopeWithContext(ctx context.Context, path string,
 	}
 
 	var result qqMusicAPIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	decoder := json.NewDecoder(resp.Body)
+	decoder.UseNumber() // QQ music IDs can exceed float64's exact integer range.
+	if err := decoder.Decode(&result); err != nil {
 		return qqMusicAPIResponse{}, err
 	}
 	return result, nil
@@ -386,7 +388,11 @@ func pollQQLoginStatus(ctx context.Context, client *qqMusicClient, identifier st
 				return
 			}
 
-			event, _ := data["event"].(float64)
+			event, validEvent := credentialInt(data, "event")
+			if !validEvent {
+				updateQQLoginState(identifier, "error", "登录状态返回无效事件")
+				return
+			}
 
 			switch event {
 			case 0: // DONE
