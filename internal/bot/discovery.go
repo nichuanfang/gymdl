@@ -178,74 +178,90 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 	return nil
 }
 
-const discoveryPageSize = 3
+const discoveryPageSize = 1
 
 func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.ReplyMarkup) {
-	if page < 0 {
+	if page < 0 || page >= len(card.Tracks) {
 		page = 0
 	}
-	start := page * discoveryPageSize
-	if start > len(card.Tracks) {
-		start = 0
-		page = 0
+	markup := &tb.ReplyMarkup{}
+	if len(card.Tracks) == 0 {
+		return rediscoverHeading(nil), markup
 	}
-	end := min(start+discoveryPageSize, len(card.Tracks))
-	visible := card.Tracks[start:end]
-	pages := 1
-	if len(card.Tracks) > 0 {
-		pages = (len(card.Tracks) + discoveryPageSize - 1) / discoveryPageSize
-	}
+	track := card.Tracks[page]
 	var text strings.Builder
+	fmt.Fprintf(&text, "%s\n", rediscoverHeading(card.Tracks))
+	if len(card.Tracks) > 1 {
+		fmt.Fprintf(&text, "%d / %d\n", page+1, len(card.Tracks))
+	}
+	text.WriteByte('\n')
+	fmt.Fprintf(&text, "<b>%s</b>\n", discoveryListenTitle(track.Title, track.URL))
+	if artist := strings.TrimSpace(track.Artist); artist != "" {
+		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
+	}
+	if album := strings.TrimSpace(track.Album); album != "" {
+		fmt.Fprintf(&text, "《%s》\n", utils.EscapeHTML(utils.TruncateString(album, 32)))
+	}
+	if fact := rediscoverFactLine(track); fact != "" {
+		fmt.Fprintf(&text, "%s\n", fact)
+	}
+	var notes []string
+	if card.SkippedOwned > 0 {
+		notes = append(notes, fmt.Sprintf("已避开曲库里的 %d 首", card.SkippedOwned))
+	}
+	if line := rediscoverShortfallLine(card); line != "" {
+		notes = append(notes, strings.TrimRight(line, "\n"))
+	}
+	if rediscoverNeedsConfirmation(card.Tracks) {
+		notes = append(notes, "有待确认的歌曲，发送 /favorites 处理。")
+	}
+	if len(notes) > 0 {
+		text.WriteByte('\n')
+		text.WriteString(strings.Join(notes, "\n"))
+	}
+	discoverySongButtons(markup, card, page)
+	return strings.TrimRight(text.String(), "\n"), markup
+}
+
+// discoverySongButtons keeps one song's actions on that song.
+// 入库 is the primary row, paging sits under it, and 不再推荐 is alone on the last row.
+func discoverySongButtons(markup *tb.ReplyMarkup, card discovery.Card, page int) {
+	if page < 0 || page >= len(card.Tracks) {
+		return
+	}
+	track := card.Tracks[page]
+	index := strconv.Itoa(page)
+	if track.CardAction == "" {
+		appendDiscoveryRows(markup, markup.Row(
+			markup.Data("入库", discoveryCallbackUnique, "download", card.Token, index),
+		))
+	}
+	nav := tb.Row{}
+	if page > 0 {
+		nav = append(nav, markup.Data("上一首", discoveryCallbackUnique, "page", card.Token, strconv.Itoa(page-1)))
+	}
+	if page+1 < len(card.Tracks) {
+		nav = append(nav, markup.Data("下一首", discoveryCallbackUnique, "page", card.Token, strconv.Itoa(page+1)))
+	}
+	if len(nav) > 0 {
+		appendDiscoveryRows(markup, nav)
+	}
 	waiting := 0
-	for _, t := range visible {
-		if t.CardAction == "" {
+	for _, item := range card.Tracks {
+		if item.CardAction == "" {
 			waiting++
 		}
 	}
-	fmt.Fprintf(&text, "%s\n", rediscoverHeading(card.Tracks))
-	if pages > 1 {
-		fmt.Fprintf(&text, "第 %d 组，共 %d 组 · 还剩 %d 首", page+1, pages, waiting)
-	} else {
-		fmt.Fprintf(&text, "第 %d 组 · 还剩 %d 首", page+1, waiting)
+	if waiting > 1 {
+		appendDiscoveryRows(markup, markup.Row(
+			markup.Data("剩下的都入库", discoveryCallbackUnique, "batch", card.Token, "all"),
+		))
 	}
-	if rediscoverHasListenLink(visible) {
-		text.WriteString(" · 点歌名试听")
+	if track.CardAction == "" {
+		appendDiscoveryRows(markup, markup.Row(
+			markup.Data("不再推荐", discoveryCallbackUnique, "ignore", card.Token, index),
+		))
 	}
-	text.WriteString("\n")
-	if card.SkippedOwned > 0 {
-		fmt.Fprintf(&text, "已避开曲库里的 %d 首\n", card.SkippedOwned)
-	}
-	if line := rediscoverShortfallLine(card); line != "" {
-		text.WriteString(line)
-	}
-	markup := &tb.ReplyMarkup{}
-	for offset, t := range visible {
-		index := start + offset
-		fmt.Fprintf(&text, "\n%d. %s\n%s\n", offset+1, discoveryListenTitle(t.Title, t.URL), rediscoverMetaLine(t))
-		if t.CardAction == "" {
-			number := strconv.Itoa(offset + 1)
-			appendDiscoveryRows(markup, markup.Row(
-				markup.Data(number+" 入库", discoveryCallbackUnique, "download", card.Token, strconv.Itoa(index)),
-				markup.Data(number+" 不再推荐", discoveryCallbackUnique, "ignore", card.Token, strconv.Itoa(index)),
-			))
-		}
-	}
-	if rediscoverNeedsConfirmation(card.Tracks) {
-		text.WriteString("\n有待确认的歌曲，发送 /favorites 处理。")
-	}
-	footer := tb.Row{}
-	if end < len(card.Tracks) {
-		footer = append(footer, markup.Data("下一组", discoveryCallbackUnique, "page", card.Token, strconv.Itoa(page+1)))
-	} else if page > 0 {
-		footer = append(footer, markup.Data("回到第一组", discoveryCallbackUnique, "page", card.Token, "0"))
-	}
-	if waiting > 0 {
-		footer = append(footer, markup.Data("这组入库", discoveryCallbackUnique, "batch", card.Token, "p"+strconv.Itoa(page)))
-	}
-	if len(footer) > 0 {
-		appendDiscoveryRows(markup, footer)
-	}
-	return text.String(), markup
 }
 
 func rediscoverHeading(tracks []discovery.Track) string {
@@ -268,17 +284,7 @@ func rediscoverHeading(tracks []discovery.Track) string {
 	return "遗珠 · " + aichat.PlatformLabel(platform)
 }
 
-func rediscoverHasListenLink(tracks []discovery.Track) bool {
-	for _, track := range tracks {
-		if strings.TrimSpace(track.URL) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func rediscoverMetaLine(track discovery.Track) string {
-	parts := []string{utils.EscapeHTML(utils.TruncateString(track.Artist, 32))}
+func rediscoverFactLine(track discovery.Track) string {
 	reason := "听过"
 	if track.Favorite {
 		reason = "收藏"
@@ -286,11 +292,10 @@ func rediscoverMetaLine(track discovery.Track) string {
 	if track.Plays > 0 {
 		reason += fmt.Sprintf(" %d 次", track.Plays)
 	}
-	parts = append(parts, reason)
 	if decision := rediscoverDecision(track); decision != "" {
-		parts = append(parts, decision)
+		return reason + " · " + decision
 	}
-	return strings.Join(parts, " · ")
+	return reason
 }
 
 func rediscoverDecision(track discovery.Track) string {
@@ -675,9 +680,9 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		}
 		page, e := strconv.Atoi(args[2])
 		if e != nil || page < 0 || page > 100 {
-			return c.Respond(&tb.CallbackResponse{Text: "分组无效", ShowAlert: true})
+			return c.Respond(&tb.CallbackResponse{Text: "页码无效", ShowAlert: true})
 		}
-		if err = c.Respond(&tb.CallbackResponse{Text: "已换组"}); err != nil {
+		if err = c.Respond(&tb.CallbackResponse{Text: "已换一首"}); err != nil {
 			return err
 		}
 		app.rediscoverMu.Lock()
@@ -733,7 +738,7 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			page = parsed
 			start := page * discoveryPageSize
 			if start >= len(card.Tracks) {
-				return c.Respond(&tb.CallbackResponse{Text: "这一组已经没有歌曲", ShowAlert: true})
+				return c.Respond(&tb.CallbackResponse{Text: "没有这一首", ShowAlert: true})
 			}
 			picked = card.Tracks[start:min(start+discoveryPageSize, len(card.Tracks))]
 			for offset := range picked {

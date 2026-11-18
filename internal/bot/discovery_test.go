@@ -168,48 +168,56 @@ func (c *discoveryCallbackContext) Send(v interface{}, _ ...interface{}) error {
 	return nil
 }
 
-func TestDiscoveryCardShowsThreeAndKeepsTheRestForTheNextPage(t *testing.T) {
+func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	tracks := []discovery.Track{
-		{Platform: "netease", ID: "1", Title: "第一首", Artist: "甲", URL: "https://music.163.com/song?id=1"},
+		{Platform: "netease", ID: "1", Title: "第一首", Artist: "甲", Album: "专辑甲", URL: "https://music.163.com/song?id=1"},
 		{Platform: "netease", ID: "2", Title: "第二首", Artist: "乙", URL: "https://music.163.com/song?id=2"},
 		{Platform: "qq", ID: "3", Title: "第三首", Artist: "丙", URL: "https://y.qq.com/n/ryqq/songDetail/3"},
 		{Platform: "qq", ID: "4", Title: "第四首", Artist: "丁", URL: "https://y.qq.com/n/ryqq/songDetail/4"},
 	}
 	text, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 0)
-	if strings.Contains(text, "第四首") || !strings.Contains(text, "第一首") || !strings.Contains(text, "共 2 组") || strings.Contains(text, "已避开") {
-		t.Fatalf("first page mixed groups: %s", text)
+	if strings.Contains(text, "第二首") || strings.Contains(text, "第四首") || !strings.Contains(text, "第一首") || !strings.Contains(text, "1 / 4") || strings.Contains(text, "已避开") || strings.Contains(text, "点歌名试听") || strings.Contains(text, "\n1. ") {
+		t.Fatalf("first song was not alone: %s", text)
+	}
+	if !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">第一首</a></b>`) || !strings.Contains(text, "《专辑甲》") {
+		t.Fatalf("title or album was not the card body: %s", text)
 	}
 	labels := buttonTexts(markup)
-	for _, unwanted := range []string{"下载前 3 首", "全部下载", "换一批"} {
+	for _, unwanted := range []string{"下载前 3 首", "全部下载", "换一批", "下一组", "这组入库", "1 入库", "上一首", "跳过", "试听"} {
 		if labels[unwanted] {
-			t.Fatalf("dense button still present: %s", unwanted)
+			t.Fatalf("old button still present: %s", unwanted)
 		}
 	}
-	if !labels["下一组"] || !labels["这组入库"] || !labels["1 入库"] || !labels["1 不再推荐"] || !labels["2 入库"] || labels["入库"] || labels["跳过"] || labels["试听"] {
-		t.Fatalf("missing page actions: %#v", labels)
+	if !labels["入库"] || !labels["不再推荐"] || !labels["下一首"] || !labels["剩下的都入库"] {
+		t.Fatalf("missing song actions: %#v", labels)
 	}
-	if !strings.Contains(text, `<a href="https://music.163.com/song?id=1">第一首</a>`) || !strings.Contains(text, "点歌名试听") || !strings.Contains(text, "\n1. ") {
-		t.Fatalf("song name is not the listen link: %s", text)
+	if got := buttonRowTexts(markup); len(got) != 4 || got[0][0] != "入库" || got[1][0] != "下一首" || got[2][0] != "剩下的都入库" || got[3][0] != "不再推荐" {
+		t.Fatalf("button rows = %#v", got)
 	}
-	for label := range labels {
-		if strings.HasPrefix(label, "试听") {
-			t.Fatalf("listen button still separate: %s", label)
-		}
+	if markup.InlineKeyboard[2][0].Data != "batch|card|all" || markup.InlineKeyboard[0][0].Data != "download|card|0" {
+		t.Fatalf("callbacks = %s / %s", markup.InlineKeyboard[0][0].Data, markup.InlineKeyboard[2][0].Data)
 	}
-	next, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 1)
-	if strings.Contains(next, "第一首") || !strings.Contains(next, "第四首") {
-		t.Fatalf("second page did not stay on the saved card: %s", next)
+	second, secondMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 1)
+	if strings.Contains(second, "第一首") || !strings.Contains(second, "第二首") || !strings.Contains(second, "2 / 4") {
+		t.Fatalf("second song did not stay on the saved card: %s", second)
 	}
-	if buttonTexts(markup)["下一组"] {
-		t.Fatal("last page still offers another local group")
+	if got := buttonRowTexts(secondMarkup); len(got) != 4 || len(got[1]) != 2 || got[1][0] != "上一首" || got[1][1] != "下一首" {
+		t.Fatalf("middle pager = %#v", got)
+	}
+	last, lastMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 3)
+	if strings.Contains(last, "第一首") || !strings.Contains(last, "第四首") || buttonTexts(lastMarkup)["下一首"] || !buttonTexts(lastMarkup)["上一首"] {
+		t.Fatalf("last song still offered a next page: %s %#v", last, buttonTexts(lastMarkup))
 	}
 	skipped, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks, SkippedOwned: 4}, 0)
 	if !strings.Contains(skipped, "已避开曲库里的 4 首") {
 		t.Fatalf("owned skips were not shown: %s", skipped)
 	}
 	short, shortMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks[:1], SkippedOwned: 1, Unconfirmed: 2, Requested: 3}, 0)
-	if !strings.Contains(short, "有 2 首对不上唯一版本，所以没有找满 3 首。") || !strings.Contains(short, "已避开曲库里的 1 首") {
+	if !strings.Contains(short, "有 2 首对不上唯一版本，所以没有找满 3 首。") || !strings.Contains(short, "已避开曲库里的 1 首") || strings.Contains(short, " / ") {
 		t.Fatalf("shortfall was not explained: %s", short)
+	}
+	if buttonTexts(shortMarkup)["剩下的都入库"] || buttonTexts(shortMarkup)["下一首"] || !buttonTexts(shortMarkup)["入库"] {
+		t.Fatalf("single song grew a pager: %#v", buttonTexts(shortMarkup))
 	}
 	full, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks[:3], Unconfirmed: 2, Requested: 3}, 0)
 	if strings.Contains(full, "没有找满") {
@@ -219,11 +227,18 @@ func TestDiscoveryCardShowsThreeAndKeepsTheRestForTheNextPage(t *testing.T) {
 	acted[0].CardAction = "queued"
 	acted[1].CardAction = "dismissed"
 	actedText, actedMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: acted}, 0)
-	if !strings.Contains(actedText, "排队") || !strings.Contains(actedText, "不再推荐") || !strings.Contains(actedText, "还剩 0 首") {
-		t.Fatalf("decisions were not shown on the card: %s", actedText)
+	if !strings.Contains(actedText, "排队") || strings.Contains(actedText, "不再推荐") || strings.Contains(actedText, "第二首") {
+		t.Fatalf("the queued song was not alone: %s", actedText)
 	}
-	if buttonTexts(actedMarkup)["入库"] || buttonTexts(actedMarkup)["不再推荐"] || buttonTexts(actedMarkup)["这组入库"] {
-		t.Fatalf("finished tracks kept action buttons: %#v", buttonTexts(actedMarkup))
+	if buttonTexts(actedMarkup)["入库"] || buttonTexts(actedMarkup)["不再推荐"] || buttonTexts(actedMarkup)["这组入库"] || buttonTexts(actedMarkup)["剩下的都入库"] || !buttonTexts(actedMarkup)["下一首"] {
+		t.Fatalf("finished song kept action buttons: %#v", buttonTexts(actedMarkup))
+	}
+	dismissedText, dismissedMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: acted}, 1)
+	if !strings.Contains(dismissedText, "不再推荐") || !strings.Contains(dismissedText, "第二首") {
+		t.Fatalf("dismissed song lost its status: %s", dismissedText)
+	}
+	if buttonTexts(dismissedMarkup)["入库"] || buttonTexts(dismissedMarkup)["不再推荐"] || !buttonTexts(dismissedMarkup)["上一首"] {
+		t.Fatalf("dismissed song kept action buttons: %#v", buttonTexts(dismissedMarkup))
 	}
 	if shortMarkup == nil {
 		t.Fatal("short card lost its keyboard")
@@ -333,7 +348,7 @@ func TestRediscoverDecisionStaysOnTheCard(t *testing.T) {
 	if len(jobs) != 0 {
 		t.Fatal("dismissed track was queued")
 	}
-	if edited := click("download", "1").edited; !strings.Contains(edited, "排队") || !strings.Contains(edited, "2. ") {
+	if edited := click("download", "1").edited; !strings.Contains(edited, "排队") || !strings.Contains(edited, "二") || strings.Contains(edited, "一") {
 		t.Fatalf("queue did not stay on the card: %s", edited)
 	}
 	click("download", "1")
@@ -382,10 +397,21 @@ func TestFavoritesCardOmitsActionsThatHaveNothingToDo(t *testing.T) {
 
 func buttonTexts(markup *tb.ReplyMarkup) map[string]bool {
 	out := map[string]bool{}
-	if markup == nil {
-		return out
+	for _, row := range buttonRowTexts(markup) {
+		for _, text := range row {
+			out[text] = true
+		}
 	}
+	return out
+}
+
+func buttonRowTexts(markup *tb.ReplyMarkup) [][]string {
+	if markup == nil {
+		return nil
+	}
+	rows := make([][]string, 0, len(markup.InlineKeyboard))
 	for _, row := range markup.InlineKeyboard {
+		labels := make([]string, 0, len(row))
 		for _, button := range row {
 			raw, err := json.Marshal(button)
 			if err != nil {
@@ -396,11 +422,12 @@ func buttonTexts(markup *tb.ReplyMarkup) map[string]bool {
 			}
 			_ = json.Unmarshal(raw, &wire)
 			if wire.Text != "" {
-				out[wire.Text] = true
+				labels = append(labels, wire.Text)
 			}
 		}
+		rows = append(rows, labels)
 	}
-	return out
+	return rows
 }
 
 func TestRediscoverMenusAskForPlatformThenCount(t *testing.T) {
@@ -434,25 +461,8 @@ func TestRediscoverMenusAskForPlatformThenCount(t *testing.T) {
 	}
 }
 
-func TestRediscoverSongNameOpensTheListenLink(t *testing.T) {
-	tracks := []discovery.Track{
-		{Platform: "netease", Title: "网易云歌曲", Artist: "艺人", URL: "https://music.163.com/song?id=1"},
-		{Platform: "qq", Title: "QQ歌曲", Artist: "艺人", URL: "https://y.qq.com/n/ryqq/songDetail/testmid"},
-		{Platform: "youtube", Title: "A & B", Artist: "X <Y>", URL: "https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=1"},
-	}
-	text, markup := discoveryRecommendationCard(discovery.Card{Token: "test-card", Tracks: tracks}, 0)
-	for _, track := range tracks[:2] {
-		want := fmt.Sprintf(`<a href="%s">%s</a>`, track.URL, track.Title)
-		if !strings.Contains(text, want) {
-			t.Fatalf("title is not the listen link: %s", text)
-		}
-	}
-	if !strings.Contains(text, `<a href="https://music.youtube.com/watch?v=dQw4w9WgXcQ&amp;list=1">A &amp; B</a>`) || !strings.Contains(text, "X &lt;Y&gt;") {
-		t.Fatalf("link or artist was not escaped: %s", text)
-	}
-	if strings.Contains(text, "试听·") {
-		t.Fatalf("separate listen label still in the card: %s", text)
-	}
+func assertNoListenButton(t *testing.T, markup *tb.ReplyMarkup) {
+	t.Helper()
 	for _, row := range markup.InlineKeyboard {
 		for _, button := range row {
 			raw, err := json.Marshal(button)
@@ -471,6 +481,27 @@ func TestRediscoverSongNameOpensTheListenLink(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestRediscoverSongNameOpensTheListenLink(t *testing.T) {
+	tracks := []discovery.Track{
+		{Platform: "netease", Title: "网易云歌曲", Artist: "艺人", URL: "https://music.163.com/song?id=1"},
+		{Platform: "qq", Title: "QQ歌曲", Artist: "艺人", URL: "https://y.qq.com/n/ryqq/songDetail/testmid"},
+		{Platform: "youtube", Title: "A & B", Artist: "X <Y>", URL: "https://music.youtube.com/watch?v=dQw4w9WgXcQ&list=1"},
+	}
+	for index, track := range tracks[:2] {
+		text, markup := discoveryRecommendationCard(discovery.Card{Token: "test-card", Tracks: tracks}, index)
+		want := fmt.Sprintf(`<b><a href="%s">%s</a></b>`, track.URL, track.Title)
+		if !strings.Contains(text, want) || strings.Contains(text, "试听·") {
+			t.Fatalf("title is not the listen link: %s", text)
+		}
+		assertNoListenButton(t, markup)
+	}
+	youtube, youtubeMarkup := discoveryRecommendationCard(discovery.Card{Token: "test-card", Tracks: tracks}, 2)
+	if !strings.Contains(youtube, `<b><a href="https://music.youtube.com/watch?v=dQw4w9WgXcQ&amp;list=1">A &amp; B</a></b>`) || !strings.Contains(youtube, "X &lt;Y&gt;") || strings.Contains(youtube, "网易云歌曲") {
+		t.Fatalf("link or artist was not escaped: %s", youtube)
+	}
+	assertNoListenButton(t, youtubeMarkup)
 	plain, plainMarkup := discoveryRecommendationCard(discovery.Card{Token: "plain", Tracks: []discovery.Track{{Title: "无链接", Artist: "甲"}}}, 0)
 	if strings.Contains(plain, "<a ") || strings.Contains(plain, "点歌名试听") || !strings.Contains(plain, "无链接") {
 		t.Fatalf("missing url should stay plain text: %s", plain)
@@ -500,7 +531,7 @@ func TestRediscoverProgressFollowsTheDownload(t *testing.T) {
 	track.CardAction = discovery.Queued
 	card := discovery.Card{Token: "card", User: 1, Chat: 1, Tracks: []discovery.Track{track}, Page: 0}
 	text, markup := discoveryRecommendationCard(card, 0)
-	if !strings.Contains(text, "遗珠 · 网易云") || !strings.Contains(text, "排队") || !strings.Contains(text, "听过 4 次") || buttonTexts(markup)["1 入库"] {
+	if !strings.Contains(text, "遗珠 · 网易云") || !strings.Contains(text, "排队") || !strings.Contains(text, "听过 4 次") || buttonTexts(markup)["入库"] {
 		t.Fatalf("queued card = %s %#v", text, buttonTexts(markup))
 	}
 	updated, changed, pending, err := syncRediscoverProgress(context.Background(), store, card)
@@ -534,7 +565,7 @@ func TestRediscoverProgressFollowsTheDownload(t *testing.T) {
 		t.Fatalf("done progress = %#v changed=%t pending=%t err=%v", updated.Tracks, changed, pending, err)
 	}
 	doneText, doneMarkup := discoveryRecommendationCard(updated, 0)
-	if !strings.Contains(doneText, "已入库") || buttonTexts(doneMarkup)["1 入库"] || buttonTexts(doneMarkup)["这组入库"] {
+	if !strings.Contains(doneText, "已入库") || buttonTexts(doneMarkup)["入库"] || buttonTexts(doneMarkup)["这组入库"] || buttonTexts(doneMarkup)["剩下的都入库"] {
 		t.Fatalf("done card = %s %#v", doneText, buttonTexts(doneMarkup))
 	}
 	job, _ = store.Job(context.Background(), id)
