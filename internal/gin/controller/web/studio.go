@@ -20,14 +20,16 @@ import (
 // DiscoveryTrack is one confirmed recording the console can queue or dismiss.
 // Card actions are not accepted from the browser.
 type DiscoveryTrack struct {
-	Platform string `json:"platform"`
-	ID       string `json:"id"`
-	URL      string `json:"url"`
-	Title    string `json:"title"`
-	Artist   string `json:"artist"`
-	Album    string `json:"album,omitempty"`
-	Duration int    `json:"duration,omitempty"`
-	Verified bool   `json:"verified"`
+	Platform   string `json:"platform"`
+	ID         string `json:"id"`
+	URL        string `json:"url"`
+	Title      string `json:"title"`
+	Artist     string `json:"artist"`
+	Album      string `json:"album,omitempty"`
+	Duration   int    `json:"duration,omitempty"`
+	Plays      int    `json:"plays,omitempty"`
+	LastPlayed string `json:"last_played,omitempty"`
+	Verified   bool   `json:"verified"`
 }
 
 // DiscoveryBatch is one rediscover result. Counts match the Telegram card.
@@ -93,6 +95,7 @@ type AIPreviewPage struct {
 	Preview      []AIPreviewSong `json:"preview"`
 	UsedFallback bool            `json:"used_fallback"`
 	Creating     bool            `json:"creating"`
+	Existing     int             `json:"existing"`
 }
 
 type AIConfirmPage struct {
@@ -273,7 +276,11 @@ func HandleRediscoverEnqueue(c *gin.Context) {
 	}
 	queued, skipped, err := api.Enqueue(c.Request.Context(), tracks)
 	if err != nil {
-		response.Fail(c, http.StatusBadRequest, err.Error())
+		msg := studioPublicError(err)
+		if queued > 0 {
+			msg = fmt.Sprintf("已提交 %d 首后中断。%s", queued, msg)
+		}
+		response.Fail(c, http.StatusBadRequest, msg)
 		return
 	}
 	response.Success(c, gin.H{"queued": queued, "skipped": skipped})

@@ -4,8 +4,22 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/nichuanfang/gymdl/utils"
 	tb "gopkg.in/telebot.v4"
+	"gopkg.in/telebot.v4/middleware"
 )
+
+// recoverMiddleware 包住整条处理链。telebot 的更新循环本身不恢复 panic，
+// 任一按钮或消息处理崩溃都会让进程退出。
+func (app *BotApp) recoverMiddleware() tb.MiddlewareFunc {
+	return middleware.Recover(func(err error, c tb.Context) {
+		utils.WarnWithFormat("[Telegram] 处理更新时出现异常: %v", err)
+		if c == nil || c.Callback() == nil {
+			return
+		}
+		_ = c.Respond(&tb.CallbackResponse{Text: "操作没有完成，请再试一次", ShowAlert: true})
+	})
+}
 
 // LoggingMiddleware 日志中间件
 func (app *BotApp) LoggingMiddleware(next tb.HandlerFunc) tb.HandlerFunc {

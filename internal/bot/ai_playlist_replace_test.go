@@ -198,3 +198,78 @@ func TestAIPlaylistReplacementResumeAcceptsOnlyContiguousPartialProgress(t *test
 		})
 	}
 }
+
+func TestDeleteAIPlaylistRemovesOnlyAINamedPlaylists(t *testing.T) {
+	mode := "ai"
+	deletes := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Nd-Authorization") == "Bearer navidrome-test-token" && r.URL.Path != "/auth/login" && r.URL.Path != "/api/playlist/playlist1" {
+			t.Errorf("unexpected playlist request %s %s", r.Method, r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/auth/login":
+			writeJSON(t, w, map[string]string{"token": "navidrome-test-token"})
+		case "/api/playlist/playlist1":
+			if r.Header.Get("X-Nd-Authorization") != "Bearer navidrome-test-token" {
+				t.Errorf("missing Navidrome authorization")
+			}
+			switch r.Method {
+			case http.MethodGet:
+				switch mode {
+				case "missing":
+					w.WriteHeader(http.StatusNotFound)
+				case "ordinary":
+					writeJSON(t, w, map[string]string{"id": "playlist1", "name": "中文"})
+				default:
+					writeJSON(t, w, map[string]string{"id": "playlist1", "name": "[AI] 夜间"})
+				}
+			case http.MethodDelete:
+				deletes++
+				if mode != "ai" && mode != "gone-on-delete" {
+					t.Errorf("deleted while mode is %s", mode)
+				}
+				if mode == "gone-on-delete" {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				writeJSON(t, w, map[string]any{})
+			default:
+				t.Errorf("unexpected method %s", r.Method)
+				w.WriteHeader(http.StatusMethodNotAllowed)
+			}
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	organizer, err := newPlaylistOrganizerService(&config.PlaylistOrganizerConfig{
+		OliveTinURL:       server.URL,
+		NavidromeURL:      server.URL,
+		NavidromeUsername: "nav",
+		NavidromePassword: "nav-pass",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	playlist := aiPlaylist{ID: "playlist1", Name: "[AI] 夜间"}
+	if err := organizer.deleteAIPlaylist(t.Context(), aiPlaylist{ID: "playlist1", Name: "中文"}); err == nil || deletes != 0 {
+		t.Fatalf("ordinary name err=%v deletes=%d", err, deletes)
+	}
+	mode = "ordinary"
+	if err := organizer.deleteAIPlaylist(t.Context(), playlist); err == nil || !strings.Contains(err.Error(), "不是 [AI] 歌单") || deletes != 0 {
+		t.Fatalf("renamed playlist err=%v deletes=%d", err, deletes)
+	}
+	mode = "missing"
+	if err := organizer.deleteAIPlaylist(t.Context(), playlist); err != nil || deletes != 0 {
+		t.Fatalf("already gone err=%v deletes=%d", err, deletes)
+	}
+	mode = "ai"
+	if err := organizer.deleteAIPlaylist(t.Context(), playlist); err != nil || deletes != 1 {
+		t.Fatalf("delete err=%v deletes=%d", err, deletes)
+	}
+	mode = "gone-on-delete"
+	if err := organizer.deleteAIPlaylist(t.Context(), playlist); err != nil || deletes != 2 {
+		t.Fatalf("delete race err=%v deletes=%d", err, deletes)
+	}
+}

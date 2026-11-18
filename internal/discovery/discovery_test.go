@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -144,6 +145,91 @@ func TestSyncAnnouncesOnlyNewFavorites(t *testing.T) {
 	if len(notes) != 1 {
 		t.Fatalf("empty sync sent another notice: %#v", notes)
 	}
+}
+
+func TestRunKeepsDownloadingWhileFavoriteReadIsSlow(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	if _, _, err := store.Apply(ctx, 1, 9, snapshot("acc", testTrack("old", "旧歌", "甲")), true); err != nil {
+		t.Fatal(err)
+	}
+	song := testTrack("1", "新歌", "甲")
+	song.Verified = false
+	song.Approved = true
+	if _, err := store.Enqueue(ctx, 1, 9, song); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	var fetches atomic.Int32
+	var opened atomic.Bool
+	svc := &Service{
+		Store:           store,
+		Enabled:         true,
+		PollInterval:    20 * time.Millisecond,
+		SummaryInterval: time.Hour,
+		Library:         stubLibrary{},
+		Provider: gatingProvider{fetch: func(ctx context.Context, _ string) (Snapshot, error) {
+			if fetches.Add(1) == 1 && opened.CompareAndSwap(false, true) {
+				close(started)
+			}
+			<-ctx.Done()
+			return Snapshot{}, ctx.Err()
+		}},
+		Download: func(context.Context, Track) (DownloadResult, error) {
+			return DownloadResult{Detail: "ok"}, nil
+		},
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- svc.Run(runCtx) }()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("favorite read did not start")
+	}
+	time.Sleep(150 * time.Millisecond)
+	if n := fetches.Load(); n != 1 {
+		t.Fatalf("overlapping favorite reads = %d", n)
+	}
+	downloaded := false
+	deadline := time.Now().Add(7 * time.Second)
+	for time.Now().Before(deadline) {
+		jobs, err := store.Jobs(context.Background(), 1, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, job := range jobs {
+			if job.Track.Title == "新歌" && job.State == Completed && job.Result == "ok" {
+				downloaded = true
+			}
+		}
+		if downloaded {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !downloaded {
+		t.Fatal("download waited behind the favorite read")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not stop")
+	}
+}
+
+type gatingProvider struct {
+	stubProvider
+	fetch func(context.Context, string) (Snapshot, error)
+}
+
+func (p gatingProvider) Fetch(ctx context.Context, platform string) (Snapshot, error) {
+	return p.fetch(ctx, platform)
 }
 
 func TestFreshFavoriteNoticeKeepsAShortList(t *testing.T) {

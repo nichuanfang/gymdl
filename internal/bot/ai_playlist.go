@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/internal/aichat"
 	"github.com/nichuanfang/gymdl/internal/discovery"
 	"github.com/nichuanfang/gymdl/internal/musicrag"
 	"github.com/nichuanfang/gymdl/utils"
@@ -121,6 +122,9 @@ type aiPlaylistService struct {
 	embeddingClient *openai.Client
 	httpClient      *http.Client
 	pineconeHost    string
+	// mcpTools supplies the live WebSearch tool for a seed that is not in the
+	// MusicRAG index. Nil skips that lookup and embeds the title and artist.
+	mcpTools func() []aichat.Tool
 }
 
 func newAIPlaylistService(cfg *config.Config) (*aiPlaylistService, error) {
@@ -179,6 +183,15 @@ func newAIPlaylistService(cfg *config.Config) (*aiPlaylistService, error) {
 	if err != nil {
 		return nil, fmt.Errorf("AI 歌单续跑存储初始化失败: %w", err)
 	}
+	return service, nil
+}
+
+func (app *BotApp) openAIPlaylistService() (*aiPlaylistService, error) {
+	service, err := newAIPlaylistService(app.cfg)
+	if err != nil {
+		return nil, err
+	}
+	service.mcpTools = app.currentAIMCPTools
 	return service, nil
 }
 
@@ -955,11 +968,17 @@ func (s *aiPlaylistService) recallSimilar(ctx context.Context, seed playlistSeed
 		semantic = aiPlaylistSemanticQuery{Genre: song.Genre, Mood: song.Mood, Language: song.Language}
 		description = seedPlannerDescription(song.Title, song.Artist, song.Genre, song.Mood, true)
 	} else {
-		vector, err = s.embedPlaylistText(ctx, musicrag.DocumentText(musicrag.Song{Title: seed.Title, Artist: seed.Artist}, musicrag.Meta{Description: "和这首歌听感相近"}))
+		document := musicrag.Meta{Description: "和这首歌听感相近"}
+		meta, found := s.lookupSeedFeatures(ctx, seed.Title, seed.Artist)
+		if found {
+			document = meta
+			semantic = aiPlaylistSemanticQuery{Genre: meta.Genre, Mood: meta.Mood, Language: meta.Language}
+		}
+		vector, err = s.embedPlaylistText(ctx, musicrag.DocumentText(musicrag.Song{Title: seed.Title, Artist: seed.Artist}, document))
 		if err != nil {
 			return nil, aiPlaylistSemanticQuery{}, "", aiPlaylistCandidate{}, err
 		}
-		description = seedPlannerDescription(seed.Title, seed.Artist, "", "", false)
+		description = unindexedSeedDescription(seed.Title, meta, found)
 	}
 	semantic.PreferInstrumental = false
 	matches, err := s.queryPinecone(ctx, vector, nil)
@@ -1118,6 +1137,127 @@ func seedPlannerDescription(title, artist, genre, mood string, indexed bool) str
 		text += "听感：" + mood + "。"
 	}
 	return text
+}
+
+const seedFeaturePrompt = `你只根据给出的网页资料，整理这一首歌的听感特征。
+不要推荐别的歌，不要把网页里的其他歌名写进结果，也不要根据你自己的记忆补全。
+
+只输出一个 JSON 对象，不要代码块，不要解释：
+{"genre":"","mood":"","language":"","description":""}
+
+规则：
+- genre 用中文，2 到 5 个，英文逗号分隔。资料里看不出来就留空。
+- mood 用中文，2 到 4 个，英文逗号分隔。资料里看不出来就留空。
+- language 只能是国语、粤语、英语、日语、韩语、小语种、纯音乐之一。无法判断就留空。
+- description 用中文，40 到 80 个字，只写这首歌的情感、音色和画面，中间不要换行。资料不足就留空。
+- 任一字段没有资料支撑时必须是空字符串。`
+
+func unindexedSeedDescription(title string, meta musicrag.Meta, found bool) string {
+	title = strings.TrimSpace(title)
+	if !found {
+		return fmt.Sprintf("曲库索引里没有《%s》，没有查到这首歌的听感特征，按歌名和歌手找听感相近的歌。", title)
+	}
+	text := fmt.Sprintf("曲库索引里没有《%s》，按查到的听感找相近的歌。", title)
+	if genre := strings.TrimSpace(meta.Genre); genre != "" {
+		text += "流派：" + genre + "。"
+	}
+	if mood := strings.TrimSpace(meta.Mood); mood != "" {
+		text += "听感：" + mood + "。"
+	}
+	if language := strings.TrimSpace(meta.Language); language != "" {
+		text += "语言：" + language + "。"
+	}
+	return text
+}
+
+// lookupSeedFeatures reads genre, mood, language and a description for one
+// seed that is not in the index. The web text never becomes a playlist track.
+// A missing tool or a thin result returns false so the caller can embed the
+// title and artist instead.
+func (s *aiPlaylistService) lookupSeedFeatures(ctx context.Context, title, artist string) (musicrag.Meta, bool) {
+	if s == nil || s.mcpTools == nil || s.aiConfig == nil || strings.TrimSpace(s.aiConfig.Model) == "" {
+		return musicrag.Meta{}, false
+	}
+	evidence, err := runWebSearchQuery(ctx, s.mcpTools(), seedFeatureSearchQuery(title, artist))
+	if err != nil {
+		utils.WarnWithFormat("[AI] 像这首歌没有查到《%s》的听感资料，改用歌名和歌手", strings.TrimSpace(title))
+		return musicrag.Meta{}, false
+	}
+	raw, err := s.chat(ctx, s.aiConfig.Model, seedFeaturePrompt, seedFeatureUserPrompt(title, artist, truncatePlaylistWebEvidence(evidence)), 0.1, 500)
+	if err != nil {
+		utils.WarnWithFormat("[AI] 像这首歌听感资料无法整理，改用歌名和歌手: %v", err)
+		return musicrag.Meta{}, false
+	}
+	meta, err := musicrag.ParseMeta(raw)
+	if err != nil {
+		utils.WarnWithFormat("[AI] 像这首歌听感资料不完整，改用歌名和歌手")
+		return musicrag.Meta{}, false
+	}
+	normalized, ok := normalizeSeedMeta(meta)
+	if !ok {
+		utils.WarnWithFormat("[AI] 像这首歌听感资料不完整，改用歌名和歌手")
+	}
+	return normalized, ok
+}
+
+func seedFeatureSearchQuery(title, artist string) string {
+	parts := []string{strings.TrimSpace(title)}
+	if artist = strings.TrimSpace(artist); artist != "" {
+		parts = append(parts, artist)
+	}
+	return strings.Join(parts, " ") + " 歌曲 流派 风格 情绪 语言"
+}
+
+func seedFeatureUserPrompt(title, artist, evidence string) string {
+	if strings.TrimSpace(artist) == "" {
+		artist = "未知"
+	}
+	return fmt.Sprintf("歌名：%s\n歌手：%s\n网页资料：\n%s", strings.TrimSpace(title), strings.TrimSpace(artist), evidence)
+}
+
+func normalizeSeedMeta(meta musicrag.Meta) (musicrag.Meta, bool) {
+	meta.Genre = clipSeedFeature(strings.ReplaceAll(meta.Genre, "，", ","), 40)
+	meta.Mood = clipSeedFeature(strings.ReplaceAll(meta.Mood, "，", ","), 40)
+	language, ok := seedFeatureLanguage(meta.Language)
+	if !ok {
+		return musicrag.Meta{}, false
+	}
+	meta.Language = language
+	meta.Description = clipSeedFeature(meta.Description, 160)
+	if meta.Genre == "" || meta.Mood == "" || len([]rune(meta.Description)) < 8 {
+		return musicrag.Meta{}, false
+	}
+	return meta, true
+}
+
+func seedFeatureLanguage(value string) (string, bool) {
+	switch strings.TrimSpace(value) {
+	case "国语", "普通话", "中文":
+		return "国语", true
+	case "粤语":
+		return "粤语", true
+	case "英语", "英文":
+		return "英语", true
+	case "日语", "日文":
+		return "日语", true
+	case "韩语", "韩文":
+		return "韩语", true
+	case "小语种":
+		return "小语种", true
+	case "纯音乐":
+		return "纯音乐", true
+	default:
+		return "", false
+	}
+}
+
+func clipSeedFeature(value string, max int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	runes := []rune(value)
+	if max > 0 && len(runes) > max {
+		return string(runes[:max])
+	}
+	return value
 }
 
 func (s *aiPlaylistService) fetchSongVector(ctx context.Context, id string) ([]float32, bool, error) {

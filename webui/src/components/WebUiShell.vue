@@ -51,7 +51,7 @@
       <div class="content-frame">
         <router-view v-slot="{ Component, route }">
           <transition name="page-fade" mode="out-in">
-            <KeepAlive include="Search,History,Files,Settings,Rediscover,PlaylistDesc,AIPlaylist,Duplicates">
+            <KeepAlive include="Search,History,Files,Settings,Rediscover,Favorites,PlaylistDesc,AIPlaylist,Duplicates">
               <component :is="Component" :key="route.path" />
             </KeepAlive>
           </transition>
@@ -72,7 +72,7 @@ import type { MenuOption } from 'naive-ui'
 import {
   HomeOutline, DownloadOutline, TimeOutline, FolderOpenOutline, SettingsOutline,
   DocumentTextOutline, ChatboxEllipsesOutline, SearchOutline, MusicalNotesOutline, TimerOutline,
-  CompassOutline, CreateOutline, ColorWandOutline, GitCompareOutline,
+  CompassOutline, HeartOutline, CreateOutline, ColorWandOutline, GitCompareOutline,
 } from '@vicons/ionicons5'
 import { NIcon } from 'naive-ui'
 import { getAuthSession, login, logout } from '../api'
@@ -104,6 +104,7 @@ const menuOptions: MenuOption[] = [
   { label: '搜索', key: '/search', icon: renderIcon(SearchOutline) },
   { label: '听歌报告', key: '/listening', icon: renderIcon(MusicalNotesOutline) },
   { label: '找回遗珠', key: '/rediscover', icon: renderIcon(CompassOutline) },
+  { label: '收藏同步', key: '/favorites', icon: renderIcon(HeartOutline) },
   { label: '歌单描述', key: '/playlist-desc', icon: renderIcon(CreateOutline) },
   { label: '生成歌单', key: '/ai-playlist', icon: renderIcon(ColorWandOutline) },
   { label: '重复歌曲', key: '/duplicates', icon: renderIcon(GitCompareOutline) },

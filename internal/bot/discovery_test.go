@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/internal/discovery"
@@ -147,6 +149,7 @@ func TestDiscoveryBaselineConfirmationIsSingleUse(t *testing.T) {
 
 type discoveryCallbackContext struct {
 	tb.Context
+	mu        sync.Mutex
 	args      []string
 	sender    *tb.User
 	chat      *tb.Chat
@@ -165,8 +168,28 @@ func (c *discoveryCallbackContext) Sender() *tb.User                      { retu
 func (c *discoveryCallbackContext) Chat() *tb.Chat                        { return c.chat }
 func (c *discoveryCallbackContext) Respond(...*tb.CallbackResponse) error { c.responses++; return nil }
 func (c *discoveryCallbackContext) Edit(v interface{}, _ ...interface{}) error {
+	c.mu.Lock()
 	c.edited = fmt.Sprint(v)
+	c.mu.Unlock()
 	return nil
+}
+
+func (c *discoveryCallbackContext) waitEdited(t *testing.T, part string) string {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		edited := c.edited
+		c.mu.Unlock()
+		if strings.Contains(edited, part) {
+			return edited
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t.Fatalf("timed out waiting for %q, last edit: %s", part, c.edited)
+	return ""
 }
 
 func (c *discoveryCallbackContext) Send(v interface{}, _ ...interface{}) error {
@@ -189,7 +212,7 @@ func TestDiscoveryPendingCardShowsOneSong(t *testing.T) {
 	if !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">至少还有你</a></b>`) || !strings.Contains(text, "林忆莲") || !strings.Contains(text, "对不上唯一版本 &lt;原版&gt;") {
 		t.Fatalf("pending card = %s", text)
 	}
-	if got := buttonRowTexts(markup); len(got) != 4 || got[0][0] != "确认" || got[1][0] != "下一首" || got[2][0] != "跳过" || got[3][0] != "收藏同步" {
+	if got := buttonRowTexts(markup); len(got) != 4 || got[0][0] != "确认" || got[1][0] != "下一首" || got[2][0] != "不再处理" || got[3][0] != "收藏同步" {
 		t.Fatalf("pending rows = %#v", got)
 	}
 	if markup.InlineKeyboard[0][0].Data != "accept|job-1|0" || markup.InlineKeyboard[2][0].Data != "reject|job-1|0" {
@@ -200,7 +223,7 @@ func TestDiscoveryPendingCardShowsOneSong(t *testing.T) {
 		t.Fatalf("last pending card = %s %#v", last, buttonTexts(lastMarkup))
 	}
 	only, onlyMarkup := discoveryPendingCard(job, 0, 1)
-	if strings.Contains(only, " / ") || buttonTexts(onlyMarkup)["下一首"] || !buttonTexts(onlyMarkup)["确认"] || !buttonTexts(onlyMarkup)["跳过"] {
+	if strings.Contains(only, " / ") || buttonTexts(onlyMarkup)["下一首"] || !buttonTexts(onlyMarkup)["确认"] || !buttonTexts(onlyMarkup)["不再处理"] {
 		t.Fatalf("single pending card = %s %#v", only, buttonTexts(onlyMarkup))
 	}
 }
@@ -225,13 +248,13 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 			t.Fatalf("old button still present: %s", unwanted)
 		}
 	}
-	if !labels["入库"] || !labels["不再推荐"] || !labels["下一首"] || !labels["剩下的都入库"] {
+	if !labels["入库"] || !labels["不再推荐"] || !labels["下一首"] || !labels["未处理的全部入库"] {
 		t.Fatalf("missing song actions: %#v", labels)
 	}
-	if got := buttonRowTexts(markup); len(got) != 4 || got[0][0] != "入库" || got[1][0] != "下一首" || got[2][0] != "剩下的都入库" || got[3][0] != "不再推荐" {
+	if got := buttonRowTexts(markup); len(got) != 4 || got[0][0] != "入库" || got[1][0] != "下一首" || got[2][0] != "未处理的全部入库" || got[3][0] != "不再推荐" {
 		t.Fatalf("button rows = %#v", got)
 	}
-	if markup.InlineKeyboard[2][0].Data != "batch|card|all" || markup.InlineKeyboard[0][0].Data != "download|card|0" {
+	if markup.InlineKeyboard[2][0].Data != "batch|card|ask|0" || markup.InlineKeyboard[0][0].Data != "download|card|0" {
 		t.Fatalf("callbacks = %s / %s", markup.InlineKeyboard[0][0].Data, markup.InlineKeyboard[2][0].Data)
 	}
 	second, secondMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 1)
@@ -253,7 +276,7 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	if !strings.Contains(short, "有 2 首对不上唯一版本，所以没有找满 3 首。") || !strings.Contains(short, "已避开曲库里的 1 首") || strings.Contains(short, " / ") {
 		t.Fatalf("shortfall was not explained: %s", short)
 	}
-	if buttonTexts(shortMarkup)["剩下的都入库"] || buttonTexts(shortMarkup)["下一首"] || !buttonTexts(shortMarkup)["入库"] {
+	if buttonTexts(shortMarkup)["未处理的全部入库"] || buttonTexts(shortMarkup)["下一首"] || !buttonTexts(shortMarkup)["入库"] {
 		t.Fatalf("single song grew a pager: %#v", buttonTexts(shortMarkup))
 	}
 	full, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks[:3], Unconfirmed: 2, Requested: 3}, 0)
@@ -267,7 +290,7 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	if !strings.Contains(actedText, "排队") || strings.Contains(actedText, "不再推荐") || strings.Contains(actedText, "第二首") {
 		t.Fatalf("the queued song was not alone: %s", actedText)
 	}
-	if buttonTexts(actedMarkup)["入库"] || buttonTexts(actedMarkup)["不再推荐"] || buttonTexts(actedMarkup)["这组入库"] || buttonTexts(actedMarkup)["剩下的都入库"] || !buttonTexts(actedMarkup)["下一首"] {
+	if buttonTexts(actedMarkup)["入库"] || buttonTexts(actedMarkup)["不再推荐"] || buttonTexts(actedMarkup)["这组入库"] || buttonTexts(actedMarkup)["未处理的全部入库"] || !buttonTexts(actedMarkup)["下一首"] {
 		t.Fatalf("finished song kept action buttons: %#v", buttonTexts(actedMarkup))
 	}
 	dismissedText, dismissedMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: acted}, 1)
@@ -330,10 +353,11 @@ func TestFavoritesActionsRewriteTheSameCard(t *testing.T) {
 	if edited := click("pause", "netease").edited; !strings.Contains(edited, "收藏") {
 		t.Fatalf("pause did not refresh the favorites card: %s", edited)
 	}
-	if edited := click("sync", "menu").edited; !strings.Contains(edited, "没有新的收藏") || !strings.Contains(edited, "收藏") {
+	syncCard := click("sync", "menu")
+	if edited := syncCard.waitEdited(t, "没有新的收藏"); !strings.Contains(edited, "收藏") {
 		t.Fatalf("sync did not stay on the favorites card: %s", edited)
 	}
-	if edited := click("retry", "menu").edited; !strings.Contains(edited, "失败任务已重新排队") {
+	if edited := click("retry", "menu").edited; !strings.Contains(edited, "没有需要重试的失败任务") {
 		t.Fatalf("retry did not stay on the favorites card: %s", edited)
 	}
 }
@@ -427,8 +451,8 @@ func TestFavoritesCardOmitsActionsThatHaveNothingToDo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !buttonTexts(markup)["重试失败"] {
-		t.Fatal("failed job did not offer retry")
+	if !buttonTexts(markup)["重试失败"] || !buttonTexts(markup)["查看失败"] {
+		t.Fatal("failed job did not offer retry and inspection")
 	}
 }
 
@@ -602,7 +626,7 @@ func TestRediscoverProgressFollowsTheDownload(t *testing.T) {
 		t.Fatalf("done progress = %#v changed=%t pending=%t err=%v", updated.Tracks, changed, pending, err)
 	}
 	doneText, doneMarkup := discoveryRecommendationCard(updated, 0)
-	if !strings.Contains(doneText, "已入库") || buttonTexts(doneMarkup)["入库"] || buttonTexts(doneMarkup)["这组入库"] || buttonTexts(doneMarkup)["剩下的都入库"] {
+	if !strings.Contains(doneText, "已入库") || buttonTexts(doneMarkup)["入库"] || buttonTexts(doneMarkup)["这组入库"] || buttonTexts(doneMarkup)["未处理的全部入库"] {
 		t.Fatalf("done card = %s %#v", doneText, buttonTexts(doneMarkup))
 	}
 	job, _ = store.Job(context.Background(), id)

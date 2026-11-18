@@ -89,7 +89,7 @@ func TestEveryMenuCommandHasHandler(t *testing.T) {
 
 // Preserve the user's chosen menu order and all daily control actions.
 func TestBotCommandsKeepUserPreferredOrder(t *testing.T) {
-	want := []string{"ai", "mode", "clear", "assign_playlist", "playlist_desc", "ai_playlist", "rediscover", "favorites", "qq_login", "empty_trash", "status", "help"}
+	want := []string{"ai", "mode", "clear", "assign_playlist", "playlist_desc", "ai_playlist", "rediscover", "favorites", "empty_trash", "status", "help"}
 	commands := botCommands()
 	if len(commands) != len(want) {
 		t.Fatalf("got %d commands, want %d", len(commands), len(want))

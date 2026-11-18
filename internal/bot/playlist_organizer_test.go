@@ -781,7 +781,7 @@ func TestPlaylistAssignmentUsesLegacyWebAppForEachSong(t *testing.T) {
 		song:            unplaylistSong{ID: "song-1", Title: "Song", Artist: "Artist"},
 		webAppButtonURL: "https://webapp.example.com/?data=%7B%7D",
 	}
-	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "还没选歌单") || strings.Contains(text, "打开歌单选择页面") {
+	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "第 1 首") || strings.Contains(text, "还没选歌单") || strings.Contains(text, "打开歌单选择页面") {
 		t.Fatalf("per-song selection copy = %q", text)
 	}
 	menuMarkup := playlistAssignmentMarkup(menu)
@@ -813,7 +813,7 @@ func TestPlaylistAssignmentUsesLegacyWebAppForEachSong(t *testing.T) {
 	if strings.Join(labels, ",") != "✅ 确认加入,重新选择,跳过本首,结束整理" {
 		t.Fatalf("song controls = %#v", labels)
 	}
-	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "归档到：华语、摇滚") || !strings.Contains(text, "新歌归档") {
+	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "放入 华语、摇滚") || !strings.Contains(text, "整理歌单") || strings.Contains(text, "还没选歌单") {
 		t.Fatalf("song preview copy = %q", text)
 	}
 
@@ -835,7 +835,7 @@ func TestPlaylistAssignmentPreviewKeepsMetadataOnOneLine(t *testing.T) {
 
 func TestPlaylistAssignmentMessageIsCompactAndDoesNotRepeatButtonInstructions(t *testing.T) {
 	assignment := pendingPlaylistAssignment{
-		song:                 unplaylistSong{ID: "song", Title: "雨下一整晚", Artist: "周杰伦", Album: "跨时代", Year: 2010, Playlists: "HipHop,中文"},
+		song:                 unplaylistSong{ID: "song", Title: "雨下一整晚", Artist: "周杰伦", Album: "跨时代", Year: 2010, Playlists: "HipHop,中文", RemainingCount: 12},
 		playlistAssist:       true,
 		aiSuggestedPlaylists: []string{"中文", "弦乐"},
 		processedCount:       2,
@@ -843,12 +843,10 @@ func TestPlaylistAssignmentMessageIsCompactAndDoesNotRepeatButtonInstructions(t 
 	}
 	message := formatPlaylistAssignment(assignment)
 	for _, expected := range []string{
-		"新歌归档\n\n雨下一整晚",
+		"整理歌单\n第 3 首 · 还剩 12 · 已归档 2 · 跳过 0\n\n雨下一整晚",
 		"周杰伦",
 		"跨时代 · 2010",
-		"还没选歌单",
-		"🤖 AI 建议：中文、弦乐",
-		"进度：已确认 2 · 跳过 0",
+		"建议\n中文、弦乐",
 	} {
 		if !strings.Contains(message, expected) {
 			t.Errorf("message %q does not contain %q", message, expected)
@@ -888,7 +886,7 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 			assignment: pendingPlaylistAssignment{
 				song: unplaylistSong{ID: "song-1", Title: "Song"},
 			},
-			want: "AI 建议未启用",
+			want: "",
 		},
 		{
 			name: "AI suggestions available",
@@ -897,14 +895,14 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				playlistAssist:       true,
 				aiSuggestedPlaylists: []string{"摇滚"},
 			},
-			want: "🤖 AI 建议",
+			want: "摇滚",
 		},
 		{
 			name: "peer playlist details are omitted from the concise status",
 			assignment: pendingPlaylistAssignment{
 				song: unplaylistSong{ID: "song-1", Playlists: "华语"},
 			},
-			want: "AI 建议未启用",
+			want: "",
 		},
 		{
 			name: "AI suggestion unavailable",
@@ -913,7 +911,7 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				playlistAssist:          true,
 				aiSuggestionUnavailable: true,
 			},
-			want: "AI 建议暂不可用",
+			want: "这次没有建议",
 		},
 		{
 			name: "AI suggestions finish before the picker is shown",
@@ -922,7 +920,7 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				playlistAssist:      true,
 				aiSuggestionLoading: true,
 			},
-			want: "正在生成归档建议",
+			want: "生成中",
 		},
 		{
 			name: "manual retry says it is reorganizing",
@@ -940,12 +938,19 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 				song:           unplaylistSong{ID: "song-1", Title: "Song"},
 				playlistAssist: true,
 			},
-			want: "AI 暂未找到合适歌单，请手动选择",
+			want: "没有明显合适的",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := app.playlistAssignmentStatus(test.assignment); !strings.Contains(got, test.want) {
+			got := app.playlistAssignmentStatus(test.assignment)
+			if test.want == "" {
+				if got != "" {
+					t.Fatalf("playlistAssignmentStatus() = %q, want empty", got)
+				}
+				return
+			}
+			if !strings.Contains(got, test.want) {
 				t.Fatalf("playlistAssignmentStatus() = %q, want it to contain %q", got, test.want)
 			}
 		})
@@ -972,16 +977,26 @@ func TestPlaylistAssignmentSuggestionsUpdateChooserDefaultsWithoutLosingSession(
 	}
 	loadingMarkup := playlistAssignmentMarkup(assignment)
 	loadingButtons := make(map[string]bool)
+	foundLoadingChooser := false
 	for _, row := range loadingMarkup.InlineKeyboard {
 		for _, button := range row {
 			if button.WebApp != nil {
-				t.Fatal("legacy chooser must stay closed until AI defaults are ready")
+				foundLoadingChooser = true
+				if button.WebApp.URL != assignment.webAppButtonURL {
+					t.Fatalf("loading chooser URL = %s, want the current page %s", button.WebApp.URL, assignment.webAppButtonURL)
+				}
 			}
 			loadingButtons[button.Text] = true
 		}
 	}
+	if foundLoadingChooser || loadingButtons["📂 选择歌单"] || loadingButtons["重新整理"] {
+		t.Fatal("the unfinished suggestion card should not offer the chooser yet")
+	}
 	if !loadingButtons["跳过本首"] || !loadingButtons["结束整理"] {
 		t.Fatalf("skip and end controls should remain available while AI loads: %#v", loadingButtons)
+	}
+	if text := formatPlaylistAssignment(assignment); !strings.Contains(text, "第 1 首") || !strings.Contains(text, "正在生成建议…") || strings.Contains(text, "Song") || strings.Contains(text, "建议\n生成中") {
+		t.Fatalf("loading card should wait instead of showing a half-finished song: %s", text)
 	}
 	updated, ok := app.storePlaylistAssignmentAISuggestions(assignment.token, "song-1", 1, []string{"摇滚"}, false)
 	if !ok || updated.aiSuggestionLoading || len(updated.aiSuggestedPlaylists) != 1 || updated.aiSuggestedPlaylists[0] != "摇滚" {
@@ -1055,6 +1070,10 @@ func TestPlaylistAssignmentOffersAnotherAIPassBesideTheChooser(t *testing.T) {
 	if !ok || stored.aiSuggestionLoading || stored.aiSuggestionManual || len(stored.aiSuggestedPlaylists) != 1 {
 		t.Fatalf("fresh pass was not stored: %#v ok=%t", stored, ok)
 	}
+	ready := playlistAssignmentMarkup(stored)
+	if !buttonTexts(ready)["重新整理"] || !buttonTexts(ready)["📂 选择歌单"] {
+		t.Fatalf("chooser and another pass should return after suggestions land: %#v", buttonTexts(ready))
+	}
 	if text := formatPlaylistAssignment(updated); !strings.Contains(text, "正在重新整理") {
 		t.Fatalf("retry copy = %q", text)
 	}
@@ -1062,9 +1081,12 @@ func TestPlaylistAssignmentOffersAnotherAIPassBesideTheChooser(t *testing.T) {
 	for _, buttons := range loading.InlineKeyboard {
 		for _, button := range buttons {
 			if button.Text == "重新整理" || button.WebApp != nil {
-				t.Fatalf("chooser stayed open while reorganizing: %#v", button)
+				t.Fatalf("a second pass should not redraw the chooser while loading: %#v", button)
 			}
 		}
+	}
+	if text := formatPlaylistAssignment(updated); !strings.Contains(text, "正在重新整理…") || strings.Contains(text, "雨下一整晚") || strings.Contains(text, "建议\n") {
+		t.Fatalf("reorganize copy = %q", text)
 	}
 	finished := assignment
 	finished.selectionComplete = true

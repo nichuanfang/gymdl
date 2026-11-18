@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/internal/aichat"
 	"github.com/nichuanfang/gymdl/internal/musicrag"
 	"github.com/nichuanfang/gymdl/internal/storage"
 )
@@ -1092,6 +1094,14 @@ func TestPlaylistSeedForRefillIgnoresPlannerBoilerplate(t *testing.T) {
 	if !ok || seed.Theme != "夜里" {
 		t.Fatalf("%+v ok=%t", seed, ok)
 	}
+	seed, ok = playlistSeedForRefill("像这首歌 晴天 - 周杰伦\n曲库索引里没有《晴天》，没有查到这首歌的听感特征，按歌名和歌手找听感相近的歌。\n夜里")
+	if !ok || seed.Theme != "夜里" {
+		t.Fatalf("missing features %+v ok=%t", seed, ok)
+	}
+	seed, ok = playlistSeedForRefill("像这首歌 晴天 - 周杰伦\n曲库索引里没有《晴天》，按查到的听感找相近的歌。流派：流行。\n夜里")
+	if !ok || seed.Theme != "夜里" {
+		t.Fatalf("found features %+v ok=%t", seed, ok)
+	}
 }
 
 func TestForgetMissingSongsContinuesWhenCleanupFails(t *testing.T) {
@@ -1320,6 +1330,11 @@ func TestRecallSimilarUsesTheIndexedVectorAndDropsTheSeed(t *testing.T) {
 	}))
 	defer server.Close()
 	service := newSeedRecallService(t, server)
+	var webCalls int
+	service.mcpTools = func() []aichat.Tool {
+		webCalls++
+		return nil
+	}
 	if err := service.stateTable.store.Enqueue(t.Context(), musicrag.Song{
 		MusicID: "song-seed", Title: "晴天", Artist: "周杰伦", Genre: "流行", Mood: "忧伤", Language: "纯音乐", Description: "夏天和吉他", Status: musicrag.StatusReady,
 	}); err != nil {
@@ -1329,8 +1344,8 @@ func TestRecallSimilarUsesTheIndexedVectorAndDropsTheSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if chatCalls != 0 || fetchCalls != 1 || queryFiltered || queryVector != 0.5 || semantic.PreferInstrumental {
-		t.Fatalf("chat=%d fetch=%d filtered=%t vector=%v instrumental=%t", chatCalls, fetchCalls, queryFiltered, queryVector, semantic.PreferInstrumental)
+	if chatCalls != 0 || fetchCalls != 1 || webCalls != 0 || queryFiltered || queryVector != 0.5 || semantic.PreferInstrumental {
+		t.Fatalf("chat=%d fetch=%d web=%d filtered=%t vector=%v instrumental=%t", chatCalls, fetchCalls, webCalls, queryFiltered, queryVector, semantic.PreferInstrumental)
 	}
 	if len(candidates) != 1 || candidates[0].ID != "song-near" {
 		t.Fatalf("candidates = %#v", candidates)
@@ -1427,8 +1442,178 @@ func TestRecallSimilarEmbedsWhenTheSongIsNotIndexed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fetches != 0 || len(candidates) != 1 || candidates[0].ID != "song-near" || !strings.HasPrefix(description, "像这首歌 晴天 - 周杰伦\n") || !strings.Contains(description, "曲库索引里没有《晴天》") {
+	if fetches != 0 || len(candidates) != 1 || candidates[0].ID != "song-near" || !strings.HasPrefix(description, "像这首歌 晴天 - 周杰伦\n") || !strings.Contains(description, "曲库索引里没有《晴天》") || !strings.Contains(description, "没有查到这首歌的听感特征") {
 		t.Fatalf("fetches=%d candidates=%#v description=%q", fetches, candidates, description)
+	}
+	if !strings.Contains(embedded, "歌名:《晴天》") || !strings.Contains(embedded, "介绍:和这首歌听感相近") {
+		t.Fatalf("embedded = %q", embedded)
+	}
+}
+
+func TestRecallSimilarLooksUpFeaturesForAnUnindexedSeed(t *testing.T) {
+	const evidence = "晴天是周杰伦的国语流行歌，吉他和忧伤的夏天。不要把《稻香》放进歌单。"
+	metaJSON := `{"genre":"流行","mood":"忧伤","language":"国语","description":"夏天的吉他和一点忧伤，雨后的校园里慢慢走。"}`
+	t.Run("embed the looked up features", func(t *testing.T) {
+		var embedded, chatUser string
+		var queryFiltered bool
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v1/chat/completions":
+				var request struct {
+					Messages []struct {
+						Role    string `json:"role"`
+						Content string `json:"content"`
+					} `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Messages) < 2 {
+					t.Errorf("chat: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				chatUser = request.Messages[len(request.Messages)-1].Content
+				if !strings.Contains(request.Messages[0].Content, "不要推荐别的歌") {
+					t.Errorf("system prompt = %q", request.Messages[0].Content)
+				}
+				writeChatResponse(t, w, metaJSON)
+			case "/v1/embeddings":
+				var request struct {
+					Input []string `json:"input"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Input) != 1 {
+					t.Errorf("embedding: %v %#v", err, request.Input)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				embedded = request.Input[0]
+				writeJSON(t, w, map[string]any{"object": "list", "data": []any{map[string]any{"object": "embedding", "index": 0, "embedding": testVector(0.3)}}})
+			case "/query":
+				var request map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Errorf("query: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if _, ok := request["filter"]; ok {
+					queryFiltered = true
+				}
+				writeJSON(t, w, map[string]any{"matches": []any{
+					map[string]any{"score": 0.7, "metadata": map[string]any{"id": "song-near", "title": "七里香", "artist": "周杰伦"}},
+				}})
+			case "/api/StartActionAndWait":
+				writeJSON(t, w, map[string]any{"logEntry": map[string]any{"exitCode": 0, "stdout": "[]", "timedOut": false}})
+			default:
+				t.Errorf("unexpected %s", r.URL.Path)
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer server.Close()
+		service := newSeedRecallService(t, server)
+		service.stateTable = nil
+		var query string
+		service.mcpTools = func() []aichat.Tool {
+			return []aichat.Tool{{
+				Name:       "mcp_webtool_websearch",
+				Parameters: map[string]any{"properties": map[string]any{"query": map[string]any{"type": "string"}}},
+				Run: func(_ context.Context, args map[string]any) (string, error) {
+					query, _ = args["query"].(string)
+					return evidence, nil
+				},
+			}}
+		}
+		candidates, semantic, description, _, err := service.recallSimilar(t.Context(), playlistSeed{Title: "晴天", Artist: "周杰伦"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := musicrag.DocumentText(musicrag.Song{Title: "晴天", Artist: "周杰伦"}, musicrag.Meta{
+			Genre: "流行", Mood: "忧伤", Language: "国语", Description: "夏天的吉他和一点忧伤，雨后的校园里慢慢走。",
+		})
+		if embedded != want {
+			t.Fatalf("embedded = %q", embedded)
+		}
+		if queryFiltered || semantic.PreferInstrumental || semantic.Genre != "流行" || semantic.Mood != "忧伤" || semantic.Language != "国语" {
+			t.Fatalf("filtered=%t semantic=%+v", queryFiltered, semantic)
+		}
+		if len(candidates) != 1 || candidates[0].ID != "song-near" || candidates[0].Title == "稻香" {
+			t.Fatalf("candidates = %#v", candidates)
+		}
+		for _, part := range []string{"晴天", "周杰伦", "流派"} {
+			if !strings.Contains(query, part) {
+				t.Errorf("search query %q missing %q", query, part)
+			}
+		}
+		if !strings.Contains(chatUser, evidence) || strings.Contains(description, "稻香") {
+			t.Fatalf("chat=%q description=%q", chatUser, description)
+		}
+		for _, part := range []string{"曲库索引里没有《晴天》", "按查到的听感找相近的歌", "流派：流行", "听感：忧伤", "语言：国语"} {
+			if !strings.Contains(description, part) {
+				t.Errorf("description %q missing %q", description, part)
+			}
+		}
+	})
+	t.Run("fall back when search fails", func(t *testing.T) {
+		assertUnindexedSeedFallback(t, func() (string, error) {
+			return "", errors.New("search down")
+		}, 0)
+	})
+	t.Run("fall back when features are incomplete", func(t *testing.T) {
+		assertUnindexedSeedFallback(t, func() (string, error) {
+			return evidence, nil
+		}, 1)
+	})
+}
+
+func assertUnindexedSeedFallback(t *testing.T, search func() (string, error), wantChats int) {
+	t.Helper()
+	var chats int
+	var embedded string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			chats++
+			writeChatResponse(t, w, `{"genre":"流行","mood":"","language":"国语","description":"太短"}`)
+		case "/v1/embeddings":
+			var request struct {
+				Input []string `json:"input"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.Input) != 1 {
+				t.Errorf("embedding: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			embedded = request.Input[0]
+			writeJSON(t, w, map[string]any{"object": "list", "data": []any{map[string]any{"object": "embedding", "index": 0, "embedding": testVector(0.3)}}})
+		case "/query":
+			writeJSON(t, w, map[string]any{"matches": []any{
+				map[string]any{"score": 0.7, "metadata": map[string]any{"id": "song-near", "title": "七里香", "artist": "周杰伦"}},
+			}})
+		case "/api/StartActionAndWait":
+			writeJSON(t, w, map[string]any{"logEntry": map[string]any{"exitCode": 0, "stdout": "[]", "timedOut": false}})
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	service := newSeedRecallService(t, server)
+	service.stateTable = nil
+	service.mcpTools = func() []aichat.Tool {
+		return []aichat.Tool{{
+			Name:       "mcp_webtool_websearch",
+			Parameters: map[string]any{"properties": map[string]any{"query": map[string]any{"type": "string"}}},
+			Run: func(context.Context, map[string]any) (string, error) {
+				return search()
+			},
+		}}
+	}
+	candidates, semantic, description, _, err := service.recallSimilar(t.Context(), playlistSeed{Title: "晴天", Artist: "周杰伦"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chats != wantChats || semantic.Genre != "" || semantic.Mood != "" || semantic.Language != "" || semantic.PreferInstrumental {
+		t.Fatalf("chats=%d semantic=%+v", chats, semantic)
+	}
+	if len(candidates) != 1 || candidates[0].ID != "song-near" || !strings.Contains(description, "曲库索引里没有《晴天》") || !strings.Contains(description, "没有查到这首歌的听感特征") {
+		t.Fatalf("candidates=%#v description=%q", candidates, description)
 	}
 	if !strings.Contains(embedded, "歌名:《晴天》") || !strings.Contains(embedded, "介绍:和这首歌听感相近") {
 		t.Fatalf("embedded = %q", embedded)

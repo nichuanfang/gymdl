@@ -79,6 +79,8 @@ export interface DiscoveryTrack {
   artist: string
   album?: string
   duration?: number
+  plays?: number
+  last_played?: string
   verified: boolean
 }
 
@@ -96,6 +98,72 @@ export const enqueueDiscoveryTracks = (tracks: DiscoveryTrack[]) =>
   post<{ queued: number; skipped: number }>('/discovery/enqueue', { tracks })
 export const dismissDiscoveryTracks = (tracks: DiscoveryTrack[]) =>
   post<{ dismissed: number }>('/discovery/dismiss', { tracks })
+
+export interface DiscoveryJob {
+  platform: string
+  id: string
+  title: string
+  artist: string
+  state: string
+  label: string
+  error?: string
+}
+
+export const listDiscoveryJobs = () => get<{ jobs: DiscoveryJob[] }>('/discovery/jobs')
+
+export interface FavoritePlatform {
+  platform: string
+  label: string
+  bound: boolean
+  account?: string
+  paused: boolean
+  error?: string
+  state: string
+}
+
+export interface FavoriteQueueCount {
+  state: string
+  label: string
+  count: number
+}
+
+export interface FavoriteJob {
+  id: string
+  platform: string
+  track_id: string
+  title: string
+  artist: string
+  state: string
+  label: string
+  error?: string
+}
+
+export interface FavoritesPage {
+  enabled: boolean
+  poll_minutes: number
+  notice?: string
+  platforms: FavoritePlatform[]
+  queue: FavoriteQueueCount[]
+  failed: FavoriteJob[]
+  pending: FavoriteJob[]
+}
+
+export interface FavoritePreview {
+  token: string
+  platform: string
+  account: string
+  count: number
+  enabled: boolean
+}
+
+export const getFavorites = () => get<FavoritesPage>('/discovery/favorites')
+export const previewFavorites = (platform: string) => post<FavoritePreview>('/discovery/favorites/preview', { platform })
+export const bindFavorites = (token: string) => post<FavoritesPage>('/discovery/favorites/bind', { token })
+export const pauseFavorites = (platform: string, paused: boolean) => post<FavoritesPage>('/discovery/favorites/pause', { platform, paused })
+export const syncFavorites = () => post<FavoritesPage>('/discovery/favorites/sync')
+export const retryFavorites = () => post<FavoritesPage>('/discovery/favorites/retry')
+export const refreshFavorites = () => post<FavoritesPage>('/discovery/favorites/refresh')
+export const resolveFavorite = (id: string, accept: boolean) => post<FavoritesPage>('/discovery/favorites/resolve', { id, accept })
 
 export interface PlaylistDescription {
   id: string
@@ -144,6 +212,7 @@ export interface AIPreviewPage {
   preview: AIPreviewSong[]
   used_fallback: boolean
   creating: boolean
+  existing: number
 }
 
 export interface AIConfirmPage {

@@ -13,14 +13,20 @@ import (
 	"github.com/nichuanfang/gymdl/internal/playlistcatalog"
 	"github.com/nichuanfang/gymdl/internal/storage"
 	"github.com/nichuanfang/gymdl/utils"
+	"golang.org/x/text/width"
 	tb "gopkg.in/telebot.v4"
 )
 
 const (
 	playlistDescTTL            = 20 * time.Minute
-	playlistDescPageSize       = 8
+	playlistDescPageSize       = 6
 	playlistDescCallbackUnique = "pldesc"
+	// 整行按钮的显示宽度。超出就在末尾省略，避免客户端从歌名中间截断。
+	playlistDescButtonWidth = 40
 )
+
+// playlistDescSyncTimeout bounds the Navidrome fetch. Tests shorten it.
+var playlistDescSyncTimeout = 45 * time.Second
 
 var playlistDescEndpoint = tb.InlineButton{Unique: playlistDescCallbackUnique}
 
@@ -33,6 +39,7 @@ type pendingPlaylistDesc struct {
 	synced    bool
 	page      int
 	editingID string
+	syncing   bool
 	expiresAt time.Time
 }
 
@@ -84,8 +91,8 @@ func (app *BotApp) PlaylistDescCommand(c tb.Context) error {
 	if app.playlistCatalog == nil {
 		return c.Send("歌单库还没准备好，请检查数据库。")
 	}
-	if reason := app.maintenanceConflict(c.Chat().ID, "desc"); reason != "" {
-		return c.Send(reason)
+	if hold, ok := app.chatMaintenanceHold(c.Chat().ID, "desc"); ok {
+		return app.presentMaintenanceHold(c, hold, "d", nil)
 	}
 	session := pendingPlaylistDesc{
 		token:     strings.ReplaceAll(uuid.NewString(), "-", ""),
@@ -94,7 +101,7 @@ func (app *BotApp) PlaylistDescCommand(c tb.Context) error {
 		expiresAt: time.Now().Add(playlistDescTTL),
 	}
 	if err := app.reloadPlaylistDesc(&session); err != nil {
-		return c.Send(err.Error())
+		return c.Send("读取歌单列表失败：" + discoveryPublicError(err))
 	}
 	text, markup := formatPlaylistDesc(session, "")
 	message, err := c.Bot().Send(c.Chat(), text, markup)
@@ -166,7 +173,7 @@ func (app *BotApp) HandlePlaylistDescCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "请先选择一张歌单", ShowAlert: true})
 		}
 		if err := app.playlistCatalog.SetDesc(context.Background(), session.editingID, ""); err != nil {
-			return c.Respond(&tb.CallbackResponse{Text: err.Error(), ShowAlert: true})
+			return c.Respond(&tb.CallbackResponse{Text: discoveryPublicError(err), ShowAlert: true})
 		}
 		session.editingID = ""
 		if err := app.reloadPlaylistDesc(&session); err != nil {
@@ -174,7 +181,7 @@ func (app *BotApp) HandlePlaylistDescCallback(c tb.Context) error {
 			if respondErr := c.Respond(&tb.CallbackResponse{Text: "描述已清空，但列表刷新失败"}); respondErr != nil {
 				return respondErr
 			}
-			return editPlaylistDescTerminalMessage(c, "✅ 描述已清空，但列表刷新失败。重新发送 /playlist_desc 查看最新状态。")
+			return editPlaylistDescCard(c, "✅ 描述已清空，但列表刷新失败。重新发送 /playlist_desc 查看最新状态。", nil)
 		}
 		app.savePlaylistDesc(session)
 		if err := c.Respond(&tb.CallbackResponse{Text: "已清空"}); err != nil {
@@ -208,7 +215,7 @@ func (app *BotApp) handlePlaylistDescText(c tb.Context) (bool, error) {
 		return false, nil
 	}
 	if err := app.playlistCatalog.SetDesc(context.Background(), session.editingID, c.Text()); err != nil {
-		return true, app.updatePlaylistDescCard(c, session, "❌ 保存失败："+err.Error()+"。请修正后重新发送。", false)
+		return true, app.updatePlaylistDescCard(c, session, "❌ 保存失败："+discoveryPublicError(err)+"。请修正后重新发送。", false)
 	}
 	session.editingID = ""
 	if err := app.reloadPlaylistDesc(&session); err != nil {
@@ -254,60 +261,86 @@ func (app *BotApp) syncPlaylistDesc(c tb.Context, session pendingPlaylistDesc) e
 	if app.cfg == nil || app.cfg.PlaylistOrganizer == nil {
 		return c.Respond(&tb.CallbackResponse{Text: "尚未配置 Navidrome", ShowAlert: true})
 	}
+	if app.playlistCatalog == nil {
+		return c.Respond(&tb.CallbackResponse{Text: "歌单库还没准备好", ShowAlert: true})
+	}
 	if !app.discoveryCommandMu.TryLock() {
 		return c.Respond(&tb.CallbackResponse{Text: "正在处理上一条请求", ShowAlert: true})
 	}
-	defer app.discoveryCommandMu.Unlock()
 	if err := c.Respond(&tb.CallbackResponse{Text: "正在同步歌单列表…"}); err != nil {
+		app.discoveryCommandMu.Unlock()
 		return err
 	}
-	if c.Message() != nil {
-		if _, err := c.Bot().Edit(c.Message(), "⌛ 正在从 Navidrome 同步歌单列表…"); err != nil {
-			return err
-		}
+	if c.Message() == nil {
+		app.discoveryCommandMu.Unlock()
+		return c.Send("找不到原来的消息，请重新发送 /playlist_desc。")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	remotes, err := playlistcatalog.Fetch(ctx, app.cfg.PlaylistOrganizer)
-	if err != nil {
-		return editPlaylistDescMessage(c, session, "❌ 同步失败："+err.Error()+"\n可稍后重试。")
-	}
-	result, err := app.playlistCatalog.Apply(ctx, remotes, nil, time.Now())
-	if err != nil {
-		return editPlaylistDescMessage(c, session, "❌ 同步失败："+err.Error()+"\n可稍后重试。")
+	if err := editPlaylistDescCard(c, "⌛ 正在从 Navidrome 同步歌单列表…\n完成后会回到这张卡片。", nil); err != nil {
+		app.discoveryCommandMu.Unlock()
+		return err
 	}
 	session.editingID = ""
-	session.page = 0
-	if err = app.reloadPlaylistDesc(&session); err != nil {
-		app.deletePlaylistDesc(session.token)
-		return editPlaylistDescTerminalMessage(c, "✅ Navidrome 同步已完成，但重新读取歌单列表失败："+err.Error()+"\n重新发送 /playlist_desc 查看最新状态。")
-	}
+	session.syncing = true
 	app.savePlaylistDesc(session)
-	notice := fmt.Sprintf("✅ 同步完成 · 新增 %d · 更新 %d · 停用 %d", result.Added, result.Updated, result.Inactive)
+	organizer := app.cfg.PlaylistOrganizer
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				utils.WarnWithFormat("[Playlist] 同步歌单列表失败: %v", recovered)
+			}
+		}()
+		defer app.discoveryCommandMu.Unlock()
+		defer app.setPlaylistDescSyncing(session.token, false)
+		ctx, cancel := context.WithTimeout(context.Background(), playlistDescSyncTimeout)
+		defer cancel()
+		remotes, err := playlistcatalog.Fetch(ctx, organizer)
+		if err != nil {
+			app.finishPlaylistDescSync(c, session, "❌ 同步失败："+discoveryPublicError(err)+"\n可稍后重试。", false)
+			return
+		}
+		result, err := app.playlistCatalog.Apply(ctx, remotes, nil, time.Now())
+		if err != nil {
+			app.finishPlaylistDescSync(c, session, "❌ 同步失败："+discoveryPublicError(err)+"\n可稍后重试。", false)
+			return
+		}
+		session.editingID = ""
+		session.page = 0
+		session.syncing = false
+		if err = app.reloadPlaylistDesc(&session); err != nil {
+			app.deletePlaylistDesc(session.token)
+			app.finishPlaylistDescSync(c, session, "✅ Navidrome 同步已完成，但重新读取歌单列表失败："+discoveryPublicError(err)+"\n重新发送 /playlist_desc 查看最新状态。", true)
+			return
+		}
+		app.savePlaylistDesc(session)
+		notice := fmt.Sprintf("✅ 同步完成 · 新增 %d · 更新 %d · 停用 %d", result.Added, result.Updated, result.Inactive)
+		app.finishPlaylistDescSync(c, session, notice, false)
+	}()
+	return nil
+}
+
+func (app *BotApp) finishPlaylistDescSync(c tb.Context, session pendingPlaylistDesc, notice string, closed bool) {
 	text, markup := formatPlaylistDesc(session, notice)
+	if closed {
+		text = notice
+		markup = nil
+	}
+	if err := editPlaylistDescCard(c, text, markup); err != nil {
+		utils.WarnWithFormat("[Playlist] 更新歌单描述失败: %v", err)
+	}
+}
+
+func editPlaylistDescCard(c tb.Context, text string, markup *tb.ReplyMarkup) error {
+	if markup == nil {
+		markup = &tb.ReplyMarkup{}
+	}
 	if c.Message() == nil {
-		_, err = c.Bot().Send(c.Chat(), text, markup)
-		return err
+		return c.Send(text, markup)
 	}
-	_, err = c.Bot().Edit(c.Message(), text, markup)
+	err := c.Edit(text, markup)
+	if telegramMessageUnchanged(err) {
+		return nil
+	}
 	return err
-}
-
-func editPlaylistDescMessage(c tb.Context, session pendingPlaylistDesc, notice string) error {
-	text, markup := formatPlaylistDesc(session, notice)
-	if c.Message() != nil {
-		_, err := c.Bot().Edit(c.Message(), text, markup)
-		return err
-	}
-	return c.Send(text, markup)
-}
-
-func editPlaylistDescTerminalMessage(c tb.Context, text string) error {
-	if c.Message() != nil {
-		_, err := c.Bot().Edit(c.Message(), text, &tb.ReplyMarkup{})
-		return err
-	}
-	return c.Send(text)
 }
 
 func (app *BotApp) reloadPlaylistDesc(session *pendingPlaylistDesc) error {
@@ -347,10 +380,7 @@ func formatPlaylistDesc(session pendingPlaylistDesc, notice string) (string, *tb
 	}
 	if !session.synced {
 		text.WriteString("\n\n歌单列表尚未同步。\n同步后会显示可编辑歌单。")
-		markup.Inline(
-			markup.Row(markup.Data("↻ 同步歌单", playlistDescCallbackUnique, "sync", session.token)),
-			markup.Row(markup.Data("✕ 取消", playlistDescCallbackUnique, "cancel", session.token)),
-		)
+		markup.Inline(playlistDescActionRows(markup, session, false)...)
 		return text.String(), markup
 	}
 	if session.editingID != "" {
@@ -368,45 +398,108 @@ func formatPlaylistDesc(session pendingPlaylistDesc, notice string) (string, *tb
 		)
 		return text.String(), markup
 	}
-	fmt.Fprintf(&text, "\n\n第 %d / %d 页 · 共 %d 张在用\n点歌单名称修改；没有描述的排在前面", session.page+1, playlistDescPages(len(session.playlists)), len(session.playlists))
+	if len(session.playlists) == 0 {
+		text.WriteString("\n\n当前没有可编辑的歌单。")
+		markup.Inline(playlistDescActionRows(markup, session, false)...)
+		return text.String(), markup
+	}
+	fmt.Fprintf(&text, "\n\n第 %d / %d 页 · 共 %d 张", session.page+1, playlistDescPages(len(session.playlists)), len(session.playlists))
+	if missing := playlistDescMissingCount(session.playlists); missing > 0 {
+		fmt.Fprintf(&text, "\n还有 %d 张没写描述，排在前面。", missing)
+	}
+	text.WriteString("\n点下面的名称修改。")
 	start := session.page * playlistDescPageSize
 	if start > len(session.playlists) {
 		start = 0
 	}
 	end := min(start+playlistDescPageSize, len(session.playlists))
 	var rows []tb.Row
-	for index := start; index < end; index += 2 {
-		row := tb.Row{markup.Data(playlistDescButtonLabel(session.playlists[index]), playlistDescCallbackUnique, "open", session.token, strconv.Itoa(index))}
-		if index+1 < end {
-			row = append(row, markup.Data(playlistDescButtonLabel(session.playlists[index+1]), playlistDescCallbackUnique, "open", session.token, strconv.Itoa(index+1)))
-		}
-		rows = append(rows, row)
+	for index := start; index < end; index++ {
+		rows = append(rows, markup.Row(markup.Data(playlistDescButtonLabel(session.playlists[index]), playlistDescCallbackUnique, "open", session.token, strconv.Itoa(index))))
 	}
-	var nav tb.Row
-	if session.page > 0 {
-		nav = append(nav, markup.Data("◀ 上一页", playlistDescCallbackUnique, "page", session.token, strconv.Itoa(session.page-1)))
-	}
-	if end < len(session.playlists) {
-		nav = append(nav, markup.Data("下一页 ▶", playlistDescCallbackUnique, "page", session.token, strconv.Itoa(session.page+1)))
-	}
-	if len(nav) > 0 {
-		rows = append(rows, nav)
-	}
-	// 翻页、同步、取消各占操作行，不和歌单名称挤在同一行。
-	rows = append(rows,
-		markup.Row(markup.Data("↻ 同步歌单", playlistDescCallbackUnique, "sync", session.token)),
-		markup.Row(markup.Data("✕ 取消", playlistDescCallbackUnique, "cancel", session.token)),
-	)
+	rows = append(rows, playlistDescActionRows(markup, session, end < len(session.playlists))...)
 	markup.Inline(rows...)
 	return text.String(), markup
 }
 
-func playlistDescButtonLabel(item playlistcatalog.Playlist) string {
-	label := item.Name
-	if strings.TrimSpace(item.Desc) == "" {
-		label += " · 未写"
+// playlistDescActionRows 把翻页、同步、取消放在名称列表下面。
+// 只有一个翻页键时和操作挤在同一行，否则它会拉满整行，看起来像另一张歌单。
+// 三个按键挤在一行时，「同步歌单」会从中间被截断，所以改成「同步」。
+func playlistDescActionRows(markup *tb.ReplyMarkup, session pendingPlaylistDesc, hasNext bool) []tb.Row {
+	token := session.token
+	cancel := markup.Data("✕ 取消", playlistDescCallbackUnique, "cancel", token)
+	var nav tb.Row
+	if session.page > 0 {
+		nav = append(nav, markup.Data("◀ 上一页", playlistDescCallbackUnique, "page", token, strconv.Itoa(session.page-1)))
 	}
-	return utils.TruncateString(label, 30)
+	if hasNext {
+		nav = append(nav, markup.Data("下一页 ▶", playlistDescCallbackUnique, "page", token, strconv.Itoa(session.page+1)))
+	}
+	switch len(nav) {
+	case 0:
+		return []tb.Row{markup.Row(markup.Data("↻ 同步歌单", playlistDescCallbackUnique, "sync", token), cancel)}
+	case 1:
+		return []tb.Row{markup.Row(nav[0], markup.Data("↻ 同步", playlistDescCallbackUnique, "sync", token), cancel)}
+	default:
+		return []tb.Row{
+			nav,
+			markup.Row(markup.Data("↻ 同步歌单", playlistDescCallbackUnique, "sync", token), cancel),
+		}
+	}
+}
+
+func playlistDescMissingCount(rows []playlistcatalog.Playlist) int {
+	missing := 0
+	for _, item := range rows {
+		if strings.TrimSpace(item.Desc) == "" {
+			missing++
+		}
+	}
+	return missing
+}
+
+func playlistDescButtonLabel(item playlistcatalog.Playlist) string {
+	name := strings.TrimSpace(item.Name)
+	if name == "" {
+		name = "未命名歌单"
+	}
+	return truncateDisplayWidth(name, playlistDescButtonWidth)
+}
+
+func truncateDisplayWidth(s string, max int) string {
+	if max <= 1 || playlistDescDisplayWidth(s) <= max {
+		return s
+	}
+	budget := max - 1
+	used := 0
+	var b strings.Builder
+	for _, r := range s {
+		w := playlistDescRuneWidth(r)
+		if used+w > budget {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	b.WriteString("…")
+	return b.String()
+}
+
+func playlistDescDisplayWidth(s string) int {
+	total := 0
+	for _, r := range s {
+		total += playlistDescRuneWidth(r)
+	}
+	return total
+}
+
+func playlistDescRuneWidth(r rune) int {
+	switch width.LookupRune(r).Kind() {
+	case width.EastAsianWide, width.EastAsianFullwidth:
+		return 2
+	default:
+		return 1
+	}
 }
 
 func playlistDescPages(count int) int {
@@ -454,23 +547,17 @@ func (app *BotApp) getPlaylistDesc(token string, userID, chatID int64) (pendingP
 	return session, true
 }
 
-// maintenanceConflict names the other open maintenance card so the user knows
-// which message to finish. opening is the command being started and is not
-// treated as a conflict with itself.
+// maintenanceConflict names the other open maintenance card. opening is the
+// command being started and is not treated as a conflict with itself.
 func (app *BotApp) maintenanceConflict(chatID int64, opening string) string {
-	if opening != "trash" && app.hasPendingEmptyTrash(chatID) {
-		return "清空回收站还等你确认。请先在那条消息里确认或取消。"
+	hold, ok := app.chatMaintenanceHold(chatID, opening)
+	if !ok {
+		return ""
 	}
-	if opening != "assign" && app.hasPlaylistAssignmentForChat(chatID) {
-		return "歌单整理还开着。请先在那条消息里完成或点取消。"
+	if hold.processing {
+		return hold.busyText
 	}
-	if opening != "ai" && app.hasAIPlaylistSessionForChat(chatID) {
-		return "AI 歌单还开着。请先在那条消息里完成或点取消。"
-	}
-	if opening != "desc" && app.hasPlaylistDescForChat(chatID) {
-		return "歌单描述还开着。请先在那条消息里保存或点取消。"
-	}
-	return ""
+	return hold.text
 }
 
 func (app *BotApp) hasPlaylistDescForChat(chatID int64) bool {
@@ -494,6 +581,31 @@ func (app *BotApp) playlistDescAwaiting(chatID, userID int64) (pendingPlaylistDe
 		return pendingPlaylistDesc{}, false
 	}
 	return session, true
+}
+
+func (app *BotApp) setPlaylistDescSyncing(token string, syncing bool) {
+	app.playlistDescMu.Lock()
+	defer app.playlistDescMu.Unlock()
+	session, ok := app.playlistDescSessions[token]
+	if !ok {
+		return
+	}
+	session.syncing = syncing
+	app.playlistDescSessions[token] = session
+}
+
+func (app *BotApp) cancelPlaylistDesc(token string) bool {
+	app.playlistDescMu.Lock()
+	defer app.playlistDescMu.Unlock()
+	session, ok := app.playlistDescSessions[token]
+	if !ok || session.syncing {
+		return false
+	}
+	delete(app.playlistDescSessions, token)
+	if app.playlistDescByChat[session.chatID] == token {
+		delete(app.playlistDescByChat, session.chatID)
+	}
+	return true
 }
 
 func (app *BotApp) deletePlaylistDesc(token string) {

@@ -5,6 +5,7 @@ import (
 )
 
 func (app *BotApp) registerHandlers() {
+	app.bot.Use(app.recoverMiddleware())
 	app.bot.Use(app.LoggingMiddleware)
 	app.bot.Use(app.AuthMiddleware)
 
@@ -55,6 +56,7 @@ func (app *BotApp) registerHandlers() {
 	app.bot.Handle(&playlistAssignmentCallbackEndpoint, app.HandlePlaylistAssignmentCallback)
 	app.bot.Handle(&aiPlaylistCallbackEndpoint, app.HandleAIPlaylistCallback)
 	app.bot.Handle(&emptyTrashCallbackEndpoint, app.HandleEmptyTrashCallback)
+	app.bot.Handle(&maintenanceHoldEndpoint, app.HandleMaintenanceHoldCallback)
 	app.bot.Handle(&aiCandidateEndpoint, app.HandleAICandidateCallback)
 	app.bot.Handle(&aiModeSettingEndpoint, app.HandleAIModeCallback)
 	app.bot.Handle(tb.OnCallback, app.HandleCallBack)

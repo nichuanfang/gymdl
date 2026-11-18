@@ -128,6 +128,14 @@ func TestHandlePlaylistAssignmentWebAppSelectionVerifiesUserAndSelection(t *test
 	if err := app.HandlePlaylistAssignmentWebAppSelection(selectionToken, []string{"华语"}, valid); err == nil {
 		t.Fatal("a consumed selection token should not accept altered data")
 	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		assignment, ok = app.getPlaylistAssignment("assignment")
+		if ok && !assignment.processing && !app.playlistAssignmentRunActive(assignment.chatID) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	assignment, ok = app.getPlaylistAssignment("assignment")
 	if !ok || !assignment.selectionComplete || len(assignment.selectedPlaylists) != 1 || assignment.selectedPlaylists[0] != "摇滚" {
 		t.Fatalf("confirmed playlist selection was not preserved: %#v", assignment)

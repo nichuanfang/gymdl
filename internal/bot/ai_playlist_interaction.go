@@ -24,29 +24,30 @@ const (
 var aiPlaylistCallbackEndpoint = tb.InlineButton{Unique: aiPlaylistCallbackUnique}
 
 type pendingAIPlaylistSession struct {
-	token           string
-	userID          int64
-	chatID          int64
-	message         *tb.Message
-	totalPlaylists  int
-	playlists       []aiPlaylist
-	resumePlaylists []aiPlaylist
-	resumePlans     map[string]aiPlaylistResumePlan
-	target          aiPlaylist
-	creating        bool
-	awaitingName    bool
-	newPlaylistName string
-	createIntentID  string
-	createIntents   []aiPlaylistCreateIntent
-	request         string
-	excludedIDs     []string
-	draft           *aiPlaylistDraft
-	awaitingInput   bool
-	awaitingSeed    bool
-	processing      bool
-	pendingWrite    bool
-	notice          string
-	expiresAt       time.Time
+	token            string
+	userID           int64
+	chatID           int64
+	message          *tb.Message
+	totalPlaylists   int
+	playlists        []aiPlaylist
+	resumePlaylists  []aiPlaylist
+	resumePlans      map[string]aiPlaylistResumePlan
+	target           aiPlaylist
+	creating         bool
+	awaitingName     bool
+	newPlaylistName  string
+	createIntentID   string
+	createIntents    []aiPlaylistCreateIntent
+	request          string
+	excludedIDs      []string
+	draft            *aiPlaylistDraft
+	awaitingInput    bool
+	awaitingSeed     bool
+	confirmingDelete bool
+	processing       bool
+	pendingWrite     bool
+	notice           string
+	expiresAt        time.Time
 }
 
 type aiPlaylistPreset struct {
@@ -64,17 +65,18 @@ var aiPlaylistPresets = []aiPlaylistPreset{
 	{ID: "inst", Label: "器乐纯享", Text: "以纯音乐和器乐为主，适合作为背景聆听，避免明显人声。"},
 }
 
+func aiPlaylistSeedNotice() string {
+	return "直接发送歌名，或「歌名 - 歌手」。例如：晴天 - 周杰伦"
+}
+
 func (app *BotApp) startAIPlaylist(c tb.Context) error {
 	if c.Chat() == nil || c.Sender() == nil {
 		return c.Send("无法读取 Telegram 会话信息，请在聊天中重新发送 /ai_playlist。")
 	}
-	if app.hasAIPlaylistSessionForChat(c.Chat().ID) {
-		return c.Send("AI 歌单还开着。请在原消息里继续，或点取消。")
+	if hold, ok := app.chatMaintenanceHold(c.Chat().ID, ""); ok {
+		return app.presentMaintenanceHold(c, hold, "i", nil)
 	}
-	if reason := app.maintenanceConflict(c.Chat().ID, "ai"); reason != "" {
-		return c.Send(reason)
-	}
-	service, err := newAIPlaylistService(app.cfg)
+	service, err := app.openAIPlaylistService()
 	if err != nil {
 		return c.Send("AI 智能歌单服务尚未配置：" + err.Error())
 	}
@@ -93,14 +95,17 @@ func (app *BotApp) startAIPlaylist(c tb.Context) error {
 		expiresAt:   time.Now().Add(aiPlaylistSessionTTL),
 	}
 	app.playlistMaintenanceStartMu.Lock()
-	if reason := app.maintenanceConflict(session.chatID, "ai"); reason != "" || app.hasAIPlaylistSessionForChat(session.chatID) || !app.registerAIPlaylistSession(session) {
+	if hold, blocked := app.chatMaintenanceHold(session.chatID, ""); blocked || !app.registerAIPlaylistSession(session) {
 		app.playlistMaintenanceStartMu.Unlock()
 		_ = service.close()
-		if reason == "" {
-			reason = "AI 歌单还开着。请在原消息里继续，或点取消。"
+		if !blocked {
+			if again, ok := app.chatMaintenanceHold(session.chatID, ""); ok {
+				hold = again
+			} else {
+				hold = maintenanceHold{text: "AI 歌单还开着。", busyText: "AI 歌单正在处理，请稍等。"}
+			}
 		}
-		_, _ = c.Bot().Edit(message, reason, &tb.ReplyMarkup{})
-		return nil
+		return app.presentMaintenanceHold(c, hold, "i", message)
 	}
 	app.playlistMaintenanceStartMu.Unlock()
 	go app.prepareAIPlaylistMenu(session.token, service)
@@ -119,15 +124,41 @@ func (app *BotApp) prepareAIPlaylistMenu(token string, service *aiPlaylistServic
 	if !ok {
 		return
 	}
+	loaded, note, err := fillAIPlaylistMenu(ctx, session, service)
+	if err != nil {
+		app.failAIPlaylistMenu(token, note, err)
+		return
+	}
+	loaded.processing = false
+	loaded.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
+	app.updateAIPlaylistSession(loaded)
+	app.presentAIPlaylistSession(loaded)
+}
+
+func fillAIPlaylistMenu(ctx context.Context, session pendingAIPlaylistSession, service *aiPlaylistService) (pendingAIPlaylistSession, string, error) {
+	session.target = aiPlaylist{}
+	session.creating = false
+	session.awaitingName = false
+	session.newPlaylistName = ""
+	session.createIntentID = ""
+	session.request = ""
+	session.excludedIDs = nil
+	session.draft = nil
+	session.awaitingInput = false
+	session.awaitingSeed = false
+	session.confirmingDelete = false
+	session.pendingWrite = false
+	session.playlists = nil
+	session.resumePlaylists = nil
+	session.resumePlans = make(map[string]aiPlaylistResumePlan)
+	session.createIntents = nil
 	playlists, err := service.organizer.aiPlaylists(ctx)
 	if err != nil {
-		app.failAIPlaylistMenu(token, "❌ 读取 [AI] 歌单失败，请检查 Navidrome 连接。", err)
-		return
+		return session, "❌ 读取 [AI] 歌单失败，请检查 Navidrome 连接。", err
 	}
 	intents, err := service.resumeStore.ListIntents(ctx)
 	if err != nil {
-		app.failAIPlaylistMenu(token, "❌ 读取未完成的新建歌单状态失败，请稍后重试。", err)
-		return
+		return session, "❌ 读取未完成的新建歌单状态失败，请稍后重试。", err
 	}
 	intentPlaylists := make(map[string]struct{}, len(intents))
 	for _, intent := range intents {
@@ -148,8 +179,7 @@ func (app *BotApp) prepareAIPlaylistMenu(token string, service *aiPlaylistServic
 		}
 		resume, err := service.resumeStore.Load(ctx, playlist.ID)
 		if err != nil {
-			app.failAIPlaylistMenu(token, "❌ 读取歌单续写状态失败，请稍后重试。", err)
-			return
+			return session, "❌ 读取歌单续写状态失败，请稍后重试。", err
 		}
 		if resume != nil {
 			session.resumePlaylists = append(session.resumePlaylists, playlist)
@@ -159,10 +189,7 @@ func (app *BotApp) prepareAIPlaylistMenu(token string, service *aiPlaylistServic
 		session.playlists = append(session.playlists, playlist)
 	}
 	session.createIntents = intents
-	session.processing = false
-	session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
-	app.updateAIPlaylistSession(session)
-	app.editAIPlaylistSessionMessage(session, formatAIPlaylistSession(session), aiPlaylistSessionMarkup(session))
+	return session, "", nil
 }
 
 func (app *BotApp) failAIPlaylistMenu(token, note string, cause error) {
@@ -173,7 +200,10 @@ func (app *BotApp) failAIPlaylistMenu(token, note string, cause error) {
 	if !ok {
 		return
 	}
-	app.editAIPlaylistSessionMessage(session, note, &tb.ReplyMarkup{})
+	if app.editAIPlaylistSessionMessage(session, note, &tb.ReplyMarkup{}) {
+		return
+	}
+	app.notifyAIPlaylistEditFailed(session, "读取歌单没有完成。请重新发送 /ai_playlist。")
 }
 
 func (app *BotApp) HandleAIPlaylistCallback(c tb.Context) error {
@@ -194,6 +224,9 @@ func (app *BotApp) HandleAIPlaylistCallback(c tb.Context) error {
 	}
 	if session.processing {
 		return c.Respond(&tb.CallbackResponse{Text: "正在处理，请稍候。"})
+	}
+	if session.confirmingDelete && action != "delete" && action != "delete_yes" && action != "delete_no" && action != "cancel" {
+		return c.Respond(&tb.CallbackResponse{Text: "先确认删除，或点返回。"})
 	}
 
 	switch action {
@@ -260,6 +293,60 @@ func (app *BotApp) HandleAIPlaylistCallback(c tb.Context) error {
 		}
 		_ = c.Respond()
 		return c.Edit(formatAIPlaylistSession(updated), aiPlaylistSessionMarkup(updated))
+
+	case "themes":
+		if len(args) != 2 {
+			return c.Respond(&tb.CallbackResponse{Text: "AI 歌单操作无效", ShowAlert: true})
+		}
+		updated, ok := app.clearAIPlaylistAwaitingSeed(token)
+		if !ok {
+			return c.Respond(&tb.CallbackResponse{Text: "已经在主题里"})
+		}
+		_ = c.Respond()
+		return c.Edit(formatAIPlaylistSession(updated), aiPlaylistSessionMarkup(updated))
+
+	case "delete":
+		if !aiPlaylistCanDelete(session) {
+			return c.Respond(&tb.CallbackResponse{Text: "当前不能删除这张歌单", ShowAlert: true})
+		}
+		updated, ok := app.setAIPlaylistConfirmingDelete(token, true)
+		if !ok {
+			return c.Respond(&tb.CallbackResponse{Text: "AI 歌单会话已过期", ShowAlert: true})
+		}
+		_ = c.Respond()
+		return c.Edit(formatAIPlaylistSession(updated), aiPlaylistSessionMarkup(updated))
+
+	case "delete_no":
+		if len(args) != 2 || !session.confirmingDelete {
+			return c.Respond(&tb.CallbackResponse{Text: "当前没有待确认的删除", ShowAlert: true})
+		}
+		updated, ok := app.setAIPlaylistConfirmingDelete(token, false)
+		if !ok {
+			return c.Respond(&tb.CallbackResponse{Text: "AI 歌单会话已过期", ShowAlert: true})
+		}
+		_ = c.Respond()
+		return c.Edit(formatAIPlaylistSession(updated), aiPlaylistSessionMarkup(updated))
+
+	case "delete_yes":
+		if len(args) != 2 || !aiPlaylistCanDelete(session) || !session.confirmingDelete {
+			return c.Respond(&tb.CallbackResponse{Text: "请先点删除歌单，再确认", ShowAlert: true})
+		}
+		claimed, ok := app.claimAIPlaylistDelete(token)
+		if !ok {
+			return c.Respond(&tb.CallbackResponse{Text: "AI 歌单会话已过期或正在处理", ShowAlert: true})
+		}
+		if !app.beginAIPlaylistRun(claimed.chatID) {
+			_, _ = app.setAIPlaylistSessionProcessing(claimed.token, false)
+			return c.Respond(&tb.CallbackResponse{Text: "另一项歌单维护正在运行，请稍后重试。"})
+		}
+		_ = c.Respond(&tb.CallbackResponse{Text: "正在删除…"})
+		if err := c.Edit("正在删除「"+aiPlaylistVisibleName(claimed.target.Name)+"」…", &tb.ReplyMarkup{}); err != nil {
+			app.finishAIPlaylistRun(claimed.chatID)
+			_, _ = app.setAIPlaylistSessionProcessing(claimed.token, false)
+			return err
+		}
+		go app.deleteSelectedAIPlaylist(claimed.token)
+		return nil
 
 	case "refine":
 		if session.draft == nil {
@@ -329,10 +416,7 @@ func (app *BotApp) HandleAIPlaylistCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "AI 歌单会话已过期或正在处理", ShowAlert: true})
 		}
 		_ = c.Respond()
-		if session.pendingWrite || len(session.resumePlaylists) > 0 || session.createIntentID != "" {
-			return c.Edit("已结束本次 AI 歌单操作。未完成的续写计划已保留，可重新发送 /ai_playlist 继续。", &tb.ReplyMarkup{})
-		}
-		return c.Edit("已取消本次 AI 歌单生成。", &tb.ReplyMarkup{})
+		return c.Edit(aiPlaylistCancelText(session), &tb.ReplyMarkup{})
 
 	default:
 		return c.Respond(&tb.CallbackResponse{Text: "未知 AI 歌单操作", ShowAlert: true})
@@ -370,7 +454,7 @@ func (app *BotApp) generateAIPlaylistPreview(token string) {
 		return
 	}
 	defer app.finishAIPlaylistRun(session.chatID)
-	service, err := newAIPlaylistService(app.cfg)
+	service, err := app.openAIPlaylistService()
 	if err != nil {
 		app.failAIPlaylistPreview(token, err)
 		return
@@ -398,7 +482,7 @@ func (app *BotApp) generateAIPlaylistPreview(token string) {
 	session.notice = ""
 	session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
 	app.updateAIPlaylistSession(session)
-	app.editAIPlaylistSessionMessage(session, formatAIPlaylistSession(session), aiPlaylistSessionMarkup(session))
+	app.presentAIPlaylistSession(session)
 }
 
 func (app *BotApp) failAIPlaylistPreview(token string, cause error) {
@@ -407,7 +491,7 @@ func (app *BotApp) failAIPlaylistPreview(token string, cause error) {
 	if !ok {
 		return
 	}
-	session.notice = "❌ " + aiPlaylistDisplayValue(cause.Error(), 500)
+	session.notice = "❌ " + aiPlaylistDisplayValue(cause.Error(), 160)
 	if session.draft == nil {
 		session.awaitingInput = true
 		if _, seeded := splitPlaylistSeed(session.request); seeded {
@@ -415,7 +499,140 @@ func (app *BotApp) failAIPlaylistPreview(token string, cause error) {
 		}
 	}
 	app.updateAIPlaylistSession(session)
-	app.editAIPlaylistSessionMessage(session, formatAIPlaylistSession(session), aiPlaylistSessionMarkup(session))
+	app.presentAIPlaylistSession(session)
+}
+
+func (app *BotApp) deleteSelectedAIPlaylist(token string) {
+	session, ok := app.getAIPlaylistSession(token)
+	if !ok {
+		return
+	}
+	defer app.finishAIPlaylistRun(session.chatID)
+	service, err := app.openAIPlaylistService()
+	if err != nil {
+		app.failAIPlaylistDelete(token, err)
+		return
+	}
+	defer func() {
+		if err := service.close(); err != nil && logger != nil {
+			logger.Warn("AI playlist resume store close failed", zap.Error(err))
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), playlistAssignmentTimeout)
+	defer cancel()
+	if err := service.organizer.deleteAIPlaylist(ctx, session.target); err != nil {
+		app.failAIPlaylistDelete(token, err)
+		return
+	}
+	if err := forgetDeletedAIPlaylistState(ctx, service.resumeStore, session.target.ID); err != nil && logger != nil {
+		logger.Warn("[Telegram] 删除 AI 歌单后清理续写记录失败", zap.Error(err))
+	}
+	deletedID, deletedName := session.target.ID, session.target.Name
+	loaded, note, err := fillAIPlaylistMenu(ctx, session, service)
+	if err != nil {
+		app.finishDeletedAIPlaylistWithoutMenu(token, deletedName, note, err)
+		return
+	}
+	loaded = omitDeletedAIPlaylist(loaded, deletedID)
+	loaded.processing = false
+	loaded.notice = "已删除「" + aiPlaylistVisibleName(deletedName) + "」。歌还在曲库里。"
+	loaded.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
+	app.updateAIPlaylistSession(loaded)
+	app.presentAIPlaylistSession(loaded)
+}
+
+func (app *BotApp) failAIPlaylistDelete(token string, cause error) {
+	if cause != nil && logger != nil {
+		logger.Warn("[Telegram] 删除 AI 歌单失败", zap.Error(cause))
+	}
+	session, ok := app.setAIPlaylistSessionProcessing(token, false)
+	if !ok {
+		return
+	}
+	session.confirmingDelete = true
+	session.awaitingInput = false
+	session.awaitingSeed = false
+	session.notice = "❌ " + aiPlaylistDisplayValue(cause.Error(), 160)
+	app.updateAIPlaylistSession(session)
+	app.presentAIPlaylistSession(session)
+}
+
+func (app *BotApp) finishDeletedAIPlaylistWithoutMenu(token, name, note string, cause error) {
+	if cause != nil && logger != nil {
+		logger.Warn("[Telegram] AI 歌单已删除，但列表没能刷新", zap.Error(cause))
+	}
+	session, ok := app.takeAIPlaylistSession(token)
+	if !ok {
+		return
+	}
+	text := "已删除「" + aiPlaylistVisibleName(name) + "」。列表没能刷新，请重新发送 /ai_playlist。"
+	if strings.TrimSpace(note) != "" {
+		text += "\n" + note
+	}
+	if app.editAIPlaylistSessionMessage(session, text, &tb.ReplyMarkup{}) {
+		return
+	}
+	app.notifyAIPlaylistEditFailed(session, text)
+}
+
+func forgetDeletedAIPlaylistState(ctx context.Context, store aiPlaylistResumeStore, playlistID string) error {
+	if store == nil {
+		return errors.New("AI playlist resume store is not initialized")
+	}
+	if err := store.Delete(ctx, playlistID); err != nil {
+		return err
+	}
+	intents, err := store.ListIntents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, intent := range intents {
+		if intent.PlaylistID != playlistID {
+			continue
+		}
+		if err := store.DeleteIntent(ctx, intent.OperationID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func omitDeletedAIPlaylist(session pendingAIPlaylistSession, playlistID string) pendingAIPlaylistSession {
+	session.playlists = omitAIPlaylistID(session.playlists, playlistID)
+	session.resumePlaylists = omitAIPlaylistID(session.resumePlaylists, playlistID)
+	if session.resumePlans != nil {
+		delete(session.resumePlans, playlistID)
+	}
+	keptIntents := make([]aiPlaylistCreateIntent, 0, len(session.createIntents))
+	for _, intent := range session.createIntents {
+		if intent.PlaylistID == playlistID {
+			continue
+		}
+		keptIntents = append(keptIntents, intent)
+	}
+	session.createIntents = keptIntents
+	if session.totalPlaylists > 0 {
+		session.totalPlaylists--
+	}
+	return session
+}
+
+func omitAIPlaylistID(playlists []aiPlaylist, playlistID string) []aiPlaylist {
+	kept := make([]aiPlaylist, 0, len(playlists))
+	for _, playlist := range playlists {
+		if playlist.ID == playlistID {
+			continue
+		}
+		kept = append(kept, playlist)
+	}
+	return kept
+}
+
+func aiPlaylistCanDelete(session pendingAIPlaylistSession) bool {
+	if session.creating || session.target.ID == "" || !strings.HasPrefix(session.target.Name, "[AI]") {
+		return false
+	}
+	return session.draft == nil || session.pendingWrite
 }
 
 func (app *BotApp) beginAIPlaylistCommit(c tb.Context, session pendingAIPlaylistSession) error {
@@ -443,7 +660,7 @@ func (app *BotApp) commitAIPlaylistDraft(token string) {
 		return
 	}
 	defer app.finishAIPlaylistRun(session.chatID)
-	service, err := newAIPlaylistService(app.cfg)
+	service, err := app.openAIPlaylistService()
 	if err != nil {
 		app.failAIPlaylistCommit(token, err)
 		return
@@ -618,7 +835,10 @@ func (app *BotApp) commitAIPlaylistDraft(token string) {
 	if result.UsedFallback {
 		text += "\n\n⚠️ 本次使用候选排序兜底完成编排。"
 	}
-	app.editAIPlaylistSessionMessage(finished, text, &tb.ReplyMarkup{})
+	if app.editAIPlaylistSessionMessage(finished, text, &tb.ReplyMarkup{}) {
+		return
+	}
+	app.notifyAIPlaylistEditFailed(finished, "✅ 歌单已经写入。这条消息没能展开结果。重新发送 /ai_playlist 可以继续。")
 }
 
 func (app *BotApp) failAIPlaylistCommit(token string, cause error) {
@@ -627,9 +847,9 @@ func (app *BotApp) failAIPlaylistCommit(token string, cause error) {
 	if !ok {
 		return
 	}
-	session.notice = "❌ " + aiPlaylistDisplayValue(cause.Error(), 500)
+	session.notice = "❌ " + aiPlaylistDisplayValue(cause.Error(), 160)
 	app.updateAIPlaylistSession(session)
-	app.editAIPlaylistSessionMessage(session, formatAIPlaylistSession(session), aiPlaylistSessionMarkup(session))
+	app.presentAIPlaylistSession(session)
 }
 
 func (app *BotApp) failAIPlaylistCommitWithStore(token string, cause error, store aiPlaylistResumeStore) {
@@ -675,9 +895,9 @@ func (app *BotApp) failAIPlaylistCommitWithStore(token string, cause error, stor
 		logger.Warn("[Telegram] 无法确认 AI 歌单续写状态", zap.Error(err))
 	}
 	logger.Warn("[Telegram] AI 歌单写入失败", zap.Error(cause))
-	session.notice = "❌ " + aiPlaylistDisplayValue(cause.Error(), 500)
+	session.notice = "❌ " + aiPlaylistDisplayValue(cause.Error(), 160)
 	app.updateAIPlaylistSession(session)
-	app.editAIPlaylistSessionMessage(session, formatAIPlaylistSession(session), aiPlaylistSessionMarkup(session))
+	app.presentAIPlaylistSession(session)
 }
 
 func (app *BotApp) handleAIPlaylistText(c tb.Context) (bool, error) {
@@ -694,6 +914,9 @@ func (app *BotApp) handleAIPlaylistText(c tb.Context) (bool, error) {
 	}
 	if session.processing {
 		return true, c.Send("AI 歌单正在处理中，请稍候。")
+	}
+	if session.confirmingDelete {
+		return true, c.Send("先确认删除，或点返回。")
 	}
 	if session.pendingWrite {
 		return true, c.Send("请先继续或取消上次的写入计划。")
@@ -712,7 +935,11 @@ func (app *BotApp) handleAIPlaylistText(c tb.Context) (bool, error) {
 		return true, nil
 	}
 	if !session.awaitingInput {
-		return false, nil
+		hint := "先在上面的消息里点一张歌单，或点「＋ 新建 AI 歌单」。"
+		if session.draft != nil {
+			hint = "请用上面的按钮确认、换一版，或改名。"
+		}
+		return true, c.Send(hint)
 	}
 	if len([]rune(request)) > aiPlaylistRequestMaxRunes {
 		app.showAIPlaylistNotice(session, "⚠️ 生成要求最多 500 个字符，请精简后再发送。")
@@ -826,6 +1053,7 @@ func (app *BotApp) selectAIPlaylistTarget(token string, playlist aiPlaylist) (pe
 		session.target = configured
 		session.awaitingInput = true
 		session.awaitingSeed = false
+		session.confirmingDelete = false
 		session.notice = ""
 		session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
 		app.aiPlaylistSessions[token] = session
@@ -846,6 +1074,7 @@ func (app *BotApp) beginAIPlaylistNameInput(token string) (pendingAIPlaylistSess
 	session.awaitingName = true
 	session.awaitingInput = false
 	session.awaitingSeed = false
+	session.confirmingDelete = false
 	session.notice = ""
 	session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
 	app.aiPlaylistSessions[token] = session
@@ -864,6 +1093,7 @@ func (app *BotApp) setAIPlaylistNewName(token, name string) (pendingAIPlaylistSe
 	session.awaitingName = false
 	session.awaitingInput = true
 	session.awaitingSeed = false
+	session.confirmingDelete = false
 	session.notice = ""
 	session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
 	app.aiPlaylistSessions[token] = session
@@ -885,6 +1115,7 @@ func (app *BotApp) selectAIPlaylistCreateIntent(token string, intent aiPlaylistC
 		session.creating = true
 		session.awaitingName = false
 		session.awaitingInput = false
+		session.confirmingDelete = false
 		session.newPlaylistName = configured.Name
 		session.createIntentID = configured.OperationID
 		session.pendingWrite = true
@@ -911,6 +1142,7 @@ func (app *BotApp) selectAIPlaylistResume(token, playlistID string) (pendingAIPl
 		if playlist.ID == playlistID {
 			session.target = playlist
 			session.pendingWrite = true
+			session.confirmingDelete = false
 			session.request = ""
 			session.draft = nil
 			session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
@@ -934,6 +1166,7 @@ func (app *BotApp) resetAIPlaylistTarget(token string) (pendingAIPlaylistSession
 		session.awaitingName = true
 		session.awaitingInput = false
 		session.awaitingSeed = false
+		session.confirmingDelete = false
 		session.draft = nil
 		session.excludedIDs = nil
 		session.notice = ""
@@ -946,6 +1179,7 @@ func (app *BotApp) resetAIPlaylistTarget(token string) (pendingAIPlaylistSession
 	session.excludedIDs = nil
 	session.awaitingInput = false
 	session.awaitingSeed = false
+	session.confirmingDelete = false
 	session.notice = ""
 	session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
 	app.aiPlaylistSessions[token] = session
@@ -964,6 +1198,7 @@ func (app *BotApp) claimAIPlaylistSession(token, request string, excluded []stri
 	session.processing = true
 	session.awaitingInput = false
 	session.awaitingSeed = false
+	session.confirmingDelete = false
 	session.request = request
 	session.excludedIDs = append([]string(nil), excluded...)
 	session.notice = ""
@@ -985,7 +1220,65 @@ func (app *BotApp) setAIPlaylistAwaitingSeed(token string) (pendingAIPlaylistSes
 	}
 	session.awaitingSeed = true
 	session.awaitingInput = true
-	session.notice = "直接发送歌名，或「歌名 - 歌手」。例如：晴天 - 周杰伦"
+	session.confirmingDelete = false
+	session.notice = aiPlaylistSeedNotice()
+	session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
+	app.aiPlaylistSessions[token] = session
+	return cloneAIPlaylistSession(session), true
+}
+
+func (app *BotApp) clearAIPlaylistAwaitingSeed(token string) (pendingAIPlaylistSession, bool) {
+	app.aiPlaylistSessionMu.Lock()
+	defer app.aiPlaylistSessionMu.Unlock()
+	app.ensureAIPlaylistSessionMapsLocked()
+	session, ok := app.aiPlaylistSessions[token]
+	if !ok || session.processing || session.pendingWrite || session.draft != nil || !session.awaitingSeed {
+		return pendingAIPlaylistSession{}, false
+	}
+	session.awaitingSeed = false
+	session.confirmingDelete = false
+	if session.notice == aiPlaylistSeedNotice() {
+		session.notice = ""
+	}
+	session.awaitingInput = true
+	session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
+	app.aiPlaylistSessions[token] = session
+	return cloneAIPlaylistSession(session), true
+}
+
+func (app *BotApp) setAIPlaylistConfirmingDelete(token string, confirming bool) (pendingAIPlaylistSession, bool) {
+	app.aiPlaylistSessionMu.Lock()
+	defer app.aiPlaylistSessionMu.Unlock()
+	app.ensureAIPlaylistSessionMapsLocked()
+	session, ok := app.aiPlaylistSessions[token]
+	if !ok || session.processing || !aiPlaylistCanDelete(session) {
+		return pendingAIPlaylistSession{}, false
+	}
+	if !confirming && !session.confirmingDelete {
+		return pendingAIPlaylistSession{}, false
+	}
+	session.confirmingDelete = confirming
+	session.awaitingSeed = false
+	session.notice = ""
+	session.awaitingInput = !confirming && !session.pendingWrite && session.draft == nil
+	session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
+	app.aiPlaylistSessions[token] = session
+	return cloneAIPlaylistSession(session), true
+}
+
+func (app *BotApp) claimAIPlaylistDelete(token string) (pendingAIPlaylistSession, bool) {
+	app.aiPlaylistSessionMu.Lock()
+	defer app.aiPlaylistSessionMu.Unlock()
+	app.ensureAIPlaylistSessionMapsLocked()
+	app.purgeAIPlaylistSessionsLocked(time.Now())
+	session, ok := app.aiPlaylistSessions[token]
+	if !ok || session.processing || !session.confirmingDelete || !aiPlaylistCanDelete(session) {
+		return pendingAIPlaylistSession{}, false
+	}
+	session.processing = true
+	session.awaitingInput = false
+	session.awaitingSeed = false
+	session.notice = ""
 	session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
 	app.aiPlaylistSessions[token] = session
 	return cloneAIPlaylistSession(session), true
@@ -1001,6 +1294,7 @@ func (app *BotApp) setAIPlaylistAwaitingInput(token string, awaiting bool, notic
 	}
 	session.awaitingInput = awaiting
 	session.awaitingSeed = false
+	session.confirmingDelete = false
 	session.notice = notice
 	session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
 	app.aiPlaylistSessions[token] = session
@@ -1018,7 +1312,7 @@ func (app *BotApp) setAIPlaylistSessionProcessing(token string, processing bool)
 	session.processing = processing
 	if !processing {
 		session.expiresAt = time.Now().Add(aiPlaylistSessionTTL)
-		if session.target.ID != "" && session.draft == nil && !session.pendingWrite {
+		if !session.confirmingDelete && session.target.ID != "" && session.draft == nil && !session.pendingWrite {
 			session.awaitingInput = true
 		}
 	}
@@ -1131,12 +1425,37 @@ func telegramMessageUnchanged(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "message is not modified")
 }
 
-func (app *BotApp) editAIPlaylistSessionMessage(session pendingAIPlaylistSession, text string, markup *tb.ReplyMarkup) {
+func (app *BotApp) editAIPlaylistSessionMessage(session pendingAIPlaylistSession, text string, markup *tb.ReplyMarkup) bool {
 	if session.message == nil || app.bot == nil {
+		return true
+	}
+	_, err := app.bot.Edit(session.message, text, markup)
+	if err == nil || telegramMessageUnchanged(err) {
+		return true
+	}
+	logger.Warn("[Telegram] 更新 AI 歌单消息失败", zap.Error(err))
+	return false
+}
+
+// presentAIPlaylistSession 把当前会话画回原消息。编辑失败时放开会话，
+// 避免卡片停在没有按钮的「正在检索」上，命令却还提示会话开着。
+func (app *BotApp) presentAIPlaylistSession(session pendingAIPlaylistSession) {
+	if app.editAIPlaylistSessionMessage(session, formatAIPlaylistSession(session), aiPlaylistSessionMarkup(session)) {
 		return
 	}
-	if _, err := app.bot.Edit(session.message, text, markup); err != nil && !telegramMessageUnchanged(err) {
-		logger.Warn("[Telegram] 更新 AI 歌单消息失败", zap.Error(err))
+	app.takeAIPlaylistSession(session.token)
+	app.notifyAIPlaylistEditFailed(session, "这条消息没能更新。请重新发送 /ai_playlist。")
+}
+
+func (app *BotApp) notifyAIPlaylistEditFailed(session pendingAIPlaylistSession, note string) {
+	if session.message != nil && app.editAIPlaylistSessionMessage(session, note, &tb.ReplyMarkup{}) {
+		return
+	}
+	if app.bot == nil || session.chatID == 0 {
+		return
+	}
+	if _, err := app.bot.Send(tb.ChatID(session.chatID), note); err != nil {
+		logger.Warn("[Telegram] 发送 AI 歌单恢复提示失败", zap.Error(err))
 	}
 }
 
@@ -1239,14 +1558,26 @@ func formatAIPlaylistSession(session pendingAIPlaylistSession) string {
 		if len(session.createIntents) > 0 {
 			text.WriteString("\n\n也可以继续上次确认过的新建。")
 		}
+		writeAIPlaylistNotice(&text, session)
+		return text.String()
+	}
+	if session.confirmingDelete && aiPlaylistCanDelete(session) {
+		text.WriteString("删除歌单")
+		fmt.Fprintf(&text, "\n\n%s", aiPlaylistDisplayValue(session.target.Name, 80))
+		if description := aiPlaylistDisplayValue(session.target.Description, 160); description != "" {
+			fmt.Fprintf(&text, "\n%s", description)
+		}
+		text.WriteString("\n\n会从 Navidrome 删掉这张歌单。\n歌还在曲库里。")
+		if session.pendingWrite {
+			text.WriteString("\n未完成的写入也会丢掉。")
+		}
+		writeAIPlaylistNotice(&text, session)
 		return text.String()
 	}
 	if session.creating && session.draft == nil {
-		fmt.Fprintf(&text, "新建歌单\n\n%s\n\n直接发送主题，或点下面的主题。\n确认后才会创建。", aiPlaylistDisplayValue(session.newPlaylistName, 80))
-		if session.notice != "" {
-			text.WriteString("\n\n")
-			text.WriteString(session.notice)
-		}
+		fmt.Fprintf(&text, "新建歌单\n\n%s", aiPlaylistDisplayValue(session.newPlaylistName, 80))
+		writeAIPlaylistThemeLead(&text, session, true)
+		writeAIPlaylistNotice(&text, session)
 		return text.String()
 	}
 	if session.pendingWrite {
@@ -1275,7 +1606,6 @@ func formatAIPlaylistSession(session pendingAIPlaylistSession) string {
 		if description := aiPlaylistDisplayValue(session.draft.Description, 160); description != "" {
 			fmt.Fprintf(&text, "\n检索主题：%s", description)
 		}
-		fmt.Fprintf(&text, "\n\n%d 首里先看 %d 首", len(session.draft.Plan.Playlist), min(aiPlaylistPreviewLimit, len(session.draft.Plan.Playlist)))
 		if intro := aiPlaylistDisplayValue(session.draft.Plan.Intro, 160); intro != "" {
 			text.WriteString("\n\n")
 			text.WriteString(intro)
@@ -1285,7 +1615,7 @@ func formatAIPlaylistSession(session pendingAIPlaylistSession) string {
 				break
 			}
 			candidate := findAIPlaylistCandidate(session.draft.Candidates, item.ID)
-			fmt.Fprintf(&text, "\n\n%s", aiPlaylistDisplayValue(candidate.Title, 40))
+			fmt.Fprintf(&text, "\n\n%d. %s", index+1, aiPlaylistDisplayValue(candidate.Title, 40))
 			if artist := aiPlaylistDisplayValue(candidate.Artist, 40); artist != "" {
 				fmt.Fprintf(&text, "\n%s", artist)
 			}
@@ -1300,13 +1630,7 @@ func formatAIPlaylistSession(session pendingAIPlaylistSession) string {
 			text.WriteString("\n\n")
 			text.WriteString(session.notice)
 		}
-		if session.creating {
-			text.WriteString("\n\n确认后才会创建这张歌单。")
-		} else if len(session.draft.ExistingSongIDs) > 0 {
-			fmt.Fprintf(&text, "\n\n确认后会替换当前 %d 首。", len(session.draft.ExistingSongIDs))
-		} else {
-			text.WriteString("\n\n这是空歌单；确认后会写入上方曲目。")
-		}
+		text.WriteString(aiPlaylistPreviewFooter(session))
 		return text.String()
 	}
 	text.WriteString("生成歌单")
@@ -1314,17 +1638,38 @@ func formatAIPlaylistSession(session pendingAIPlaylistSession) string {
 	if description := aiPlaylistDisplayValue(session.target.Description, 160); description != "" {
 		fmt.Fprintf(&text, "\n%s", description)
 	}
-	text.WriteString("\n\n发送生成要求，或点下面的主题。")
+	writeAIPlaylistThemeLead(&text, session, false)
 	if session.target.SongCount > 0 {
 		fmt.Fprintf(&text, "\n当前有 %d 首；确认预览后会替换现有曲目。", session.target.SongCount)
 	} else {
 		text.WriteString("\n这是空歌单；确认预览后才会写入曲目。")
 	}
-	if session.notice != "" {
-		text.WriteString("\n\n")
-		text.WriteString(session.notice)
-	}
+	writeAIPlaylistNotice(&text, session)
 	return text.String()
+}
+
+func writeAIPlaylistThemeLead(text *strings.Builder, session pendingAIPlaylistSession, create bool) {
+	if session.awaitingSeed {
+		text.WriteString("\n\n发送歌名，或「歌名 - 歌手」。\n例如：晴天 - 周杰伦")
+		if create {
+			text.WriteString("\n确认后才会创建。")
+		}
+		return
+	}
+	if create {
+		text.WriteString("\n\n直接发送主题，或点下面的主题。\n确认后才会创建。")
+		return
+	}
+	text.WriteString("\n\n发送生成要求，或点下面的主题。")
+}
+
+func writeAIPlaylistNotice(text *strings.Builder, session pendingAIPlaylistSession) {
+	notice := strings.TrimSpace(session.notice)
+	if notice == "" || (session.awaitingSeed && notice == aiPlaylistSeedNotice()) {
+		return
+	}
+	text.WriteString("\n\n")
+	text.WriteString(notice)
 }
 
 func aiPlaylistSessionMarkup(session pendingAIPlaylistSession) *tb.ReplyMarkup {
@@ -1345,21 +1690,24 @@ func aiPlaylistSessionMarkup(session pendingAIPlaylistSession) *tb.ReplyMarkup {
 	}
 	if session.target.ID == "" && !session.creating {
 		rows = append(rows, markup.Row(markup.Data("＋ 新建 AI 歌单", aiPlaylistCallbackUnique, "new", session.token)))
-		for index := 0; index < len(session.playlists); index += 2 {
-			row := make(tb.Row, 0, 2)
-			for current := index; current < len(session.playlists) && current < index+2; current++ {
-				playlist := session.playlists[current]
-				row = append(row, markup.Data(aiPlaylistTargetButtonLabel(playlist), aiPlaylistCallbackUnique, "select", session.token, strconv.Itoa(current)))
-			}
-			rows = append(rows, row)
+		for index, playlist := range session.playlists {
+			rows = append(rows, markup.Row(markup.Data(aiPlaylistTargetButtonLabel(playlist), aiPlaylistCallbackUnique, "select", session.token, strconv.Itoa(index))))
 		}
 		for index, playlist := range session.resumePlaylists {
-			rows = append(rows, markup.Row(markup.Data("↻ 继续「"+aiPlaylistButtonLabel(playlist.Name)+"」", aiPlaylistCallbackUnique, "resume", session.token, strconv.Itoa(index))))
+			rows = append(rows, markup.Row(markup.Data("↻ 继续「"+aiPlaylistButtonLabel(aiPlaylistVisibleName(playlist.Name))+"」", aiPlaylistCallbackUnique, "resume", session.token, strconv.Itoa(index))))
 		}
 		for index, intent := range session.createIntents {
-			rows = append(rows, markup.Row(markup.Data("↻ 继续创建「"+aiPlaylistButtonLabel(intent.Name)+"」", aiPlaylistCallbackUnique, "resume_create", session.token, strconv.Itoa(index))))
+			rows = append(rows, markup.Row(markup.Data("↻ 继续创建「"+aiPlaylistButtonLabel(aiPlaylistVisibleName(intent.Name))+"」", aiPlaylistCallbackUnique, "resume_create", session.token, strconv.Itoa(index))))
 		}
 		rows = append(rows, markup.Row(markup.Data("取消", aiPlaylistCallbackUnique, "cancel", session.token)))
+		markup.Inline(rows...)
+		return markup
+	}
+	if session.confirmingDelete && aiPlaylistCanDelete(session) {
+		rows = append(rows, markup.Row(
+			markup.Data("确认删除", aiPlaylistCallbackUnique, "delete_yes", session.token),
+			markup.Data("返回", aiPlaylistCallbackUnique, "delete_no", session.token),
+		))
 		markup.Inline(rows...)
 		return markup
 	}
@@ -1372,6 +1720,9 @@ func aiPlaylistSessionMarkup(session pendingAIPlaylistSession) *tb.ReplyMarkup {
 			markup.Data(continueLabel, aiPlaylistCallbackUnique, "confirm", session.token),
 			markup.Data("取消", aiPlaylistCallbackUnique, "cancel", session.token),
 		))
+		if aiPlaylistCanDelete(session) {
+			rows = append(rows, markup.Row(markup.Data("删除歌单", aiPlaylistCallbackUnique, "delete", session.token)))
+		}
 		markup.Inline(rows...)
 		return markup
 	}
@@ -1393,12 +1744,29 @@ func aiPlaylistSessionMarkup(session pendingAIPlaylistSession) *tb.ReplyMarkup {
 		changeLabel := "更换歌单"
 		if session.creating {
 			changeLabel = "更换名称"
+			if session.draft != nil {
+				changeLabel = "改名并放弃预览"
+			}
 		}
 		rows = append(rows, markup.Row(markup.Data(changeLabel, aiPlaylistCallbackUnique, "change", session.token)))
 		markup.Inline(rows...)
 		return markup
 	}
 	if session.creating {
+		rows = appendAIPlaylistThemeRows(markup, rows, session, "更换名称")
+		markup.Inline(rows...)
+		return markup
+	}
+	rows = appendAIPlaylistThemeRows(markup, rows, session, "更换歌单")
+	markup.Inline(rows...)
+	return markup
+}
+
+func appendAIPlaylistThemeRows(markup *tb.ReplyMarkup, rows []tb.Row, session pendingAIPlaylistSession, changeLabel string) []tb.Row {
+	if !session.awaitingSeed {
+		if !session.creating && strings.TrimSpace(session.target.Description) != "" {
+			rows = append(rows, markup.Row(markup.Data("按备注生成预览", aiPlaylistCallbackUnique, "base", session.token)))
+		}
 		for index := 0; index < len(aiPlaylistPresets); index += 2 {
 			row := make(tb.Row, 0, 2)
 			for current := index; current < len(aiPlaylistPresets) && current < index+2; current++ {
@@ -1407,29 +1775,26 @@ func aiPlaylistSessionMarkup(session pendingAIPlaylistSession) *tb.ReplyMarkup {
 			}
 			rows = append(rows, row)
 		}
-		rows = append(rows, markup.Row(markup.Data("像这首歌", aiPlaylistCallbackUnique, "seed", session.token)))
-		rows = append(rows, markup.Row(markup.Data("更换名称", aiPlaylistCallbackUnique, "change", session.token), markup.Data("取消", aiPlaylistCallbackUnique, "cancel", session.token)))
-		markup.Inline(rows...)
-		return markup
-	}
-	if strings.TrimSpace(session.target.Description) != "" {
-		rows = append(rows, markup.Row(markup.Data("按备注生成预览", aiPlaylistCallbackUnique, "base", session.token)))
-	}
-	for index := 0; index < len(aiPlaylistPresets); index += 2 {
-		row := make(tb.Row, 0, 2)
-		for current := index; current < len(aiPlaylistPresets) && current < index+2; current++ {
-			preset := aiPlaylistPresets[current]
-			row = append(row, markup.Data(preset.Label, aiPlaylistCallbackUnique, "preset", session.token, preset.ID))
+		rows = append(rows, markup.Row(
+			markup.Data("像这首歌", aiPlaylistCallbackUnique, "seed", session.token),
+			markup.Data(changeLabel, aiPlaylistCallbackUnique, "change", session.token),
+		))
+		if changeLabel == "更换歌单" {
+			rows = append(rows, markup.Row(
+				markup.Data("删除歌单", aiPlaylistCallbackUnique, "delete", session.token),
+				markup.Data("取消", aiPlaylistCallbackUnique, "cancel", session.token),
+			))
+			return rows
 		}
-		rows = append(rows, row)
+		rows = append(rows, markup.Row(markup.Data("取消", aiPlaylistCallbackUnique, "cancel", session.token)))
+		return rows
 	}
-	rows = append(rows, markup.Row(markup.Data("像这首歌", aiPlaylistCallbackUnique, "seed", session.token)))
+	rows = append(rows, markup.Row(markup.Data("返回主题", aiPlaylistCallbackUnique, "themes", session.token)))
 	rows = append(rows, markup.Row(
-		markup.Data("更换歌单", aiPlaylistCallbackUnique, "change", session.token),
+		markup.Data(changeLabel, aiPlaylistCallbackUnique, "change", session.token),
 		markup.Data("取消", aiPlaylistCallbackUnique, "cancel", session.token),
 	))
-	markup.Inline(rows...)
-	return markup
+	return rows
 }
 
 func findAIPlaylistCandidate(candidates []aiPlaylistCandidate, id string) aiPlaylistCandidate {
@@ -1456,10 +1821,46 @@ func aiPlaylistDisplayValue(value string, limit int) string {
 	return value
 }
 
+func aiPlaylistPreviewFooter(session pendingAIPlaylistSession) string {
+	total := len(session.draft.Plan.Playlist)
+	shown := min(aiPlaylistPreviewLimit, total)
+	var text strings.Builder
+	switch {
+	case session.creating && total > shown:
+		fmt.Fprintf(&text, "\n\n确认后才会创建这张歌单，并写入全部 %d 首。上面先展示 %d 首。", total, shown)
+	case session.creating:
+		fmt.Fprintf(&text, "\n\n确认后才会创建这张歌单，并写入这 %d 首。", total)
+	case len(session.draft.ExistingSongIDs) > 0 && total > shown:
+		fmt.Fprintf(&text, "\n\n确认后会替换当前 %d 首，并写入全部 %d 首。上面先展示 %d 首。", len(session.draft.ExistingSongIDs), total, shown)
+	case len(session.draft.ExistingSongIDs) > 0:
+		fmt.Fprintf(&text, "\n\n确认后会替换当前 %d 首，并写入这 %d 首。", len(session.draft.ExistingSongIDs), total)
+	case total > shown:
+		fmt.Fprintf(&text, "\n\n这是空歌单。确认后写入全部 %d 首。上面先展示 %d 首。", total, shown)
+	default:
+		fmt.Fprintf(&text, "\n\n这是空歌单。确认后写入这 %d 首。", total)
+	}
+	text.WriteString("\n换一版会避开这批歌。")
+	if session.creating {
+		text.WriteString("\n改名会放弃这份预览。")
+	}
+	return text.String()
+}
+
+func aiPlaylistVisibleName(name string) string {
+	name = strings.TrimSpace(name)
+	if len(name) >= 4 && strings.EqualFold(name[:4], "[AI]") {
+		name = strings.TrimSpace(name[4:])
+	}
+	if name == "" {
+		return "未命名"
+	}
+	return name
+}
+
 func aiPlaylistButtonLabel(value string) string {
-	return aiPlaylistDisplayValue(value, 26)
+	return aiPlaylistDisplayValue(value, 18)
 }
 
 func aiPlaylistTargetButtonLabel(playlist aiPlaylist) string {
-	return fmt.Sprintf("%s · %d 首", aiPlaylistButtonLabel(playlist.Name), playlist.SongCount)
+	return fmt.Sprintf("%s · %d 首", aiPlaylistButtonLabel(aiPlaylistVisibleName(playlist.Name)), playlist.SongCount)
 }

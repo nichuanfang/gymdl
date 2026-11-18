@@ -164,7 +164,17 @@ func (app *BotApp) HandlePlaylistAssignmentWebAppSelection(selectionToken string
 	if err != nil {
 		return err
 	}
-	return app.editPlaylistAssignmentMessage(updated.message, formatPlaylistAssignment(updated), playlistAssignmentMarkup(updated))
+	if updated.processing {
+		return nil
+	}
+	if err = app.commitPlaylistAssignment(updated.token); err != nil {
+		refreshed, ok := app.getPlaylistAssignment(updated.token)
+		if ok {
+			_ = app.editPlaylistAssignmentMessage(refreshed.message, formatPlaylistAssignment(refreshed), playlistAssignmentMarkup(refreshed))
+		}
+		return err
+	}
+	return nil
 }
 
 func normalizePlaylistSelection(selected []string, options []config.PlaylistInfo) ([]string, error) {

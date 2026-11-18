@@ -578,7 +578,15 @@ func (s *Service) Run(ctx context.Context) error {
 	if summary <= 0 {
 		summary = 30 * time.Minute
 	}
-	nextPoll := time.Now()
+	// Favorite reads stay off this loop. A slow list fetch must not stall the
+	// download queue, and a long download must not delay the next read.
+	var polls sync.WaitGroup
+	polls.Add(1)
+	go func() {
+		defer polls.Done()
+		s.runFavoritePoll(ctx, poll)
+	}()
+	defer polls.Wait()
 	nextSummary := time.Now().Add(summary)
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
@@ -587,13 +595,6 @@ func (s *Service) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if time.Now().After(nextPoll) {
-				if s.Enabled {
-					fresh, _ := s.Sync(ctx, 0)
-					s.notifyFresh(fresh)
-				}
-				nextPoll = time.Now().Add(poll)
-			}
 			if err := s.ProcessOne(ctx); err != nil && !errors.Is(err, sql.ErrNoRows) {
 				if ctx.Err() != nil {
 					return nil
@@ -610,6 +611,29 @@ func (s *Service) Run(ctx context.Context) error {
 				_ = s.Digest(ctx)
 				nextSummary = time.Now().Add(summary)
 			}
+		}
+	}
+}
+
+// runFavoritePoll reads favorites, then waits. The wait starts after the read
+// returns, so two reads never overlap. The first read still happens as soon
+// as the service starts.
+func (s *Service) runFavoritePoll(ctx context.Context, poll time.Duration) {
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			if s.Enabled {
+				fresh, _ := s.Sync(ctx, 0)
+				if ctx.Err() != nil {
+					return
+				}
+				s.notifyFresh(fresh)
+			}
+			timer.Reset(poll)
 		}
 	}
 }

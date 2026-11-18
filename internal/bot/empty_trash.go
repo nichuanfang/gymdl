@@ -397,24 +397,18 @@ func (app *BotApp) startEmptyTrash(c tb.Context) error {
 	if c.Chat() == nil || c.Sender() == nil {
 		return c.Send("无法读取 Telegram 会话信息，请在聊天中重新发送 /empty_trash。")
 	}
-	if reason := app.maintenanceConflict(c.Chat().ID, "trash"); reason != "" {
-		return c.Send(reason)
-	}
-	if app.hasPendingEmptyTrash(c.Chat().ID) {
-		return c.Send("当前已有一条待确认的清空回收站请求，请先确认、取消或等待过期。")
+	if hold, ok := app.chatMaintenanceHold(c.Chat().ID, ""); ok {
+		return app.presentMaintenanceHold(c, hold, "t", nil)
 	}
 	service, err := newEmptyTrashService(app.cfg)
 	if err != nil {
 		return c.Send("清空回收站服务尚未配置：" + err.Error())
 	}
 	app.playlistMaintenanceStartMu.Lock()
-	if reason := app.maintenanceConflict(c.Chat().ID, "trash"); reason != "" || app.hasPendingEmptyTrash(c.Chat().ID) {
+	if hold, ok := app.chatMaintenanceHold(c.Chat().ID, ""); ok {
 		app.playlistMaintenanceStartMu.Unlock()
 		service.organizer.client.CloseIdleConnections()
-		if reason == "" {
-			reason = "当前已有一条待确认的清空回收站请求，请先确认、取消或等待过期。"
-		}
-		return c.Send(reason)
+		return app.presentMaintenanceHold(c, hold, "t", nil)
 	}
 	if !app.beginEmptyTrashRun(c.Chat().ID) {
 		app.playlistMaintenanceStartMu.Unlock()
@@ -458,7 +452,13 @@ func (app *BotApp) prepareEmptyTrashPreview(userID, chatID int64, message *tb.Me
 		expiresAt: time.Now().Add(emptyTrashConfirmationTTL),
 	}
 	if !app.registerPendingEmptyTrash(pending) {
-		_, _ = app.bot.Edit(message, "当前已有一条待确认的清空回收站请求，请先处理它。", &tb.ReplyMarkup{})
+		if hold, ok := app.chatMaintenanceHold(chatID, ""); ok && app.bot != nil {
+			_ = sendMaintenanceHold(app.bot, tb.ChatID(chatID), hold, "t", message)
+			return
+		}
+		if app.bot != nil {
+			_, _ = app.bot.Edit(message, "清空回收站还等你确认。", &tb.ReplyMarkup{})
+		}
 		return
 	}
 	if _, err := app.bot.Edit(message, formatEmptyTrashPreview(plan), emptyTrashConfirmationMarkup(token)); err != nil {

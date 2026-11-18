@@ -2,6 +2,7 @@ package bot
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +198,18 @@ func TestAIPlaylistSeedButtonKeepsTheNextLineAsASong(t *testing.T) {
 	if got := composeAIPlaylistFollowup(session, "晴天 - 周杰伦"); got != "像这首歌 晴天 - 周杰伦\n适合通勤" {
 		t.Fatalf("kept theme = %q", got)
 	}
+	ctx.args = []string{"themes", "token"}
+	if err := app.HandleAIPlaylistCallback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	returned, ok := app.getAIPlaylistSession("token")
+	if !ok || returned.awaitingSeed || returned.notice != "" || !returned.awaitingInput {
+		t.Fatalf("returning to themes = %#v", returned)
+	}
+	returned.awaitingSeed = true
+	returned.notice = aiPlaylistSeedNotice()
+	app.updateAIPlaylistSession(returned)
+	session = returned
 	session.draft = &aiPlaylistDraft{Description: "seed", Plan: aiPlaylistPlan{Playlist: []aiPlaylistPlanItem{{ID: "song-near"}}}}
 	session.awaitingSeed = true
 	app.updateAIPlaylistSession(session)
@@ -206,16 +219,45 @@ func TestAIPlaylistSeedButtonKeepsTheNextLineAsASong(t *testing.T) {
 	}
 	markup := aiPlaylistSessionMarkup(pendingAIPlaylistSession{token: strings.Repeat("a", 32), target: aiPlaylist{ID: "playlist", Name: "[AI] 夜间"}})
 	assertTelegramButtons(t, markup)
-	found := false
+	foundSeed := false
 	for _, row := range markup.InlineKeyboard {
 		for _, button := range row {
 			if button.Text == "像这首歌" && strings.Contains(button.Data, "seed|") {
-				found = true
+				foundSeed = true
+			}
+			if button.Text == "像这首歌" && len(row) != 2 {
+				t.Fatalf("seed button should share its row, got %#v", row)
 			}
 		}
 	}
-	if !found {
+	if !foundSeed {
 		t.Fatal("seed button missing")
+	}
+	waiting := pendingAIPlaylistSession{
+		token: strings.Repeat("b", 32), awaitingSeed: true, awaitingInput: true,
+		notice: aiPlaylistSeedNotice(),
+		target: aiPlaylist{ID: "playlist", Name: "[AI]中国风", Description: "国风歌单", SongCount: 74},
+	}
+	seedMarkup := aiPlaylistSessionMarkup(waiting)
+	assertTelegramButtons(t, seedMarkup)
+	var seedLabels []string
+	for _, row := range seedMarkup.InlineKeyboard {
+		for _, button := range row {
+			seedLabels = append(seedLabels, button.Text)
+			if button.Text == "通勤节奏" || button.Text == "像这首歌" || button.Text == "删除歌单" || button.Text == "按备注生成预览" {
+				t.Fatalf("seed mode should hide themes and delete, got %q", button.Text)
+			}
+		}
+	}
+	if strings.Join(seedLabels, ",") != "返回主题,更换歌单,取消" {
+		t.Fatalf("seed controls = %#v", seedLabels)
+	}
+	card := formatAIPlaylistSession(waiting)
+	if strings.Contains(card, "点下面的主题") || !strings.Contains(card, "例如：晴天 - 周杰伦") || strings.Count(card, "晴天") != 1 {
+		t.Fatalf("seed card = %q", card)
+	}
+	if !strings.Contains(card, "当前有 74 首") {
+		t.Fatalf("seed card should keep the replace warning: %q", card)
 	}
 }
 
@@ -364,7 +406,7 @@ func TestAIPlaylistCanSelectPopulatedTargetAndClearlyConfirmReplacement(t *testi
 		t.Fatalf("menu should explain the write behavior: %q", message)
 	}
 	markup := aiPlaylistSessionMarkup(menu)
-	if got := markup.InlineKeyboard[1][0].Text; got != "[AI] 夜间 · 28 首" {
+	if got := markup.InlineKeyboard[1][0].Text; got != "夜间 · 28 首" {
 		t.Fatalf("populated target label = %q", got)
 	}
 	selected := pendingAIPlaylistSession{
@@ -430,7 +472,7 @@ func TestAIPlaylistPendingWriteShowsOnlyContinueAndCancel(t *testing.T) {
 			labels = append(labels, button.Text)
 		}
 	}
-	if strings.Join(labels, ",") != "↻ 继续写入,取消" {
+	if strings.Join(labels, ",") != "↻ 继续写入,取消,删除歌单" {
 		t.Fatalf("pending write controls = %#v", labels)
 	}
 	if message := formatAIPlaylistSession(session); !strings.Contains(message, "继续写入") || strings.Contains(message, "旧预览") {
@@ -488,5 +530,154 @@ func TestAIPlaylistBlockedPreviewCanAcceptInputAgain(t *testing.T) {
 	updated, ok := app.getAIPlaylistSession("token")
 	if !ok || !updated.awaitingInput || updated.processing {
 		t.Fatalf("released session should accept text again: %#v, exists=%t", updated, ok)
+	}
+}
+
+func TestAIPlaylistDeleteAsksBeforeRemovingThePlaylist(t *testing.T) {
+	app := &BotApp{}
+	message := &tb.Message{ID: 9, Chat: &tb.Chat{ID: 10}}
+	if !app.registerAIPlaylistSession(pendingAIPlaylistSession{
+		token: "token", userID: 20, chatID: 10, message: message,
+		target:    aiPlaylist{ID: "playlist-1", Name: "[AI]中国风", Description: "国风歌单", SongCount: 74},
+		expiresAt: time.Now().Add(time.Minute),
+	}) {
+		t.Fatal("failed to register session")
+	}
+	ctx := &aiPlaylistInteractionTestContext{
+		args: []string{"delete_yes", "token"}, sender: &tb.User{ID: 20},
+		callback: &tb.Callback{Message: message}, chat: message.Chat,
+	}
+	if err := app.HandleAIPlaylistCallback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	session, ok := app.getAIPlaylistSession("token")
+	if !ok || session.confirmingDelete || session.processing || session.target.ID != "playlist-1" {
+		t.Fatalf("confirm must come before deletion: %#v", session)
+	}
+
+	ctx.args = []string{"delete", "token"}
+	if err := app.HandleAIPlaylistCallback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	session, ok = app.getAIPlaylistSession("token")
+	if !ok || !session.confirmingDelete || session.processing || session.awaitingInput {
+		t.Fatalf("delete should wait for confirmation: %#v", session)
+	}
+	card, _ := ctx.edited.(string)
+	if !strings.Contains(card, "会从 Navidrome 删掉这张歌单") || !strings.Contains(card, "歌还在曲库里") || !strings.Contains(card, "[AI]中国风") {
+		t.Fatalf("confirm card = %q", card)
+	}
+	markup := aiPlaylistSessionMarkup(session)
+	var labels []string
+	for _, row := range markup.InlineKeyboard {
+		for _, button := range row {
+			labels = append(labels, button.Text)
+		}
+	}
+	if strings.Join(labels, ",") != "确认删除,返回" {
+		t.Fatalf("confirm controls = %#v", labels)
+	}
+	assertTelegramButtons(t, markup)
+
+	ctx.args = []string{"delete_no", "token"}
+	if err := app.HandleAIPlaylistCallback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	session, ok = app.getAIPlaylistSession("token")
+	if !ok || session.confirmingDelete || !session.awaitingInput || session.target.ID != "playlist-1" {
+		t.Fatalf("return should restore the playlist card: %#v", session)
+	}
+
+	ctx.args = []string{"delete", "token"}
+	if err := app.HandleAIPlaylistCallback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	ctx.args = []string{"delete_yes", "token"}
+	if err := app.HandleAIPlaylistCallback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		session, ok = app.getAIPlaylistSession("token")
+		if ok && !session.processing && session.confirmingDelete && strings.Contains(session.notice, "ai.enable") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("delete should report the configuration failure and keep the playlist: %#v exists=%t", session, ok)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if session.target.ID != "playlist-1" {
+		t.Fatalf("failed delete changed the target: %#v", session)
+	}
+}
+
+func TestAIPlaylistDeleteRejectsOrdinaryPlaylists(t *testing.T) {
+	app := &BotApp{}
+	message := &tb.Message{ID: 11, Chat: &tb.Chat{ID: 10}}
+	if !app.registerAIPlaylistSession(pendingAIPlaylistSession{
+		token: "token", userID: 20, chatID: 10, message: message,
+		playlists: []aiPlaylist{{ID: "playlist-1", Name: "中文"}},
+		expiresAt: time.Now().Add(time.Minute),
+	}) {
+		t.Fatal("failed to register session")
+	}
+	if _, ok := app.selectAIPlaylistTarget("token", aiPlaylist{ID: "playlist-1", Name: "中文"}); !ok {
+		t.Fatal("failed to select playlist")
+	}
+	ctx := &aiPlaylistInteractionTestContext{
+		args: []string{"delete", "token"}, sender: &tb.User{ID: 20},
+		callback: &tb.Callback{Message: message}, chat: message.Chat,
+	}
+	if err := app.HandleAIPlaylistCallback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	session, ok := app.getAIPlaylistSession("token")
+	if !ok || session.confirmingDelete || session.target.Name != "中文" {
+		t.Fatalf("ordinary playlist must not enter delete confirmation: %#v", session)
+	}
+}
+
+func TestForgetDeletedAIPlaylistStateDropsResumeAndMatchingIntent(t *testing.T) {
+	store, err := openAIPlaylistResumeStore(filepath.Join(t.TempDir(), "gymdl.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := t.Context()
+	if err := store.Create(ctx, aiPlaylistResumePlan{
+		PlaylistID: "playlist1", Description: "国风", SongIDs: []string{"song1"}, Intro: "夜间",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	matching := aiPlaylistCreateIntent{
+		OperationID: "operation1", Name: "[AI] 中国风", Description: "国风",
+		Marker: "gymdl-ai-playlist-create:operation1", SongIDs: []string{"song1"}, Intro: "夜间",
+		PlaylistID: "playlist1",
+	}
+	other := matching
+	other.OperationID = "operation2"
+	other.Marker = "gymdl-ai-playlist-create:operation2"
+	other.PlaylistID = ""
+	if err := store.CreateIntent(ctx, matching); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateIntent(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	if err := forgetDeletedAIPlaylistState(ctx, store, "playlist1"); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := store.Load(ctx, "playlist1")
+	if err != nil || plan != nil {
+		t.Fatalf("resume plan remains: %#v err=%v", plan, err)
+	}
+	gone, err := store.LoadIntent(ctx, "operation1")
+	if err != nil || gone != nil {
+		t.Fatalf("matching intent remains: %#v err=%v", gone, err)
+	}
+	kept, err := store.LoadIntent(ctx, "operation2")
+	if err != nil || kept == nil {
+		t.Fatalf("unrelated intent = %#v err=%v", kept, err)
 	}
 }

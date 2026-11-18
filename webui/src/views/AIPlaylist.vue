@@ -42,7 +42,7 @@
       <div class="form-actions">
         <n-button type="primary" :loading="previewing" :disabled="confirming" @click="preview">生成预览</n-button>
       </div>
-      <p class="studio-help">预览只展示前 10 首。确认后按服务端保存的整张歌单写入，页面不会再把曲目列表传回去。</p>
+      <p class="studio-help">预览只展示前 10 首。确认后才会按服务端保存的整张列表写入，页面不会再把曲目传回去。</p>
     </n-card>
 
     <n-card v-if="previewPage" size="small" :bordered="false" class="studio-card">
@@ -51,7 +51,7 @@
           <h3>{{ previewPage.name }}</h3>
           <p>{{ previewPage.description || '还没有描述' }}</p>
         </div>
-        <n-tag :bordered="false" type="info">共 {{ previewPage.total }} 首</n-tag>
+        <n-tag :bordered="false" :type="previewPage.creating ? 'info' : previewPage.existing > 0 ? 'warning' : 'success'">{{ previewBadge }}</n-tag>
       </header>
       <p v-if="previewPage.intro" class="intro">{{ previewPage.intro }}</p>
       <ol class="preview-list">
@@ -61,23 +61,24 @@
           <em v-if="song.reason">{{ song.reason }}</em>
         </li>
       </ol>
-      <p v-if="previewPage.total > previewPage.preview.length" class="studio-help">这里是前 {{ previewPage.preview.length }} 首。确认会写入全部 {{ previewPage.total }} 首。</p>
+      <p class="studio-help">{{ previewScope }}</p>
       <div class="form-actions">
-        <n-button type="primary" :loading="confirming" :disabled="previewing" @click="confirm">确认写入</n-button>
+        <n-button type="primary" :loading="confirming" :disabled="previewing" @click="confirm">{{ confirmLabel }}</n-button>
       </div>
     </n-card>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onMounted, ref } from 'vue'
-import { NAlert, NButton, NCard, NInput, NSelect, NTag, useMessage } from 'naive-ui'
+import { computed, h, onActivated, onMounted, ref } from 'vue'
+import { NAlert, NButton, NCard, NInput, NSelect, NTag, useDialog, useMessage } from 'naive-ui'
 import PageHeading from '../components/PageHeading.vue'
 import { confirmAIPlaylist, listAIPlaylists, previewAIPlaylist, type AIPlaylistItem, type AIPreset, type AIPreviewPage } from '../api'
 
 defineOptions({ name: 'AIPlaylist' })
 
 const message = useMessage()
+const dialog = useDialog()
 const loading = ref(false)
 const previewing = ref(false)
 const confirming = ref(false)
@@ -98,6 +99,33 @@ const playlistOptions = computed(() => playlists.value.map((item) => ({
   label: `${item.name} · ${item.song_count} 首`,
   value: item.id,
 })))
+const confirmLabel = computed(() => {
+  const page = previewPage.value
+  if (!page) return '确认写入'
+  if (page.creating) return '确认创建'
+  if (page.existing > 0) return '确认替换'
+  return '确认写入'
+})
+const previewBadge = computed(() => {
+  const page = previewPage.value
+  if (!page) return ''
+  if (page.creating) return `新建 · 共 ${page.total} 首`
+  if (page.existing > 0) return `替换当前 ${page.existing} 首`
+  return `空歌单 · 写入 ${page.total} 首`
+})
+const previewScope = computed(() => {
+  const page = previewPage.value
+  if (!page) return ''
+  const shown = page.preview.length
+  const total = page.total
+  const existing = page.existing || 0
+  if (page.creating && total > shown) return `确认后才会创建这张歌单，并写入全部 ${total} 首。上面先展示 ${shown} 首。`
+  if (page.creating) return `确认后才会创建这张歌单，并写入这 ${total} 首。`
+  if (existing > 0 && total > shown) return `确认后会替换当前 ${existing} 首，并写入全部 ${total} 首。上面先展示 ${shown} 首。`
+  if (existing > 0) return `确认后会替换当前 ${existing} 首，并写入这 ${total} 首。`
+  if (total > shown) return `这是空歌单。确认后写入全部 ${total} 首。上面先展示 ${shown} 首。`
+  return `这是空歌单。确认后写入这 ${total} 首。`
+})
 
 function togglePreset(id: string) {
   selectedPreset.value = selectedPreset.value === id ? '' : id
@@ -142,7 +170,7 @@ async function preview() {
   try {
     const response = await previewAIPlaylist(body)
     if (response.code !== 200 || !response.data?.token) throw new Error(response.message || '预览失败')
-    previewPage.value = { ...response.data, preview: response.data.preview || [] }
+    previewPage.value = { ...response.data, preview: response.data.preview || [], existing: response.data.existing || 0 }
   } catch (err) {
     message.error(err instanceof Error ? err.message : '预览失败')
   } finally {
@@ -150,15 +178,35 @@ async function preview() {
   }
 }
 
-async function confirm() {
-  const token = previewPage.value?.token
-  if (!token) return
+function confirm() {
+  const page = previewPage.value
+  if (!page?.token || confirming.value) return
+  if (!page.creating && page.existing > 0) {
+    dialog.warning({
+      title: '替换当前歌单',
+      content: () => h('div', { style: 'white-space: pre-line; line-height: 1.7' }, `确认后会替换当前 ${page.existing} 首，并写入全部 ${page.total} 首。`),
+      positiveText: '确认替换',
+      negativeText: '返回',
+      maskClosable: false,
+      onPositiveClick: () => commit(page.token),
+    })
+    return
+  }
+  void commit(page.token)
+}
+
+async function commit(token: string) {
   confirming.value = true
   try {
     const response = await confirmAIPlaylist(token)
     if (response.code !== 200 || !response.data) throw new Error(response.message || '写入失败')
     const page = response.data
-    message.success(page.created ? `已创建「${page.name}」，共 ${page.count} 首` : `已更新「${page.name}」，共 ${page.count} 首`)
+    const done = page.created
+      ? `已创建「${page.name}」，共 ${page.count} 首`
+      : page.replaced
+        ? `已替换「${page.name}」，现为 ${page.count} 首`
+        : `已写入「${page.name}」，共 ${page.count} 首`
+    message.success(done)
     previewPage.value = null
     await load()
   } catch (err) {

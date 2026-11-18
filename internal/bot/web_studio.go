@@ -43,6 +43,7 @@ func (app *BotApp) registerWebStudio() {
 	studio := webStudio{app: app}
 	web.SetDiscoveryAPI(studio)
 	web.SetAIPlaylistAPI(studio)
+	web.SetFavoritesAPI(studio)
 }
 
 func (s webStudio) owner() (int64, error) {
@@ -83,9 +84,14 @@ func (s webStudio) Rediscover(ctx context.Context, platform string, limit int) (
 }
 
 func webDiscoveryTrack(track discovery.Track) web.DiscoveryTrack {
+	played := ""
+	if !track.LastPlayed.IsZero() {
+		played = track.LastPlayed.In(time.Local).Format("2006-01-02")
+	}
 	return web.DiscoveryTrack{
 		Platform: track.Platform, ID: track.ID, URL: track.URL, Title: track.Title,
-		Artist: track.Artist, Album: track.Album, Duration: track.Duration, Verified: track.Verified,
+		Artist: track.Artist, Album: track.Album, Duration: track.Duration,
+		Plays: track.Plays, LastPlayed: played, Verified: track.Verified,
 	}
 }
 
@@ -143,7 +149,7 @@ func (s webStudio) Dismiss(ctx context.Context, tracks []web.DiscoveryTrack) (in
 
 func (s webStudio) List(ctx context.Context) (web.AIPlaylistPage, error) {
 	page := web.AIPlaylistPage{Presets: webAIPresets(), Playlists: []web.AIPlaylistItem{}}
-	service, err := newAIPlaylistService(s.app.cfg)
+	service, err := s.app.openAIPlaylistService()
 	if err != nil {
 		return page, err
 	}
@@ -219,7 +225,7 @@ func (s webStudio) Preview(ctx context.Context, req web.AIPreviewRequest) (web.A
 		return web.AIPreviewPage{}, errors.New("另一项歌单维护正在运行，请稍后重试")
 	}
 	defer s.app.finishAIPlaylistRun(webStudioChatID)
-	service, err := newAIPlaylistService(s.app.cfg)
+	service, err := s.app.openAIPlaylistService()
 	if err != nil {
 		return web.AIPreviewPage{}, err
 	}
@@ -253,6 +259,7 @@ func (s webStudio) Preview(ctx context.Context, req web.AIPreviewRequest) (web.A
 	return web.AIPreviewPage{
 		Token: token, Name: name, Description: draft.Description, Intro: draft.Plan.Intro,
 		Total: len(ids), Preview: preview, UsedFallback: draft.UsedFallback, Creating: creating,
+		Existing: len(draft.ExistingSongIDs),
 	}, nil
 }
 
@@ -282,7 +289,7 @@ func (s webStudio) Confirm(ctx context.Context, token string) (web.AIConfirmPage
 		return web.AIConfirmPage{}, errors.New("另一项歌单维护正在运行，请稍后重试")
 	}
 	defer s.app.finishAIPlaylistRun(webStudioChatID)
-	service, err := newAIPlaylistService(s.app.cfg)
+	service, err := s.app.openAIPlaylistService()
 	if err != nil {
 		s.touchWebPreview(token)
 		return web.AIConfirmPage{}, err

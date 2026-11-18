@@ -66,11 +66,14 @@ func isPlaylistWebSearchTool(tool aichat.Tool) bool {
 }
 
 func runPlaylistWebSearch(ctx context.Context, tools []aichat.Tool, song unplaylistSong) (string, error) {
+	return runWebSearchQuery(ctx, tools, playlistSongSearchQuery(song))
+}
+
+func runWebSearchQuery(ctx context.Context, tools []aichat.Tool, query string) (string, error) {
 	tool, queryField, ok := playlistWebSearchTool(tools)
 	if !ok {
 		return "", errors.New("WebSearch MCP 工具未配置或参数不兼容")
 	}
-	query := playlistSongSearchQuery(song)
 	args := map[string]any{queryField: query}
 	for _, required := range requiredToolFields(tool.Parameters["required"]) {
 		if required == queryField {

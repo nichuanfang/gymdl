@@ -59,7 +59,7 @@ func helpText() string {
 /clear 清空当前对话，不会切换模式
 
 <b>歌单</b>
-/assign_playlist 整理新歌归档位置
+/assign_playlist 整理尚未归档的歌曲
 /playlist_desc 同步歌单并维护整理说明
 /ai_playlist 预览后创建或更新 AI 歌单
 /rediscover 从历史和收藏找曲库缺少的歌曲
@@ -319,8 +319,8 @@ func qqCredentialValue(raw json.RawMessage) (string, error) {
 /* ------------------------ 初始化指令集 ------------------------ */
 
 // botCommands 是 / 菜单的唯一来源。按用户指定的常用顺序排列，
-// 找歌与对话控制在前，其后是歌单、遗珠、同步、账号维护及帮助。
-// /start 由 Start 按钮进入；/new 是 /clear 别名。/status 放在帮助前面。
+// 找歌与对话控制在前，其后是歌单、遗珠、同步及帮助。
+// /start 由 Start 按钮进入；/new 是 /clear 别名。/qq_login 可手动调用，不放进菜单。/status 放在帮助前面。
 func botCommands() []tb.Command {
 	return []tb.Command{
 		{Text: "ai", Description: "对话找歌"},
@@ -331,7 +331,6 @@ func botCommands() []tb.Command {
 		{Text: "ai_playlist", Description: "生成歌单"},
 		{Text: "rediscover", Description: "找回遗珠"},
 		{Text: "favorites", Description: "收藏同步"},
-		{Text: "qq_login", Description: "QQ 登录"},
 		{Text: "empty_trash", Description: "清空回收站"},
 		{Text: "status", Description: "服务状态"},
 		{Text: "help", Description: "使用帮助"},

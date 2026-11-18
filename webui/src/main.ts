@@ -16,6 +16,7 @@ const router = createRouter({
     { path: '/search', component: () => import('./views/Search.vue') },
     { path: '/listening', component: () => import('./views/Listening.vue') },
     { path: '/rediscover', component: () => import('./views/Rediscover.vue') },
+    { path: '/favorites', component: () => import('./views/Favorites.vue') },
     { path: '/playlist-desc', component: () => import('./views/PlaylistDesc.vue') },
     { path: '/ai-playlist', component: () => import('./views/AIPlaylist.vue') },
     { path: '/duplicates', component: () => import('./views/Duplicates.vue') },
