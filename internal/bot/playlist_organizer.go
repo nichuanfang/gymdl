@@ -1287,7 +1287,7 @@ func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
 	}
 	options, skipped := normalizePlaylistOptions(entries)
 	if len(options) == 0 {
-		return c.Send("没有可用于整理的歌单。发送 /playlist_desc 同步并写上描述。")
+		return c.Send("当前没有可用于归档的歌单。先用 /playlist_desc 同步歌单列表并补充描述，再回来整理。")
 	}
 	if len(options) > maxPlaylistOptions {
 		return c.Send("可选歌单超过 100 个，暂时无法打开歌单选择页面。")
@@ -1295,7 +1295,7 @@ func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
 	if app.hasPlaylistAssignmentForChat(c.Chat().ID) {
 		return c.Send("歌单整理还开着。请先在那条消息里完成或点取消。")
 	}
-	message, err := c.Bot().Send(c.Chat(), "📌 正在查找第一首待整理歌曲…")
+	message, err := c.Bot().Send(c.Chat(), "⌛ 正在读取第一首待归档歌曲…")
 	if err != nil {
 		organizer.client.CloseIdleConnections()
 		return err
@@ -1456,8 +1456,8 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 			app.markPlaylistAssignmentProcessing(token, false)
 			return c.Respond(&tb.CallbackResponse{Text: "另一项歌单维护正在运行，请稍后重试。"})
 		}
-		_ = c.Respond(&tb.CallbackResponse{Text: "已确认，正在加入所选歌单…"})
-		if err := c.Edit("⏳ 正在检查并更新 Navidrome…", &tb.ReplyMarkup{}); err != nil {
+		_ = c.Respond(&tb.CallbackResponse{Text: "已确认，正在归档…"})
+		if err := c.Edit("⏳ 正在核对歌曲并更新所选歌单…", &tb.ReplyMarkup{}); err != nil {
 			app.finishPlaylistAssignmentRun(started.chatID)
 			app.markPlaylistAssignmentProcessing(token, false)
 			return err
@@ -1491,7 +1491,7 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "当前歌曲无法跳过，请稍后重试", ShowAlert: true})
 		}
 		_ = c.Respond(&tb.CallbackResponse{Text: "已跳过当前歌曲"})
-		if err := c.Edit("⏳ 正在查找下一首待整理歌曲…", &tb.ReplyMarkup{}); err != nil {
+		if err := c.Edit("⌛ 正在读取下一首待归档歌曲…", &tb.ReplyMarkup{}); err != nil {
 			logger.Warn("[Telegram] 跳过后更新整理消息失败，继续查找下一首", zap.Error(err))
 		}
 		go app.preparePlaylistAssignment(updated.token)
@@ -1503,7 +1503,7 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "整理会话已过期或正在处理", ShowAlert: true})
 		}
 		_ = c.Respond()
-		if err := c.Edit("⏳ 正在继续查找待整理歌曲…", &tb.ReplyMarkup{}); err != nil {
+		if err := c.Edit("⌛ 正在继续读取待归档歌曲…", &tb.ReplyMarkup{}); err != nil {
 			app.markPlaylistAssignmentProcessing(token, false)
 			return err
 		}
@@ -1605,7 +1605,7 @@ func (app *BotApp) advancePlaylistAssignment(token string) {
 	if !ok {
 		return
 	}
-	app.editPlaylistAssignmentMessage(assignment.message, "⏳ 正在查找下一首待整理歌曲…", &tb.ReplyMarkup{})
+	app.editPlaylistAssignmentMessage(assignment.message, "⌛ 正在读取下一首待归档歌曲…", &tb.ReplyMarkup{})
 	app.preparePlaylistAssignment(token)
 }
 
@@ -1701,7 +1701,7 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 			text.WriteString("\n")
 			text.WriteString(assignment.statusNote)
 		} else {
-			text.WriteString("\n正在查找歌曲…")
+			text.WriteString("\n⌛ 正在读取下一首待归档歌曲…")
 		}
 		return text.String()
 	}
@@ -1720,7 +1720,7 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 	if assignment.selectionComplete {
 		fmt.Fprintf(&text, "\n\n归档到：%s", formatPlaylistNameList(assignment.selectedPlaylists))
 	} else {
-		text.WriteString("\n\n还没选歌单")
+		text.WriteString("\n\n还没选歌单；请选择后确认归档")
 	}
 	if assignment.processedCount > 0 || assignment.skippedCount > 0 {
 		fmt.Fprintf(&text, "\n\n进度：已确认 %d · 跳过 %d", assignment.processedCount, assignment.skippedCount)

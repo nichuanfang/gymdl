@@ -59,11 +59,11 @@ func helpText() string {
 /clear 清空当前对话，不会切换模式
 
 <b>歌单</b>
-/assign_playlist 为新歌选择目标歌单
-/playlist_desc 同步歌单并修改每张歌单的描述
+/assign_playlist 整理新歌归档位置
+/playlist_desc 同步歌单并维护整理说明
 /ai_playlist 预览后创建或更新 AI 歌单
-/rediscover 找回听过或收藏过、当前曲库缺少的歌曲
-/favorites 管理平台收藏自动入库
+/rediscover 从历史和收藏找曲库缺少的歌曲
+/favorites 管理账号、同步收藏并查看入库队列
 /empty_trash 预览并确认清空回收站：删除其中的歌曲文件，并清理 MusicRAG 状态与 Pinecone 向量
 
 <b>账号</b>

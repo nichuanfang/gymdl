@@ -63,6 +63,16 @@ type FreshFavorite struct {
 }
 
 func (s *Service) Sync(ctx context.Context, user int64) ([]FreshFavorite, error) {
+	return s.sync(ctx, user, true)
+}
+
+// SyncQuietly runs a user-requested sync without sending background notices.
+// The caller owns the interaction and should report the result in its message.
+func (s *Service) SyncQuietly(ctx context.Context, user int64) ([]FreshFavorite, error) {
+	return s.sync(ctx, user, false)
+}
+
+func (s *Service) sync(ctx context.Context, user int64, notifyErrors bool) ([]FreshFavorite, error) {
 	if !s.Enabled {
 		return nil, fmt.Errorf("自动收藏同步未启用，请先配置 favorites.enable: true；可先预览并绑定账号")
 	}
@@ -90,7 +100,7 @@ func (s *Service) Sync(ctx context.Context, user int64) ([]FreshFavorite, error)
 			message := b.Platform + "：" + e.Error()
 			pause := strings.Contains(message, "登录失效") || strings.Contains(message, "账号已变化") || strings.Contains(message, "列表不可访问")
 			changed, _ := s.Store.SourceError(ctx, b, message, pause)
-			if changed && s.Notify != nil {
+			if changed && notifyErrors && s.Notify != nil {
 				_ = s.Notify(b.Chat, "⚠️ 收藏同步异常\n"+message)
 			}
 			failures = append(failures, message)

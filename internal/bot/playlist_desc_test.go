@@ -142,11 +142,19 @@ type playlistDescTextContext struct {
 	text   string
 	sender *tb.User
 	chat   *tb.Chat
+	sent   []string
 }
 
 func (c *playlistDescTextContext) Text() string     { return c.text }
 func (c *playlistDescTextContext) Sender() *tb.User { return c.sender }
 func (c *playlistDescTextContext) Chat() *tb.Chat   { return c.chat }
+func (c *playlistDescTextContext) Bot() tb.API      { return nil }
+func (c *playlistDescTextContext) Send(v interface{}, _ ...interface{}) error {
+	if text, ok := v.(string); ok {
+		c.sent = append(c.sent, text)
+	}
+	return nil
+}
 
 func TestPlaylistDescEditLetsADownloadLinkThrough(t *testing.T) {
 	store, err := playlistcatalog.Open(filepath.Join(t.TempDir(), "gymdl.sqlite3"))
@@ -163,13 +171,17 @@ func TestPlaylistDescEditLetsADownloadLinkThrough(t *testing.T) {
 		expiresAt: time.Now().Add(time.Minute),
 		playlists: []playlistcatalog.Playlist{{ID: "zh", Name: "中文", Desc: "原来的描述"}},
 	})
-	handled, err := app.handlePlaylistDescText(&playlistDescTextContext{
+	ctx := &playlistDescTextContext{
 		text:   "https://y.qq.com/n/ryqq/songDetail/0039MnYb0qxYhV",
 		sender: &tb.User{ID: 7},
 		chat:   &tb.Chat{ID: 7, Type: tb.ChatPrivate},
-	})
+	}
+	handled, err := app.handlePlaylistDescText(ctx)
 	if err != nil || handled {
 		t.Fatalf("link handled=%v err=%v, want the download path", handled, err)
+	}
+	if len(ctx.sent) != 1 || !strings.Contains(ctx.sent[0], "这条链接会继续按下载处理") {
+		t.Fatalf("edit-mode exit notice = %#v", ctx.sent)
 	}
 	if _, waiting := app.playlistDescAwaiting(7, 7); waiting {
 		t.Fatal("edit mode still captures the next message")

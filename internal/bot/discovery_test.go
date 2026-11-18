@@ -119,7 +119,13 @@ func TestDiscoveryBaselineConfirmationIsSingleUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := &BotApp{cfg: &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"1"}}}, discovery: &discovery.Service{Store: store}}
-	ctx := &discoveryCallbackContext{args: []string{"bind", c.Token}, sender: &tb.User{ID: 1}, chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate}}
+	ctx := &discoveryCallbackContext{
+		args:     []string{"bind", c.Token},
+		sender:   &tb.User{ID: 1},
+		chat:     &tb.Chat{ID: 1, Type: tb.ChatPrivate},
+		callback: &tb.Callback{},
+		message:  &tb.Message{},
+	}
 	if err := app.HandleDiscoveryCallback(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +189,7 @@ func TestDiscoveryPendingCardShowsOneSong(t *testing.T) {
 	if !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">至少还有你</a></b>`) || !strings.Contains(text, "林忆莲") || !strings.Contains(text, "对不上唯一版本 &lt;原版&gt;") {
 		t.Fatalf("pending card = %s", text)
 	}
-	if got := buttonRowTexts(markup); len(got) != 3 || got[0][0] != "确认" || got[1][0] != "下一首" || got[2][0] != "跳过" {
+	if got := buttonRowTexts(markup); len(got) != 4 || got[0][0] != "确认" || got[1][0] != "下一首" || got[2][0] != "跳过" || got[3][0] != "收藏同步" {
 		t.Fatalf("pending rows = %#v", got)
 	}
 	if markup.InlineKeyboard[0][0].Data != "accept|job-1|0" || markup.InlineKeyboard[2][0].Data != "reject|job-1|0" {

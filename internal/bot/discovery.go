@@ -96,9 +96,9 @@ func discoveryPlatformMenu() (string, *tb.ReplyMarkup) {
 	appendDiscoveryRows(markup,
 		markup.Row(markup.Data("网易云", discoveryCallbackUnique, "source", "netease"), markup.Data("QQ 音乐", discoveryCallbackUnique, "source", "qq")),
 		markup.Row(markup.Data("YouTube", discoveryCallbackUnique, "source", "youtube")),
-		markup.Row(markup.Data("取消", discoveryCallbackUnique, "cancel", "menu")),
+		markup.Row(markup.Data("取消", discoveryCallbackUnique, "cancel", "menu"), markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
 	)
-	return "遗珠\n先选平台。只查这一个，找够就停。", markup
+	return "找回遗珠\n先选平台，再选数量。只查这个平台，找到设定数量就停。", markup
 }
 
 func discoveryCountMenu(platform string) (string, *tb.ReplyMarkup) {
@@ -111,7 +111,19 @@ func discoveryCountMenu(platform string) (string, *tb.ReplyMarkup) {
 		),
 		markup.Row(markup.Data("换平台", discoveryCallbackUnique, "source", "menu"), markup.Data("取消", discoveryCallbackUnique, "cancel", "menu")),
 	)
-	return "遗珠 · " + aichat.PlatformLabel(platform) + "\n要找几首？找到这么多就停。", markup
+	return "找回遗珠 · " + aichat.PlatformLabel(platform) + "\n选择数量；结果会逐首展示，可试听后再入库。", markup
+}
+
+func rediscoverResultRecoveryMarkup(platform string, limit int) *tb.ReplyMarkup {
+	markup := &tb.ReplyMarkup{}
+	markup.Inline(
+		markup.Row(
+			markup.Data("再找一次", discoveryCallbackUnique, "find", platform, strconv.Itoa(limit)),
+			markup.Data("换平台或数量", discoveryCallbackUnique, "source", "menu"),
+		),
+		markup.Row(markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
+	)
+	return markup
 }
 
 func validRediscoverPlatform(platform string) bool {
@@ -134,20 +146,20 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 		return c.Respond(&tb.CallbackResponse{Text: "正在处理上一条遗珠或收藏请求", ShowAlert: true})
 	}
 	defer app.discoveryCommandMu.Unlock()
-	if err = c.Respond(&tb.CallbackResponse{Text: "开始找了"}); err != nil {
+	if err = c.Respond(&tb.CallbackResponse{Text: "正在查找…"}); err != nil {
 		return err
 	}
 	if c.Message() == nil {
 		return c.Send("找不到原来的消息，请重新发送 /rediscover。")
 	}
-	if _, err = c.Bot().Edit(c.Message(), fmt.Sprintf("⌛ 正在从%s找 %d 首…", aichat.PlatformLabel(platform), limit)); err != nil {
+	if _, err = c.Bot().Edit(c.Message(), fmt.Sprintf("⌛ 正在从%s查找最多 %d 首遗珠…", aichat.PlatformLabel(platform), limit)); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	batch, err := app.discovery.Rediscover(ctx, c.Sender().ID, platform, limit)
 	if err != nil {
-		_, editErr := c.Bot().Edit(c.Message(), "❌ "+err.Error(), &tb.ReplyMarkup{})
+		_, editErr := c.Bot().Edit(c.Message(), "❌ 查找失败："+err.Error()+"\n可以重试，或换个平台和数量。", rediscoverResultRecoveryMarkup(platform, limit))
 		if editErr != nil {
 			return editErr
 		}
@@ -155,12 +167,12 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 	}
 	tracks := batch.Tracks
 	if len(tracks) == 0 {
-		_, err = c.Bot().Edit(c.Message(), rediscoverEmptyCopy(platform, batch), &tb.ReplyMarkup{})
+		_, err = c.Bot().Edit(c.Message(), rediscoverEmptyCopy(platform, batch), rediscoverResultRecoveryMarkup(platform, limit))
 		return err
 	}
 	card, err := app.discovery.Store.SaveCard(ctx, discovery.Card{User: c.Sender().ID, Chat: c.Chat().ID, Kind: "recommend", Tracks: tracks, SkippedOwned: batch.SkippedOwned, Unconfirmed: batch.Unconfirmed, Requested: limit})
 	if err != nil {
-		_, editErr := c.Bot().Edit(c.Message(), "保存推荐失败，请重试。", &tb.ReplyMarkup{})
+		_, editErr := c.Bot().Edit(c.Message(), "❌ 保存查找结果失败。可以重试，或换个平台和数量。", rediscoverResultRecoveryMarkup(platform, limit))
 		if editErr != nil {
 			return editErr
 		}
@@ -214,7 +226,7 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 		notes = append(notes, strings.TrimRight(line, "\n"))
 	}
 	if rediscoverNeedsConfirmation(card.Tracks) {
-		notes = append(notes, "有待确认的歌曲，发送 /favorites 处理。")
+		notes = append(notes, "有歌曲需要确认，可点下方按钮处理。")
 	}
 	if len(notes) > 0 {
 		text.WriteByte('\n')
@@ -261,6 +273,11 @@ func discoverySongButtons(markup *tb.ReplyMarkup, card discovery.Card, page int)
 	if track.CardAction == "" {
 		appendDiscoveryRows(markup, markup.Row(
 			markup.Data("不再推荐", discoveryCallbackUnique, "ignore", card.Token, index),
+		))
+	}
+	if rediscoverNeedsConfirmation(card.Tracks) {
+		appendDiscoveryRows(markup, markup.Row(
+			markup.Data("处理待确认", discoveryCallbackUnique, "pending", "0"),
 		))
 	}
 }
@@ -446,11 +463,11 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 		counts[job.State]++
 	}
 	var text strings.Builder
-	text.WriteString("收藏\n")
+	text.WriteString("收藏同步\n")
 	if app.discovery.Enabled {
-		fmt.Fprintf(&text, "\n每 %d 分钟看一次新喜欢\n有新歌会发一条消息", max(1, int(app.discovery.PollInterval/time.Minute)))
+		fmt.Fprintf(&text, "\n自动检查：每 %d 分钟\n发现新收藏时会私聊通知", max(1, int(app.discovery.PollInterval/time.Minute)))
 	} else {
-		text.WriteString("\n自动同步还没开\n绑定后，新增喜欢不会自动入库")
+		text.WriteString("\n自动同步未启用\n绑定账号后，新增收藏也不会自动入库")
 	}
 	byPlatform := map[string]discovery.Binding{}
 	for _, binding := range bindings {
@@ -465,12 +482,14 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 			appendDiscoveryRows(markup, markup.Row(markup.Data("绑定 "+name, discoveryCallbackUnique, "probe", platform)))
 			continue
 		}
-		state := "同步中"
-		if binding.Paused {
-			state = "已暂停"
-		}
-		if !app.discovery.Enabled {
-			state = "已绑定"
+		state := "自动同步已开启"
+		switch {
+		case !app.discovery.Enabled && binding.Paused:
+			state = "已暂停 · 自动同步未启用"
+		case !app.discovery.Enabled:
+			state = "已绑定 · 自动同步未启用"
+		case binding.Paused:
+			state = "自动同步已暂停"
 		}
 		fmt.Fprintf(&text, "\n\n%s\n%s", name, state)
 		if account := maskedDiscoveryAccount(binding.Account); account != "" {
@@ -495,7 +514,9 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 		}
 	}
 	if len(queue) > 0 {
-		fmt.Fprintf(&text, "\n\n%s", strings.Join(queue, " · "))
+		fmt.Fprintf(&text, "\n\n入库队列：%s", strings.Join(queue, " · "))
+	} else {
+		text.WriteString("\n\n入库队列：暂无待处理任务")
 	}
 	actions := tb.Row{markup.Data("找回遗珠", discoveryCallbackUnique, "history", "menu")}
 	if app.discovery.Enabled {
@@ -518,11 +539,17 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 	return text.String(), markup, nil
 }
 
+func discoveryFavoritesShortcut() *tb.ReplyMarkup {
+	markup := &tb.ReplyMarkup{}
+	markup.Inline(markup.Row(markup.Data("查看收藏同步", discoveryCallbackUnique, "favorites", "menu")))
+	return markup
+}
+
 func favoritesSyncNotice(fresh []discovery.FreshFavorite) string {
 	if len(fresh) == 0 {
-		return "看过了，没有新的收藏。"
+		return "✅ 本次没有新的收藏。"
 	}
-	return fmt.Sprintf("新增 %d 首，已排队入库。", len(fresh))
+	return fmt.Sprintf("✅ 发现 %d 首新收藏，已提交入库队列。", len(fresh))
 }
 
 func maskedDiscoveryAccount(s string) string {
@@ -534,28 +561,32 @@ func maskedDiscoveryAccount(s string) string {
 
 func (app *BotApp) previewFavoriteBinding(c tb.Context, platform string) error {
 	if platform != "netease" && platform != "qq" && platform != "youtube" {
-		return c.Send("支持的来源：netease、qq、youtube。")
+		return answerOnCard(c, "不支持这个平台。可选：网易云、QQ 音乐或 YouTube。", nil, false)
 	}
 	if !app.discoveryCommandMu.TryLock() {
-		return c.Send("⏳ 正在读取收藏或遗珠，请稍后再试。")
+		return app.presentFavorites(c, "⏳ 另一项收藏或遗珠操作正在处理，请稍后再试。")
 	}
 	defer app.discoveryCommandMu.Unlock()
-	if err := c.Send("⌛ 正在读取完整收藏列表，仅预览，不下载…"); err != nil {
+	if err := answerOnCard(c, "⌛ 正在读取完整收藏列表…\n这一步只预览，不会下载。", nil, false); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	snap, err := app.discovery.Provider.Fetch(ctx, platform)
 	if err != nil {
-		return c.Send("❌ " + err.Error())
+		markup := &tb.ReplyMarkup{}
+		markup.Inline(markup.Row(markup.Data("重新读取", discoveryCallbackUnique, "probe", platform)))
+		return answerOnCard(c, "❌ 读取收藏失败："+err.Error()+"\n可以检查账号登录状态后重试。", markup, false)
 	}
 	card, err := app.discovery.Store.SaveCard(ctx, discovery.Card{User: c.Sender().ID, Chat: c.Chat().ID, Kind: "binding", Snapshot: &snap})
 	if err != nil {
-		return c.Send("无法保存绑定预览，请重试。")
+		markup := &tb.ReplyMarkup{}
+		markup.Inline(markup.Row(markup.Data("重新读取", discoveryCallbackUnique, "probe", platform)))
+		return answerOnCard(c, "❌ 无法保存绑定预览，可以重试。", markup, false)
 	}
 	markup := &tb.ReplyMarkup{}
 	markup.Inline(markup.Row(markup.Data("确认账号并建立基线", discoveryCallbackUnique, "bind", card.Token)))
-	return c.Send(fmt.Sprintf("%s 收藏预览\n账号：%s\n读取到 %d 首收藏。\n\n请确认是你在手机上使用的账号。确认后建立基线；已有收藏不会自动下载，之后新增喜欢才自动入库。", platform, maskedDiscoveryAccount(snap.Account), len(snap.Tracks)), markup)
+	return answerOnCard(c, fmt.Sprintf("%s 收藏预览\n账号：%s\n读取到 %d 首收藏。\n\n确认后会建立同步基线；这批已有收藏不会下载，之后新增收藏才会进入同步。", aichat.PlatformLabel(platform), maskedDiscoveryAccount(snap.Account), len(snap.Tracks)), markup, false)
 }
 
 func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
@@ -567,6 +598,29 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		return c.Respond(&tb.CallbackResponse{Text: "按钮无效，请重新发送 /favorites 或 /rediscover", ShowAlert: true})
 	}
 	action, key := args[0], args[1]
+	callbackNotice := "正在处理…"
+	switch action {
+	case "probe":
+		callbackNotice = "正在读取收藏账号…"
+	case "pause":
+		callbackNotice = "正在暂停自动同步…"
+	case "resume":
+		callbackNotice = "正在恢复自动同步…"
+	case "sync":
+		callbackNotice = "开始同步收藏…"
+	case "history":
+		callbackNotice = "打开遗珠查找…"
+	case "favorites":
+		callbackNotice = "返回收藏同步…"
+	case "retry":
+		callbackNotice = "正在重试失败任务…"
+	case "status":
+		callbackNotice = "正在刷新队列状态…"
+	case "accept":
+		callbackNotice = "正在确认歌曲…"
+	case "reject":
+		callbackNotice = "正在跳过歌曲…"
+	}
 	switch action {
 	case "source":
 		if key == "menu" {
@@ -596,12 +650,12 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		if e != nil || page < 0 || page > 10000 {
 			return c.Respond(&tb.CallbackResponse{Text: "页码无效", ShowAlert: true})
 		}
-		if err := c.Respond(&tb.CallbackResponse{Text: "已换一首"}); err != nil {
+		if err := c.Respond(&tb.CallbackResponse{Text: "正在打开待确认歌曲…"}); err != nil {
 			return err
 		}
 		return app.showDiscoveryPending(c, page)
-	case "probe", "pause", "resume", "sync", "history", "retry", "status", "accept", "reject":
-		if err := c.Respond(&tb.CallbackResponse{Text: "已收到，正在处理…"}); err != nil {
+	case "probe", "pause", "resume", "sync", "history", "favorites", "retry", "status", "accept", "reject":
+		if err := c.Respond(&tb.CallbackResponse{Text: callbackNotice}); err != nil {
 			return err
 		}
 		ctx := context.Background()
@@ -610,17 +664,23 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			return app.previewFavoriteBinding(c, key)
 		case "pause", "resume":
 			if err := app.discovery.Store.Pause(ctx, c.Sender().ID, key, action == "pause"); err != nil {
-				return app.presentFavorites(c, "更新暂停状态失败")
+				return app.presentFavorites(c, "❌ 更新暂停状态失败："+err.Error())
 			}
-			return app.presentFavorites(c, "")
+			if action == "pause" {
+				return app.presentFavorites(c, "✅ 已暂停该平台的自动同步。")
+			}
+			return app.presentFavorites(c, "✅ 已恢复该平台的自动同步。")
 		case "sync":
 			if !app.discoveryCommandMu.TryLock() {
-				return answerOnCard(c, "⏳ 已有请求正在处理。", nil, false)
+				return app.presentFavorites(c, "⏳ 已有请求正在处理，请稍后查看状态。")
 			}
 			defer app.discoveryCommandMu.Unlock()
+			if err := answerOnCard(c, "⌛ 正在同步收藏…\n完成后会显示新增数量和入库队列状态。", nil, false); err != nil {
+				return err
+			}
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
-			fresh, syncErr := app.discovery.Sync(ctx, c.Sender().ID)
+			fresh, syncErr := app.discovery.SyncQuietly(ctx, c.Sender().ID)
 			notice := favoritesSyncNotice(fresh)
 			if syncErr != nil {
 				if len(fresh) > 0 {
@@ -633,13 +693,17 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		case "history":
 			text, markup := discoveryPlatformMenu()
 			return answerOnCard(c, text, markup, false)
+		case "favorites":
+			return app.presentFavorites(c, "")
 		case "retry":
 			if err := app.discovery.Store.Retry(ctx, c.Sender().ID); err != nil {
-				return app.presentFavorites(c, "重试失败")
+				return app.presentFavorites(c, "❌ 失败任务未能重新排队："+err.Error())
 			}
 			return app.presentFavorites(c, "✅ 失败任务已重新排队。")
 		case "status":
-			_ = app.discovery.Reconcile(ctx, c.Sender().ID)
+			if err := app.discovery.Reconcile(ctx, c.Sender().ID); err != nil {
+				return app.presentFavorites(c, "⚠️ 刷新队列状态失败："+err.Error())
+			}
 			return app.presentFavorites(c, "")
 		case "accept", "reject":
 			next := 0
@@ -656,8 +720,8 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 	}
 	card, err := app.discovery.Store.Card(context.Background(), key, c.Sender().ID, c.Chat().ID)
 	if err != nil {
-		_ = c.Respond(&tb.CallbackResponse{Text: err.Error(), ShowAlert: true})
-		return c.Edit("⌛ "+err.Error(), &tb.ReplyMarkup{})
+		_ = c.Respond(&tb.CallbackResponse{Text: "遗珠会话已过期或不可用", ShowAlert: true})
+		return c.Edit("⚠️ 这批遗珠已过期或无法读取，请重新发送 /rediscover。", &tb.ReplyMarkup{})
 	}
 	if action == "bind" {
 		if card.Kind != "binding" || card.Snapshot == nil {
@@ -668,12 +732,12 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		}
 		card, err = app.discovery.Store.TakeCard(context.Background(), key, c.Sender().ID, c.Chat().ID)
 		if err != nil {
-			return c.Send(err.Error())
+			return app.presentFavorites(c, "❌ 无法确认收藏账号："+err.Error())
 		}
 		if _, _, err = app.discovery.Store.Apply(context.Background(), card.User, card.Chat, *card.Snapshot, true); err != nil {
-			return c.Send(err.Error())
+			return app.presentFavorites(c, "❌ 建立收藏基线失败："+err.Error())
 		}
-		return c.Edit("✅ 已绑定并建立收藏基线。已有收藏未下载；发送 /favorites 查看同步状态。", &tb.ReplyMarkup{})
+		return app.presentFavorites(c, "✅ 已绑定并建立收藏基线；这批已有收藏未下载。")
 	}
 	if card.Kind != "recommend" {
 		return c.Respond(&tb.CallbackResponse{Text: "推荐按钮无效", ShowAlert: true})
@@ -709,7 +773,7 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		}
 		app.rediscoverMu.Unlock()
 		if loadErr != nil {
-			return c.Send("保存操作失败，请重试。")
+			return answerOnCard(c, "❌ 无法保存当前进度。请查看收藏同步状态。", discoveryFavoritesShortcut(), false)
 		}
 		return editErr
 	}
@@ -776,7 +840,7 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 	card, err = app.discovery.Store.Card(context.Background(), key, c.Sender().ID, c.Chat().ID)
 	if err != nil {
 		app.rediscoverMu.Unlock()
-		return c.Send("保存操作失败，请重试。")
+		return answerOnCard(c, "❌ 无法读取这批遗珠。请查看收藏同步状态。", discoveryFavoritesShortcut(), false)
 	}
 	watch := false
 	for _, choice := range choices {
@@ -800,13 +864,13 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		}
 		if err != nil {
 			app.rediscoverMu.Unlock()
-			return c.Send("保存操作失败，请重试。")
+			return answerOnCard(c, "❌ 操作未完成，暂时无法确认队列状态。请查看收藏同步状态后再决定是否重试。", discoveryFavoritesShortcut(), false)
 		}
 	}
 	card.Page = page
 	if err = app.discovery.Store.ReplaceCard(context.Background(), card); err != nil {
 		app.rediscoverMu.Unlock()
-		return c.Send("保存操作失败，请重试。")
+		return answerOnCard(c, "❌ 操作结果暂时无法保存。请查看收藏同步状态，确认队列后再决定是否重试。", discoveryFavoritesShortcut(), false)
 	}
 	message := c.Message()
 	text, markup := discoveryRecommendationCard(card, page)
@@ -925,7 +989,7 @@ func (app *BotApp) showDiscoveryPending(c tb.Context, page int) error {
 		return answerOnCard(c, "无法读取待确认任务", nil, false)
 	}
 	if total == 0 {
-		return answerOnCard(c, "没有待确认任务。", &tb.ReplyMarkup{}, false)
+		return answerOnCard(c, "✅ 没有待确认任务。", discoveryFavoritesShortcut(), false)
 	}
 	text, markup := discoveryPendingCard(job, index, total)
 	return answerOnCard(c, text, markup, true)
@@ -963,5 +1027,6 @@ func discoveryPendingCard(job discovery.Job, index, total int) (string, *tb.Repl
 	appendDiscoveryRows(markup, markup.Row(
 		markup.Data("跳过", discoveryCallbackUnique, "reject", job.ID, strconv.Itoa(index)),
 	))
+	appendDiscoveryRows(markup, markup.Row(markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")))
 	return strings.TrimRight(text.String(), "\n"), markup
 }
