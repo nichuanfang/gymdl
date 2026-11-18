@@ -1,31 +1,37 @@
 ---
 name: gymdl-dev-release
-description: 在 gymdl 项目完成开发、测试、发版上线与回滚准备，复用工作区和缓存、控制磁盘占用并遵循 GitHub Actions 与 VPS Compose 的实际发布链路。用于本项目改功能、修复、验证、发布和持续迭代；单纯分析音乐下载失败可用 music-processor-diagnoser。
+description: Codex 直接运行在 gymdl 部署机时，用于本项目开发、验证、CI/CD、部署、回滚和任务级磁盘清理。Mac/Windows 等开发机按本机环境开发；线上发布与部署必须核对远端 CI/CD 和目标服务器。
 ---
 
 # Gymdl 开发 → 测试 → 上线
 
 把当前任务推进到用户授权的阶段，交付可审查代码、对应验证证据及必要的上线结果。先读当前仓库的 `AGENTS.md`；其提交、数据和权限约定优先。这是 Codex 项目技能，不放入 Bot 的 `skills/` 音乐技能目录或 `ai.enabled_skills` 白名单。
 
+## 运行环境边界
+
+本技能的主流程针对 Codex 直接运行在 gymdl 部署机（当前 VPS）上的情况，使用该机的 `~/.codex/AGENTS.md`、源码路径和实际 Compose 栈。涉及部署、Docker 或磁盘清理时，先确认当前执行机、工作区和 Docker context；结合 `hostname`、`pwd`、Git 根目录、`docker context show`、Docker 信息及 Compose 栈现场判断。不能只凭操作系统名称推断 Docker daemon 属于线上服务器。
+
+Mac/Windows 等开发机走本机开发流程：使用该机的仓库路径、工具链和磁盘约定做编辑与必要验证；不要把 Docker Desktop/本地 Compose 当成 VPS，也不要在本机执行仅适用于部署机的运维脚本、清理服务器数据或报告已线上部署。线上发布仍按仓库的 GitHub Actions 和 VPS 部署链路完成，并核验目标服务器的实际状态。若无法确认当前执行机或 Docker context，不执行部署。
+
 ## 开始与续接
 
 1. 确认当前用户要求的是开发、验证还是上线，沿用已有授权。普通代码修改不自动提交或推送；明确要求发版/上线后，按现有 CI/CD 完成必要的提交、标签发布与部署，不反复确认同一步骤。创建本技能本身不授权部署。
-2. 从本技能目录运行只读预检：
+2. 在部署机上，从本技能目录运行只读预检：
 
    ```bash
    python3 scripts/preflight.py --repo /path/to/gymdl --task task-name --docker
    ```
 
-   `--docker` 仅在需要运行态信息时使用；`--sizes` 才计算所选工作区和共享缓存大小。脚本不安装工具、不拉镜像、不创建工作区或清理文件。采集成功不代表测试或部署通过；`null` 或 `query_succeeded: false` 需要继续查明。
-3. 查看工作区与任务记录后再选目录。同一任务续接原 worktree；新代码任务通常在 `~/code/.worktrees/gymdl/<task>` 隔离。保护用户现有改动，不用 stash、强制 checkout 或 reset 腾位置。
-4. 将阶段、基线提交、工作区、验证范围、产物路径与发布证据记在 `~/.local/state/gymdl-dev-release/<task>/`。记录路径和摘要，不写凭据、配置全文或音乐清单。新消息通常是在继续当前任务；状态询问不取消正在等待的 CI 或上线核验。
+   `--docker` 仅在确认当前 Docker context 指向目标服务器且需要运行态信息时使用；`--sizes` 才计算所选工作区和共享缓存大小。脚本不安装工具、不拉镜像、不创建工作区或清理文件。Mac/Windows 开发机不要运行依赖 Linux 主机信息的这份预检，改用本机可用的只读检查。采集成功不代表测试或部署通过；`null` 或 `query_succeeded: false` 需要继续查明。
+3. 查看工作区与任务记录后再选目录。同一任务续接原 worktree；在部署机上新代码任务通常在 `~/code/.worktrees/gymdl/<task>` 隔离，开发机沿用本机仓库的 worktree 约定。保护用户现有改动，不用 stash、强制 checkout 或 reset 腾位置。
+4. 在部署机将阶段、基线提交、工作区、验证范围、产物路径与发布证据记在 `~/.local/state/gymdl-dev-release/<task>/`；开发机使用本机可写的任务状态目录，不假设存在 Linux 路径。记录路径和摘要，不写凭据、配置全文或音乐清单。新消息通常是在继续当前任务；状态询问不取消正在等待的 CI 或上线核验。
 
 ## 按阶段读取
 
 - **开发、测试、节省磁盘、长期续接**：读 [iteration-and-space.md](references/iteration-and-space.md)。
 - **版本发布、CI/CD、部署、回滚、线上核验**：读 [cicd.md](references/cicd.md)。
 
-只加载当前阶段需要的引用。已有 `repo-dev-flow`、`cicd-flow`、`docker-stack-deploy` 技能时，复用其实际脚本与规约；先确认支持 gymdl，不能把仅适配其他仓库的命令直接套用。
+只加载当前阶段需要的引用。gymdl 的开发与验证以本技能和迭代引用为准；发布、部署时按需读取 `cicd-flow`、`docker-stack-deploy`。只复用确认支持 gymdl 的脚本，不能把其他仓库专用命令直接套用。
 
 ## 项目验证重点
 
@@ -36,6 +42,8 @@ description: 在 gymdl 项目完成开发、测试、发版上线与回滚准备
 - 发布新功能不等于启用后台自动下载。保留用户配置与默认行为；收藏首次接入先核对账号、建立基线，按用户要求启用新增收藏同步。
 
 ## 收尾与交付
+
+每次 gymdl 开发、验证或发布到达收尾阶段时，主动释放本任务占用的磁盘空间，不等用户提醒。部署机按 `~/.codex/AGENTS.md` 核对磁盘、Docker 使用量和数据保留约定；开发机遵循本机 AGENTS 与系统的磁盘管理方式，不能把服务器的清理规则或路径直接套用到本机。再按迭代引用盘点本任务创建的 worktree、测试容器与镜像、临时二进制、重复构建产物和大日志；只清理确认由本任务创建且可重建的内容。报告清理前后的可用空间和清理项。涉及用户存量文件、备份、共享缓存、持久数据或全局镜像时，先列出候选、大小和影响并取得确认。
 
 先处理失败或待完成的必要验证，再报告结果。说明改了什么、验证范围、工作区/提交或版本、部署状态、备份位置及真实剩余事项；跳过的检查不写成通过。
 
