@@ -27,8 +27,9 @@ type Config struct {
 	// AI 功能
 	AI         *AIConfig         `yaml:"ai"`          // AI 助手配置
 	AIPlaylist *AIPlaylistConfig `yaml:"ai_playlist"` // AI 智能歌单配置
+	Lastfm     *LastfmConfig     `yaml:"lastfm"`      // Last.fm 增量收听同步
 
-	// n8n 数据桥接：保留 MusicRAG 状态同步等仍在使用的接口
+	// n8n 数据桥接：music_rag 只在首次导入时读取，线上表仍保留
 	N8NConfig *N8NConfig `yaml:"n8n_config"` // n8n 配置
 }
 
@@ -107,8 +108,16 @@ type AIConfig struct {
 	SkillsDirs            []string          `yaml:"skills_dirs"`             // 本地技能目录
 	MCPServers            []MCPServerConfig `yaml:"mcp_servers"`             // MCP服务列表
 	HistoryDSN            string            `yaml:"history_dsn"`             // 收听历史Postgres只读DSN
+	HistoryWriteDSN       string            `yaml:"history_write_dsn"`       // 收听历史Postgres写入DSN，报告和遗珠仍读 history_dsn
 	HistoryTable          string            `yaml:"history_table"`           // 收听历史表名
 	EnabledSkills         []string          `yaml:"enabled_skills"`          // 允许AI模式使用的技能白名单
+}
+
+// LastfmConfig 把新的收听记录写进原来的 Postgres 表。未启用时不注册同步任务。
+type LastfmConfig struct {
+	Enable   bool   `yaml:"enable"`   // 是否每天增量同步
+	Username string `yaml:"username"` // Last.fm 用户名
+	APIKey   string `yaml:"api_key"`  // Last.fm API Key
 }
 
 // AIPlaylistConfig configures the direct Pinecone-backed AI playlist flow.
@@ -143,8 +152,8 @@ type PlaylistInfo struct {
 type N8NConfig struct {
 	Enable          bool   `yaml:"enable"`             // 是否启用n8n
 	N8NBaseUrl      string `yaml:"n8n_base_url"`       // 自建n8n的地址
-	APIKey          string `yaml:"api_key"`            // n8n Public API密钥，用于MusicRAG状态表读取、新增和清理
-	MusicRAGTableID string `yaml:"music_rag_table_id"` // n8n music_rag数据表ID
+	APIKey          string `yaml:"api_key"`            // n8n Public API密钥，只用于把 music_rag 导入本地
+	MusicRAGTableID string `yaml:"music_rag_table_id"` // 仍在线上的 n8n music_rag 数据表 ID
 
 	// Deprecated: moved to PlaylistOrganizerConfig; retained to load old config files.
 	PlaylistAssist bool           `yaml:"playlist_assist,omitempty"`

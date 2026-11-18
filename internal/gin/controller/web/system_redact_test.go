@@ -9,7 +9,8 @@ import (
 func TestRedactSecretsHidesHistoryDSNAndMCPTokens(t *testing.T) {
 	doc := map[string]any{
 		"ai": map[string]any{
-			"history_dsn": "postgres://reader:secret@postgres:5432/n8n",
+			"history_dsn":       "postgres://reader:secret@postgres:5432/n8n",
+			"history_write_dsn": "postgres://writer:secret-write@postgres:5432/n8n",
 			"mcp_servers": []any{
 				map[string]any{"name": "docs", "url": "https://mcp.test", "token": "bearer-secret"},
 			},
@@ -23,11 +24,11 @@ func TestRedactSecretsHidesHistoryDSNAndMCPTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "secret@postgres") || strings.Contains(string(encoded), "bearer-secret") {
+	if strings.Contains(string(encoded), "secret@postgres") || strings.Contains(string(encoded), "secret-write") || strings.Contains(string(encoded), "bearer-secret") {
 		t.Fatalf("credentials leaked: %s", encoded)
 	}
 	ai := redacted["ai"].(map[string]any)
-	if ai["history_dsn_configured"] != true {
+	if ai["history_dsn_configured"] != true || ai["history_write_dsn_configured"] != true {
 		t.Fatal("history DSN configured flag missing")
 	}
 	server := ai["mcp_servers"].([]any)[0].(map[string]any)

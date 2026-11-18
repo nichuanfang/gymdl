@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/internal/aichat"
+	"github.com/nichuanfang/gymdl/internal/musicrag"
 	"github.com/sashabaranov/go-openai"
 	"go.uber.org/zap"
 	tb "gopkg.in/telebot.v4"
@@ -658,94 +660,29 @@ func TestAddSongToPlaylistsDoesNotTreatUnverifiedWriteAsSuccess(t *testing.T) {
 }
 
 func TestMusicRAGSinkInsertsOnlyWhenSongIsMissing(t *testing.T) {
-	var postCount int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/data-tables/table-1/rows" || r.Header.Get("X-N8N-API-KEY") != "private-api-key" {
-			t.Fatalf("unexpected n8n request: %s %s", r.Method, r.URL.Path)
-		}
-		switch r.Method {
-		case http.MethodGet:
-			if r.URL.Query().Get("limit") != "1" {
-				t.Fatalf("n8n get limit = %q", r.URL.Query().Get("limit"))
-			}
-			var filter struct {
-				Type    string `json:"type"`
-				Filters []struct {
-					ColumnName string `json:"columnName"`
-					Condition  string `json:"condition"`
-					Value      string `json:"value"`
-				} `json:"filters"`
-			}
-			if err := json.Unmarshal([]byte(r.URL.Query().Get("filter")), &filter); err != nil {
-				t.Fatalf("decode n8n filter: %v", err)
-			}
-			if filter.Type != "and" || len(filter.Filters) != 1 || filter.Filters[0].ColumnName != "music_id" || filter.Filters[0].Value != "song-1" {
-				t.Fatalf("unexpected n8n filter: %#v", filter)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}, "nextCursor": nil})
-		case http.MethodPost:
-			postCount++
-			var payload struct {
-				ReturnType string              `json:"returnType"`
-				Data       []map[string]string `json:"data"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Fatal(err)
-			}
-			if payload.ReturnType != "all" || len(payload.Data) != 1 || payload.Data[0]["music_id"] != "song-1" || payload.Data[0]["status"] != "待处理" || payload.Data[0]["year"] != "2024" {
-				t.Fatalf("unexpected n8n insert body: %#v", payload)
-			}
-			w.WriteHeader(http.StatusCreated)
-		default:
-			t.Fatalf("unexpected n8n method %s", r.Method)
-		}
-	}))
-	defer server.Close()
-
-	sink := newMusicRAGSink(&config.N8NConfig{N8NBaseUrl: server.URL, APIKey: "private-api-key", MusicRAGTableID: "table-1"}, server.Client())
+	sink := newMusicRAGSink(openBotMusicRAG(t))
 	song := unplaylistSong{ID: "song-1", Title: "Title", Artist: "Artist", Album: "Album", Year: 2024, CreatedAt: "2026-10-01", Comment: "https://music.test/song"}
 	if err := sink.enqueue(context.Background(), song); err != nil {
 		t.Fatal(err)
 	}
-	if postCount != 1 {
-		t.Fatalf("insert calls = %d, want 1", postCount)
+	song.Title = "另一首"
+	if err := sink.enqueue(context.Background(), song); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := sink.store.Pending(context.Background(), 10)
+	if err != nil || len(pending) != 1 || pending[0].Title != "Title" || pending[0].Year != "2024" || pending[0].URL != "https://music.test/song" {
+		t.Fatalf("stored=%#v err=%v", pending, err)
 	}
 }
 
-func TestMusicRAGSinkAcceptsTopLevelDataTableArrays(t *testing.T) {
-	tests := []struct {
-		name          string
-		response      string
-		wantPostCount int
-	}{
-		{name: "empty table", response: `[]`, wantPostCount: 1},
-		{name: "existing row", response: `[ {"music_id":"song-1"} ]`, wantPostCount: 0},
+func openBotMusicRAG(t *testing.T) *musicrag.Store {
+	t.Helper()
+	store, err := musicrag.Open(filepath.Join(t.TempDir(), "gymdl.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var postCount int
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.Method {
-				case http.MethodGet:
-					_, _ = w.Write([]byte(tt.response))
-				case http.MethodPost:
-					postCount++
-					w.WriteHeader(http.StatusCreated)
-				default:
-					t.Fatalf("unexpected n8n method %s", r.Method)
-				}
-			}))
-			defer server.Close()
-
-			sink := newMusicRAGSink(&config.N8NConfig{N8NBaseUrl: server.URL, APIKey: "key", MusicRAGTableID: "table-1"}, server.Client())
-			if err := sink.enqueue(context.Background(), unplaylistSong{ID: "song-1"}); err != nil {
-				t.Fatal(err)
-			}
-			if postCount != tt.wantPostCount {
-				t.Fatalf("insert calls = %d, want %d", postCount, tt.wantPostCount)
-			}
-		})
-	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
 func TestParseN8NDataTableRowsRejectsMissingOrNonArrayData(t *testing.T) {
@@ -757,24 +694,18 @@ func TestParseN8NDataTableRowsRejectsMissingOrNonArrayData(t *testing.T) {
 }
 
 func TestMusicRAGSinkSkipsExistingRowAndRequiresConfig(t *testing.T) {
-	postCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{{"music_id": "song-1"}}})
-			return
-		}
-		postCount++
-	}))
-	defer server.Close()
-
-	sink := newMusicRAGSink(&config.N8NConfig{N8NBaseUrl: server.URL, APIKey: "key", MusicRAGTableID: "table-1"}, server.Client())
-	if err := sink.enqueue(context.Background(), unplaylistSong{ID: "song-1"}); err != nil {
+	sink := newMusicRAGSink(openBotMusicRAG(t))
+	if err := sink.store.Enqueue(context.Background(), musicrag.Song{MusicID: "song-1", Title: "原标题", Status: musicrag.StatusReady}); err != nil {
 		t.Fatal(err)
 	}
-	if postCount != 0 {
-		t.Fatalf("existing song was inserted again (%d POST calls)", postCount)
+	if err := sink.enqueue(context.Background(), unplaylistSong{ID: "song-1", Title: "新标题"}); err != nil {
+		t.Fatal(err)
 	}
-	if err := newMusicRAGSink(nil, server.Client()).enqueue(context.Background(), unplaylistSong{ID: "song-1"}); err != errMusicRAGNotConfigured {
+	pending, err := sink.store.Pending(context.Background(), 10)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("ready row was reset: %#v err=%v", pending, err)
+	}
+	if err := newMusicRAGSink(nil).enqueue(context.Background(), unplaylistSong{ID: "song-1"}); err != errMusicRAGNotConfigured {
 		t.Fatalf("missing bridge config error = %v", err)
 	}
 }

@@ -148,8 +148,9 @@ ai:
       allowed_tools:  # 允许调用的工具名白名单
         - ""
       timeout_seconds: 20  # 单次调用超时(秒)
-  history_dsn: ""  # 收听历史Postgres只读DSN
-  history_table: "music_scrobble_records"  # 收听历史表名
+  history_dsn: ""  # 收听历史Postgres只读DSN。听歌报告和遗珠读这里
+  history_write_dsn: ""  # 收听历史Postgres写入DSN。留空则不同步 Last.fm
+  history_table: "music_scrobble_records"  # 收听历史表名。读写都用这张表
 
 # AI 智能歌单生成
 ai_playlist:
@@ -164,10 +165,16 @@ ai_playlist:
   playlist_size: 80 # 每个歌单目标歌曲数
   candidate_count: 150 # Pinecone 最大召回数量
 
+# Last.fm 增量收听同步。写入 ai.history_write_dsn 指向的原表。未启用时不注册任务。
+lastfm:
+  enable: false
+  username: "" # Last.fm 用户名
+  api_key: ""
+
 # n8n 数据桥接
-# N8N配置
+# 只在启动时把 music_rag 导入本地一次。线上表和工作流先留着。
 n8n_config:
   enable: false # 是否启用n8n
   n8n_base_url: "" # 自建n8n的地址
-  api_key: "" # n8n Public API密钥，用于MusicRAG状态表读取、新增和清理
-  music_rag_table_id: "" # n8n music_rag数据表ID
+  api_key: "" # n8n Public API密钥，只用于导入 music_rag
+  music_rag_table_id: "" # 仍在线上的 n8n music_rag 数据表 ID

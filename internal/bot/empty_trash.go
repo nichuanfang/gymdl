@@ -94,9 +94,9 @@ func newEmptyTrashService(cfg *config.Config) (*emptyTrashService, error) {
 	if err != nil {
 		return nil, err
 	}
-	stateTable := newMusicRAGSink(cfg.N8NConfig, organizer.client)
-	if !stateTable.configured() {
-		return nil, errors.New("请配置 n8n_config.n8n_base_url、api_key 和 music_rag_table_id")
+	stateTable, err := openMusicRAGSink()
+	if err != nil {
+		return nil, fmt.Errorf("打开本地 MusicRAG 状态表失败: %w", err)
 	}
 	return &emptyTrashService{
 		organizer:    organizer,

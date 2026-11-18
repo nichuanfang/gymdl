@@ -23,6 +23,9 @@ func TestAISetDefaultsFillsAgentFields(t *testing.T) {
 	if c.N8NConfig.APIKey != "" || c.N8NConfig.MusicRAGTableID != "" {
 		t.Fatalf("MusicRAG bridge must remain opt-in: %#v", c.N8NConfig)
 	}
+	if c.Lastfm == nil || c.Lastfm.Enable || c.Lastfm.Username != "" || c.Lastfm.APIKey != "" || c.AI.HistoryWriteDSN != "" {
+		t.Fatalf("Last.fm writer must stay opt-in: lastfm=%#v write=%q", c.Lastfm, c.AI.HistoryWriteDSN)
+	}
 	if c.AIPlaylist == nil || c.AIPlaylist.PineconeNamespace != "data-music" || c.AIPlaylist.EmbeddingModel != "text-embedding-3-small" || c.AIPlaylist.PlaylistSize != 80 || c.AIPlaylist.CandidateCount != 150 {
 		t.Fatalf("unexpected AI playlist defaults: %#v", c.AIPlaylist)
 	}

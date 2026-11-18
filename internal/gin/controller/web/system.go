@@ -34,7 +34,7 @@ var secretKeys = map[string]struct{}{
 	"olivetin_password": {}, "navidrome_password": {}, "pinecone_api_key": {}, "embedding_api_key": {},
 	"proxy_pass": {}, "pass": {}, "password": {}, "token": {}, "secret": {}, "user": {}, "refresh_key": {}, "refresh_token": {},
 	"access_token": {}, "music_id": {}, "str_music_id": {}, "open_id": {},
-	"union_id": {}, "music_key": {}, "history_dsn": {},
+	"union_id": {}, "music_key": {}, "history_dsn": {}, "history_write_dsn": {},
 }
 
 // SetWebConfig installs a new immutable runtime snapshot.

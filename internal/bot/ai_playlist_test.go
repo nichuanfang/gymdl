@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/internal/musicrag"
 	"github.com/nichuanfang/gymdl/internal/storage"
 )
 
@@ -42,7 +43,6 @@ func TestAIPlaylistEndToEndUsesLiveCandidatesAndVerifiesWrite(t *testing.T) {
 	var addRequests [][]string
 	var playlistTrackReads int
 	var deletedVector bool
-	var deletedStateIDs []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/chat/completions":
@@ -119,26 +119,6 @@ func TestAIPlaylistEndToEndUsesLiveCandidatesAndVerifiesWrite(t *testing.T) {
 			}
 			deletedVector = request.Namespace == "data-music" && reflect.DeepEqual(request.Filter.ID.In, []string{"missing"})
 			writeJSON(t, w, map[string]any{})
-		case r.URL.Path == "/api/v1/data-tables/table-1/rows/delete":
-			if r.Method != http.MethodDelete || r.Header.Get("X-N8N-API-KEY") != "n8n-test-key" {
-				t.Errorf("unexpected MusicRAG delete request: %s %s", r.Method, r.URL.Path)
-			}
-			var filter struct {
-				Filters []struct {
-					ColumnName string `json:"columnName"`
-					Value      string `json:"value"`
-				} `json:"filters"`
-			}
-			if err := json.Unmarshal([]byte(r.URL.Query().Get("filter")), &filter); err != nil {
-				t.Errorf("decode MusicRAG filter: %v", err)
-			}
-			for _, condition := range filter.Filters {
-				if condition.ColumnName != "music_id" {
-					t.Errorf("unexpected MusicRAG delete column: %#v", condition)
-				}
-				deletedStateIDs = append(deletedStateIDs, condition.Value)
-			}
-			writeJSON(t, w, map[string]any{"success": true})
 		case r.URL.Path == "/api/StartActionAndWait":
 			var request oliveTinActionRequest
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -218,7 +198,11 @@ func TestAIPlaylistEndToEndUsesLiveCandidatesAndVerifiesWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service.stateTable = newMusicRAGSink(&config.N8NConfig{N8NBaseUrl: server.URL, APIKey: "n8n-test-key", MusicRAGTableID: "table-1"}, server.Client())
+	state := openBotMusicRAG(t)
+	if err := state.Enqueue(t.Context(), musicrag.Song{MusicID: "missing", Title: "Gone", Status: musicrag.StatusReady}); err != nil {
+		t.Fatal(err)
+	}
+	service.stateTable = newMusicRAGSink(state)
 	databasePath := filepath.Join(t.TempDir(), "gymdl.sqlite3")
 	service.resumeStore, err = openAIPlaylistResumeStore(databasePath)
 	if err != nil {
@@ -247,7 +231,7 @@ func TestAIPlaylistEndToEndUsesLiveCandidatesAndVerifiesWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service.stateTable = newMusicRAGSink(&config.N8NConfig{N8NBaseUrl: server.URL, APIKey: "n8n-test-key", MusicRAGTableID: "table-1"}, server.Client())
+	service.stateTable = newMusicRAGSink(state)
 	service.resumeStore, err = openAIPlaylistResumeStore(databasePath)
 	if err != nil {
 		t.Fatal(err)
@@ -264,8 +248,12 @@ func TestAIPlaylistEndToEndUsesLiveCandidatesAndVerifiesWrite(t *testing.T) {
 	if result.Succeeded[0].Preserved != 1 {
 		t.Fatalf("resume should retain and report manually added songs: %#v", result.Succeeded[0])
 	}
-	if chatCalls != 2 || listCalls != 2 || playlistTrackReads != 3 || !deletedVector || len(deletedStateIDs) != 1 || deletedStateIDs[0] != "missing" {
-		t.Fatalf("expected one AI plan reused across restart and three playlist reads: chat=%d list=%d trackReads=%d vector=%v states=%#v", chatCalls, listCalls, playlistTrackReads, deletedVector, deletedStateIDs)
+	left, err := state.AllIDs(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, stillThere := left["missing"]; stillThere || chatCalls != 2 || listCalls != 2 || playlistTrackReads != 3 || !deletedVector {
+		t.Fatalf("expected one AI plan reused across restart and the missing row removed: chat=%d list=%d trackReads=%d vector=%v rows=%#v", chatCalls, listCalls, playlistTrackReads, deletedVector, left)
 	}
 	if len(addRequests) != 2 || !reflect.DeepEqual(addRequests[0], []string{"song1", "song2"}) || !reflect.DeepEqual(addRequests[1], []string{"song2"}) {
 		t.Fatalf("resume must only append the missing song: %#v", addRequests)

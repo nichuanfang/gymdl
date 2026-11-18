@@ -26,14 +26,16 @@ type Embedder interface {
 }
 
 // Vectors stores one song document. ID is the Navidrome music_id.
+// Delete drops an older vector with the same metadata id before a manual re-embed.
 type Vectors interface {
 	Upsert(ctx context.Context, id string, values []float32, metadata map[string]string) error
+	Delete(context.Context, string) error
 }
 
 // IndexPending classifies and embeds a bounded batch of songs still marked pending.
 // A failure is recorded on that row and does not stop the rest of the batch.
 func IndexPending(ctx context.Context, store *Store, classify Classifier, embed Embedder, vectors Vectors, limit int) (int, error) {
-	pending, err := store.Pending(ctx, limit)
+	pending, err := store.Indexable(ctx, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -55,9 +57,20 @@ func IndexPending(ctx context.Context, store *Store, classify Classifier, embed 
 }
 
 func indexOne(ctx context.Context, store *Store, classify Classifier, embed Embedder, vectors Vectors, song Song) error {
-	meta, err := classify.Classify(ctx, song)
-	if err != nil {
-		_ = store.Mark(ctx, Song{MusicID: song.MusicID, Status: StatusFailed, Error: err.Error()})
+	meta := Meta{Genre: song.Genre, Mood: song.Mood, Language: song.Language, Description: song.Description}
+	manual := meta.Complete()
+	if !manual {
+		var err error
+		meta, err = classify.Classify(ctx, song)
+		if err != nil {
+			_ = store.Mark(ctx, Song{MusicID: song.MusicID, Status: StatusFailed, Error: err.Error()})
+			return err
+		}
+	} else if err := vectors.Delete(ctx, song.MusicID); err != nil {
+		_ = store.Mark(ctx, Song{
+			MusicID: song.MusicID, Genre: song.Genre, Mood: song.Mood, Language: song.Language,
+			Description: song.Description, Status: StatusFailed, Error: err.Error(),
+		})
 		return err
 	}
 	text := DocumentText(song, meta)
@@ -84,6 +97,12 @@ func DocumentText(song Song, meta Meta) string {
 		artist = string([]rune(artist)[:50])
 	}
 	return fmt.Sprintf("歌名:《%s》 歌手:%s 流派:%s 听感:%s 语言:%s 介绍:%s", song.Title, artist, meta.Genre, meta.Mood, meta.Language, meta.Description)
+}
+
+// Complete reports whether the row already carries the manual description the
+// old processor embedded without calling the model.
+func (m Meta) Complete() bool {
+	return strings.TrimSpace(m.Genre) != "" && strings.TrimSpace(m.Mood) != "" && strings.TrimSpace(m.Language) != "" && strings.TrimSpace(m.Description) != ""
 }
 
 // ParseMeta accepts the JSON object the classifier is required to return.

@@ -12,12 +12,15 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/internal/musicrag"
+	"github.com/nichuanfang/gymdl/internal/storage"
 	"github.com/nichuanfang/gymdl/utils"
 	"github.com/sashabaranov/go-openai"
 	"go.uber.org/zap"
@@ -113,11 +116,21 @@ type navidromePlaylist struct {
 }
 
 type musicRAGSink struct {
-	baseURL string
-	apiKey  string
-	tableID string
-	client  *http.Client
+	store          *musicrag.Store
+	failRealDelete error
 }
+
+var (
+	musicRAGOnce    sync.Once
+	musicRAGShared  *musicrag.Store
+	musicRAGOpenErr error
+	openMusicRAG    = func() (*musicrag.Store, error) {
+		musicRAGOnce.Do(func() {
+			musicRAGShared, musicRAGOpenErr = musicrag.Open(storage.DefaultDatabasePath)
+		})
+		return musicRAGShared, musicRAGOpenErr
+	}
+)
 
 func newPlaylistOrganizerService(cfg *config.PlaylistOrganizerConfig) (*playlistOrganizerService, error) {
 	if cfg == nil {
@@ -792,108 +805,37 @@ func (s *playlistOrganizerService) forgetUnassignedSongs() {
 	dropOliveTinRead(strings.TrimRight(strings.TrimSpace(s.config.OliveTinURL), "/"), "songs_unplaylist")
 }
 
-func newMusicRAGSink(n8n *config.N8NConfig, client *http.Client) *musicRAGSink {
-	if client == nil {
-		var transport http.RoundTripper
-		if shared := utils.SharedHTTPClient(); shared != nil {
-			transport = shared.Transport
-		}
-		client = &http.Client{Transport: transport, Timeout: playlistOrganizerHTTPTimeout}
+func newMusicRAGSink(store *musicrag.Store) *musicRAGSink {
+	return &musicRAGSink{store: store}
+}
+
+func openMusicRAGSink() (*musicRAGSink, error) {
+	store, err := openMusicRAG()
+	if err != nil {
+		return nil, err
 	}
-	if n8n == nil {
-		return &musicRAGSink{client: client}
+	if store == nil {
+		return nil, errMusicRAGNotConfigured
 	}
-	return &musicRAGSink{
-		baseURL: strings.TrimSpace(n8n.N8NBaseUrl),
-		apiKey:  strings.TrimSpace(n8n.APIKey),
-		tableID: strings.TrimSpace(n8n.MusicRAGTableID),
-		client:  client,
-	}
+	return newMusicRAGSink(store), nil
 }
 
 func (s *musicRAGSink) configured() bool {
-	return s != nil && strings.TrimSpace(s.baseURL) != "" && strings.TrimSpace(s.apiKey) != "" && strings.TrimSpace(s.tableID) != ""
+	return s != nil && s.store != nil
 }
 
 func (s *musicRAGSink) enqueue(ctx context.Context, song unplaylistSong) error {
-	if s.apiKey == "" && s.tableID == "" && s.baseURL == "" {
+	if !s.configured() {
 		return errMusicRAGNotConfigured
 	}
-	if s.apiKey == "" || s.tableID == "" || s.baseURL == "" {
-		return errors.New("n8n MusicRAG bridge configuration is incomplete")
+	year := ""
+	if song.Year != 0 {
+		year = strconv.Itoa(song.Year)
 	}
-	if !safeNavidromeID(s.tableID) {
-		return errors.New("n8n MusicRAG table ID is invalid")
-	}
-	base, err := parseBaseURL(s.baseURL)
-	if err != nil {
-		return fmt.Errorf("n8n base URL is invalid: %w", err)
-	}
-	endpoint, err := url.JoinPath(base.String(), "api", "v1", "data-tables", s.tableID, "rows")
-	if err != nil {
-		return fmt.Errorf("construct n8n MusicRAG URL: %w", err)
-	}
-	filter, err := json.Marshal(map[string]any{
-		"type": "and",
-		"filters": []map[string]string{{
-			"columnName": "music_id",
-			"condition":  "eq",
-			"value":      song.ID,
-		}},
+	return s.store.Enqueue(ctx, musicrag.Song{
+		MusicID: song.ID, Title: song.Title, Artist: song.Artist, Album: song.Album,
+		Year: year, URL: song.Comment, CreatedAt: song.CreatedAt, Status: musicrag.StatusPending,
 	})
-	if err != nil {
-		return err
-	}
-	parsedEndpoint, err := url.Parse(endpoint)
-	if err != nil {
-		return err
-	}
-	query := parsedEndpoint.Query()
-	query.Set("limit", "1")
-	query.Set("filter", string(filter))
-	parsedEndpoint.RawQuery = query.Encode()
-	headers := map[string]string{"X-N8N-API-KEY": s.apiKey, "Accept": "application/json"}
-	responseBody, status, err := doPlaylistHTTPRequest(ctx, s.client, http.MethodGet, parsedEndpoint.String(), nil, headers, "", "")
-	if err != nil {
-		return fmt.Errorf("query n8n MusicRAG row: %w", err)
-	}
-	if status < 200 || status >= 300 {
-		return fmt.Errorf("query n8n MusicRAG row returned HTTP %d", status)
-	}
-	rows, err := parseN8NDataTableRows(responseBody)
-	if err != nil {
-		return fmt.Errorf("parse n8n MusicRAG rows: %w", err)
-	}
-	if len(rows) > 0 {
-		return nil
-	}
-	row := map[string]string{
-		"music_id":         song.ID,
-		"title":            song.Title,
-		"artist":           song.Artist,
-		"album":            song.Album,
-		"year":             strconv.Itoa(song.Year),
-		"music_created_at": song.CreatedAt,
-		"status":           "待处理",
-		"url":              song.Comment,
-	}
-	body, err := json.Marshal(map[string]any{"returnType": "all", "data": []map[string]string{row}})
-	if err != nil {
-		return err
-	}
-	responseBody, status, err = doPlaylistHTTPRequest(ctx, s.client, http.MethodPost, endpoint, body, map[string]string{
-		"X-N8N-API-KEY": s.apiKey,
-		"Accept":        "application/json",
-		"Content-Type":  "application/json",
-	}, "", "")
-	if err != nil {
-		return fmt.Errorf("insert n8n MusicRAG row: %w", err)
-	}
-	if status < 200 || status >= 300 {
-		return fmt.Errorf("insert n8n MusicRAG row returned HTTP %d", status)
-	}
-	_ = responseBody
-	return nil
 }
 
 func parseN8NDataTableRows(body []byte) ([]json.RawMessage, error) {
@@ -933,28 +875,14 @@ func (s *musicRAGSink) deleteRows(ctx context.Context, songIDs []string, dryRun 
 	if len(songIDs) == 0 {
 		return nil
 	}
-	if s.apiKey == "" && s.tableID == "" && s.baseURL == "" {
+	if !s.configured() {
 		return errMusicRAGNotConfigured
-	}
-	if s.apiKey == "" || s.tableID == "" || s.baseURL == "" {
-		return errors.New("n8n MusicRAG bridge configuration is incomplete")
-	}
-	if !safeNavidromeID(s.tableID) {
-		return errors.New("n8n MusicRAG table ID is invalid")
-	}
-	base, err := parseBaseURL(s.baseURL)
-	if err != nil {
-		return fmt.Errorf("n8n base URL is invalid: %w", err)
-	}
-	endpoint, err := url.JoinPath(base.String(), "api", "v1", "data-tables", s.tableID, "rows", "delete")
-	if err != nil {
-		return fmt.Errorf("construct n8n MusicRAG delete URL: %w", err)
 	}
 	unique := make([]string, 0, len(songIDs))
 	seen := make(map[string]struct{}, len(songIDs))
 	for _, songID := range songIDs {
-		if !safeNavidromeID(songID) {
-			return errors.New("n8n MusicRAG delete contains an invalid song ID")
+		if !musicrag.SafeID(songID) {
+			return errors.New("MusicRAG 删除包含无效歌曲 ID")
 		}
 		if _, exists := seen[songID]; exists {
 			continue
@@ -962,46 +890,13 @@ func (s *musicRAGSink) deleteRows(ctx context.Context, songIDs []string, dryRun 
 		seen[songID] = struct{}{}
 		unique = append(unique, songID)
 	}
-	const batchSize = 40
-	for start := 0; start < len(unique); start += batchSize {
-		end := start + batchSize
-		if end > len(unique) {
-			end = len(unique)
-		}
-		filters := make([]map[string]string, 0, end-start)
-		for _, songID := range unique[start:end] {
-			filters = append(filters, map[string]string{
-				"columnName": "music_id",
-				"condition":  "eq",
-				"value":      songID,
-			})
-		}
-		filter, err := json.Marshal(map[string]any{"type": "or", "filters": filters})
-		if err != nil {
-			return err
-		}
-		parsedEndpoint, err := url.Parse(endpoint)
-		if err != nil {
-			return err
-		}
-		query := parsedEndpoint.Query()
-		query.Set("filter", string(filter))
-		if dryRun {
-			query.Set("dryRun", "true")
-		}
-		parsedEndpoint.RawQuery = query.Encode()
-		_, status, err := doPlaylistHTTPRequest(ctx, s.client, http.MethodDelete, parsedEndpoint.String(), nil, map[string]string{
-			"X-N8N-API-KEY": s.apiKey,
-			"Accept":        "application/json",
-		}, "", "")
-		if err != nil {
-			return fmt.Errorf("delete n8n MusicRAG rows: %w", err)
-		}
-		if status < 200 || status >= 300 {
-			return fmt.Errorf("delete n8n MusicRAG rows returned HTTP %d", status)
-		}
+	if dryRun {
+		return nil
 	}
-	return nil
+	if s.failRealDelete != nil {
+		return s.failRealDelete
+	}
+	return s.store.Delete(ctx, unique)
 }
 
 func doPlaylistHTTPRequest(ctx context.Context, client *http.Client, method, target string, body []byte, headers map[string]string, basicUser, basicPassword string) ([]byte, int, error) {
@@ -1665,7 +1560,12 @@ func (app *BotApp) completePlaylistAssignment(token string) {
 	// Enqueue after every verified assignment, including retries where Navidrome
 	// already contains the track. The sink deduplicates by music_id, so this also
 	// repairs an uncertain partial write without adding duplicate state rows.
-	sink := newMusicRAGSink(app.cfg.N8NConfig, nil)
+	sink, err := openMusicRAGSink()
+	if err != nil {
+		logger.Warn("[Telegram] 打开 MusicRAG 状态表失败", zap.Error(err))
+		app.failPlaylistAssignment(token, "⚠️ 歌曲已核验，但 MusicRAG 状态同步失败。确认可安全重试。", err)
+		return
+	}
 	if err := sink.enqueue(ctx, assignment.song); err != nil {
 		if errors.Is(err, errMusicRAGNotConfigured) {
 			app.markPlaylistAssignmentRAGWarning(token)

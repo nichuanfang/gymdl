@@ -266,6 +266,9 @@ func (c *Config) setDefaults() {
 			c.AIPlaylist.CandidateCount = 150
 		}
 	}
+	if c.Lastfm == nil {
+		c.Lastfm = &LastfmConfig{}
+	}
 	if c.N8NConfig == nil {
 		c.N8NConfig = &N8NConfig{
 			Enable:          false,

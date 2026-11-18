@@ -121,6 +121,23 @@ func (s *Store) Import(ctx context.Context, rows []Song) (int, error) {
 	return inserted, nil
 }
 
+// Indexable returns songs still waiting for an embedding, including rows that
+// failed earlier. A failed row is retried on a later run and does not block
+// the songs after it.
+func (s *Store) Indexable(ctx context.Context, limit int) ([]Song, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT music_id,title,artist,album,year,url,music_created_at,genre,mood,language,description,status,error_message
+		FROM music_rag WHERE status IN (?, ?)
+		ORDER BY CASE status WHEN ? THEN 0 ELSE 1 END, music_id LIMIT ?`, StatusPending, StatusFailed, StatusPending, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSongs(rows)
+}
+
 func (s *Store) Pending(ctx context.Context, limit int) ([]Song, error) {
 	if limit <= 0 {
 		limit = 20
@@ -131,6 +148,10 @@ func (s *Store) Pending(ctx context.Context, limit int) ([]Song, error) {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanSongs(rows)
+}
+
+func scanSongs(rows *sql.Rows) ([]Song, error) {
 	var out []Song
 	for rows.Next() {
 		var song Song
@@ -168,6 +189,31 @@ func (s *Store) Delete(ctx context.Context, ids []string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+func (s *Store) AllIDs(ctx context.Context) (map[string]struct{}, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT music_id FROM music_rag`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]struct{}{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SetError(ctx context.Context, id, message string) error {
+	if !SafeID(id) {
+		return errors.New("歌曲 ID 无效")
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE music_rag SET error_message=? WHERE music_id=?`, message, id)
+	return err
 }
 
 func (s *Store) IDs(ctx context.Context) (map[string]struct{}, error) {

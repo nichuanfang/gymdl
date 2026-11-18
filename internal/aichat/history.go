@@ -11,8 +11,9 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// HistorySource reads the Last.fm scrobble table maintained by n8n. It is
-// optional: an empty DSN or a failed query degrades to no profile.
+// HistorySource reads the Last.fm scrobble table. Gymdl can also write that
+// same table through a separate DSN. An empty DSN or a failed query degrades
+// to no profile.
 type HistorySource struct {
 	DSN       string
 	Table     string

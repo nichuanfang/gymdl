@@ -109,6 +109,12 @@ func jobLabel(name string) string {
 		return "同步 CookieCloud"
 	case "syncPlaylists":
 		return "同步歌单"
+	case "importMusicRAG":
+		return "导入曲库状态"
+	case "indexMusicLibrary":
+		return "索引曲库"
+	case "syncScrobbles":
+		return "同步收听记录"
 	default:
 		return name
 	}

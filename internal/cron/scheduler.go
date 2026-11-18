@@ -37,6 +37,15 @@ func registerTasks(c *config.Config, scheduler gocron.Scheduler) {
 	if c.PlaylistOrganizer != nil && strings.TrimSpace(c.PlaylistOrganizer.NavidromeURL) != "" && strings.TrimSpace(c.PlaylistOrganizer.NavidromeUsername) != "" && c.PlaylistOrganizer.NavidromePassword != "" {
 		newTask("syncPlaylists", "每天 04:10", scheduler, gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 10, 0))), gocron.NewTask(syncPlaylists, c))
 	}
+	if musicRAGImportConfigured(c) {
+		newTask("importMusicRAG", "启动时一次", scheduler, gocron.OneTimeJob(gocron.OneTimeJobStartImmediately()), gocron.NewTask(importMusicRAG, c))
+	}
+	if musicLibraryIndexConfigured(c) {
+		newTask("indexMusicLibrary", "每天 04:20", scheduler, gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 20, 0))), gocron.NewTask(indexMusicLibrary, c))
+	}
+	if scrobbleSyncConfigured(c) {
+		newTask("syncScrobbles", "每天 04:05", scheduler, gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 5, 0))), gocron.NewTask(syncScrobbles, c))
+	}
 
 	if c.CookieCloud != nil && c.CookieCloud.Mode == 1 {
 		// 定时刷新

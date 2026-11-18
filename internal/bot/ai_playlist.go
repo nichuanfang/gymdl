@@ -162,7 +162,10 @@ func newAIPlaylistService(cfg *config.Config) (*aiPlaylistService, error) {
 	if err != nil {
 		return nil, err
 	}
-	service.stateTable = newMusicRAGSink(cfg.N8NConfig, client)
+	service.stateTable, err = openMusicRAGSink()
+	if err != nil {
+		return nil, fmt.Errorf("打开本地 MusicRAG 状态表失败: %w", err)
+	}
 	service.resumeStore, err = openAIPlaylistResumeStore("data/gymdl.sqlite3")
 	if err != nil {
 		return nil, fmt.Errorf("AI 歌单续跑存储初始化失败: %w", err)

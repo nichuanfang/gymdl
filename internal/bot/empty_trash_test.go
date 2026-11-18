@@ -2,6 +2,7 @@ package bot
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/internal/musicrag"
 	tb "gopkg.in/telebot.v4"
 )
 
@@ -41,9 +43,7 @@ func (c *emptyTrashCallbackTestContext) Edit(what interface{}, _ ...interface{})
 
 func TestEmptyTrashDeletesFilesStateRowsAndVectors(t *testing.T) {
 	deletedFiles := make([]string, 0, 2)
-	stateIDs := []string(nil)
 	vectorIDs := []string(nil)
-	statePreflightCalls := 0
 	pineconePreflightCalls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -74,35 +74,6 @@ func TestEmptyTrashDeletesFilesStateRowsAndVectors(t *testing.T) {
 				return
 			}
 			writeJSON(t, w, map[string]any{"logEntry": map[string]any{"exitCode": 0, "stdout": stdout, "timedOut": false}})
-		case r.URL.Path == "/api/v1/data-tables/table123/rows/delete":
-			if r.Method != http.MethodDelete || r.Header.Get("X-N8N-API-KEY") != "n8n-test-key" {
-				t.Errorf("unexpected MusicRAG delete request: %s %s", r.Method, r.URL.Path)
-			}
-			var filter struct {
-				Type    string `json:"type"`
-				Filters []struct {
-					ColumnName string `json:"columnName"`
-					Condition  string `json:"condition"`
-					Value      string `json:"value"`
-				} `json:"filters"`
-			}
-			if err := json.Unmarshal([]byte(r.URL.Query().Get("filter")), &filter); err != nil {
-				t.Errorf("decode MusicRAG filter: %v", err)
-			}
-			if filter.Type != "or" {
-				t.Errorf("MusicRAG filter type = %q", filter.Type)
-			}
-			if r.URL.Query().Get("dryRun") == "true" {
-				statePreflightCalls++
-			} else {
-				for _, condition := range filter.Filters {
-					if condition.ColumnName != "music_id" || condition.Condition != "eq" {
-						t.Errorf("unexpected MusicRAG filter condition: %#v", condition)
-					}
-					stateIDs = append(stateIDs, condition.Value)
-				}
-			}
-			writeJSON(t, w, map[string]any{"success": true})
 		case r.URL.Path == "/describe_index_stats":
 			pineconePreflightCalls++
 			if r.Method != http.MethodPost {
@@ -135,6 +106,11 @@ func TestEmptyTrashDeletesFilesStateRowsAndVectors(t *testing.T) {
 	defer server.Close()
 
 	service := testEmptyTrashService(t, server)
+	for _, id := range []string{"song1", "song2"} {
+		if err := service.stateTable.store.Enqueue(t.Context(), musicrag.Song{MusicID: id, Title: id, Status: musicrag.StatusReady}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	approvedPlan, err := service.prepare(t.Context())
 	if err != nil {
 		t.Fatalf("prepare confirmation preview: %v", err)
@@ -149,8 +125,8 @@ func TestEmptyTrashDeletesFilesStateRowsAndVectors(t *testing.T) {
 	if !reflect.DeepEqual(deletedFiles, []string{"album/one.flac", "album/two.flac"}) {
 		t.Fatalf("unexpected deleted paths: %#v", deletedFiles)
 	}
-	if statePreflightCalls != 2 || pineconePreflightCalls != 2 || !reflect.DeepEqual(stateIDs, []string{"song1", "song2"}) || !reflect.DeepEqual(vectorIDs, []string{"song1", "song2"}) {
-		t.Fatalf("unexpected cleanup IDs: state=%#v vectors=%#v", stateIDs, vectorIDs)
+	if pineconePreflightCalls != 2 || !reflect.DeepEqual(vectorIDs, []string{"song1", "song2"}) || service.stateTable.store.Count(t.Context()) != 0 {
+		t.Fatalf("unexpected cleanup: pinecone=%d vectors=%#v remaining=%d", pineconePreflightCalls, vectorIDs, service.stateTable.store.Count(t.Context()))
 	}
 	if !strings.Contains(formatEmptyTrashResult(result), "共删除 2 首歌曲") {
 		t.Fatalf("unexpected completion message: %q", formatEmptyTrashResult(result))
@@ -179,11 +155,6 @@ func TestEmptyTrashReportsFileFailureAfterCleaningIndexes(t *testing.T) {
 				stdout = "permission denied"
 			}
 			writeJSON(t, w, map[string]any{"logEntry": map[string]any{"exitCode": code, "stdout": stdout, "timedOut": false}})
-		case "/api/v1/data-tables/table123/rows/delete":
-			if r.URL.Query().Get("dryRun") != "true" {
-				actualCleanupCalls++
-			}
-			writeJSON(t, w, map[string]any{"success": true})
 		case "/describe_index_stats":
 			writeJSON(t, w, map[string]any{"dimension": vectorDimensions, "namespaces": map[string]any{}})
 		case "/vectors/delete":
@@ -200,7 +171,7 @@ func TestEmptyTrashReportsFileFailureAfterCleaningIndexes(t *testing.T) {
 	if firstResult.FileError == nil || firstResult.FilesDeleted != 1 {
 		t.Fatalf("expected one deleted file and a fatal file error: %#v", firstResult)
 	}
-	if actualCleanupCalls != 2 || !firstResult.StateRowsClean || !firstResult.VectorsDeleted {
+	if actualCleanupCalls != 1 || !firstResult.StateRowsClean || !firstResult.VectorsDeleted {
 		t.Fatalf("indexes should be cleared before physical file deletion: calls=%d result=%#v", actualCleanupCalls, firstResult)
 	}
 	if !strings.Contains(formatEmptyTrashResult(firstResult), "已删除 1/2 个文件") || !strings.Contains(formatEmptyTrashResult(firstResult), "状态和 Pinecone 已清理") || !strings.Contains(formatEmptyTrashResult(firstResult), "可安全重试") {
@@ -211,7 +182,7 @@ func TestEmptyTrashReportsFileFailureAfterCleaningIndexes(t *testing.T) {
 	if secondResult.FileError != nil || secondResult.FilesDeleted != 2 || !secondResult.StateRowsClean || !secondResult.VectorsDeleted {
 		t.Fatalf("retry after a partial file deletion should finish safely: %#v", secondResult)
 	}
-	if actualCleanupCalls != 4 {
+	if actualCleanupCalls != 2 {
 		t.Fatalf("retry should repeat the idempotent index cleanup, got %d mutation calls", actualCleanupCalls)
 	}
 }
@@ -246,7 +217,6 @@ func TestEmptyTrashValidatesAllPathsBeforeDeleting(t *testing.T) {
 
 func TestEmptyTrashPreflightStopsBeforeFileDeletionWhenPineconeUnavailable(t *testing.T) {
 	fileDeleteCalls := 0
-	actualStateDeletes := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/StartActionAndWait":
@@ -261,11 +231,6 @@ func TestEmptyTrashPreflightStopsBeforeFileDeletionWhenPineconeUnavailable(t *te
 			}
 			stdout := `[{"playlist_name":"回收站","track_ids":["song1"],"file_paths":["album/one.flac"],"track_count":1}]`
 			writeJSON(t, w, map[string]any{"logEntry": map[string]any{"exitCode": 0, "stdout": stdout, "timedOut": false}})
-		case "/api/v1/data-tables/table123/rows/delete":
-			if r.URL.Query().Get("dryRun") != "true" {
-				actualStateDeletes++
-			}
-			writeJSON(t, w, map[string]any{"success": true})
 		case "/describe_index_stats":
 			w.WriteHeader(http.StatusUnauthorized)
 		default:
@@ -275,14 +240,12 @@ func TestEmptyTrashPreflightStopsBeforeFileDeletionWhenPineconeUnavailable(t *te
 	defer server.Close()
 
 	result := testEmptyTrashService(t, server).run(t.Context(), nil)
-	if result.PreflightError == nil || fileDeleteCalls != 0 || actualStateDeletes != 0 {
-		t.Fatalf("Pinecone preflight failure should prevent mutations: result=%#v files=%d rows=%d", result, fileDeleteCalls, actualStateDeletes)
+	if result.PreflightError == nil || fileDeleteCalls != 0 {
+		t.Fatalf("Pinecone preflight failure should prevent mutations: result=%#v files=%d", result, fileDeleteCalls)
 	}
 }
 
 func TestEmptyTrashConfirmationStopsWhenQueueChanges(t *testing.T) {
-	stateDryRuns := 0
-	stateDeletes := 0
 	vectorDeletes := 0
 	fileDeletes := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -304,13 +267,6 @@ func TestEmptyTrashConfirmationStopsWhenQueueChanges(t *testing.T) {
 				t.Errorf("unexpected OliveTin action: %q", request.ActionID)
 				w.WriteHeader(http.StatusBadRequest)
 			}
-		case "/api/v1/data-tables/table123/rows/delete":
-			if r.URL.Query().Get("dryRun") == "true" {
-				stateDryRuns++
-			} else {
-				stateDeletes++
-			}
-			writeJSON(t, w, map[string]any{"success": true})
 		case "/describe_index_stats":
 			writeJSON(t, w, map[string]any{"dimension": vectorDimensions, "namespaces": map[string]any{}})
 		case "/vectors/delete":
@@ -324,6 +280,9 @@ func TestEmptyTrashConfirmationStopsWhenQueueChanges(t *testing.T) {
 	defer server.Close()
 
 	service := testEmptyTrashService(t, server)
+	if err := service.stateTable.store.Enqueue(t.Context(), musicrag.Song{MusicID: "old-song", Title: "旧歌", Status: musicrag.StatusReady}); err != nil {
+		t.Fatal(err)
+	}
 	approvedPlan := emptyTrashPlan{
 		snapshot: emptyTrashSnapshot{PlaylistName: "回收站", TrackCount: 1},
 		ids:      []string{"old-song"},
@@ -333,8 +292,8 @@ func TestEmptyTrashConfirmationStopsWhenQueueChanges(t *testing.T) {
 	if result.PreflightError == nil || !strings.Contains(result.PreflightError.Error(), "内容发生变化") {
 		t.Fatalf("changed trash contents should invalidate confirmation: %#v", result)
 	}
-	if stateDryRuns != 1 || stateDeletes != 0 || vectorDeletes != 0 || fileDeletes != 0 {
-		t.Fatalf("changed queue caused deletion: dryRuns=%d state=%d vectors=%d files=%d", stateDryRuns, stateDeletes, vectorDeletes, fileDeletes)
+	if service.stateTable.store.Count(t.Context()) != 1 || vectorDeletes != 0 || fileDeletes != 0 {
+		t.Fatalf("changed queue caused deletion: remaining=%d vectors=%d files=%d", service.stateTable.store.Count(t.Context()), vectorDeletes, fileDeletes)
 	}
 }
 
@@ -353,13 +312,8 @@ func TestEmptyTrashDoesNotDeleteFilesWhenStateTablePreflightFails(t *testing.T) 
 			if request.ActionID == "delete_music_file" {
 				fileDeleteCalls++
 			}
-			stdout := `[{"playlist_name":"回收站","track_ids":["song1"],"file_paths":["album/one.flac"],"track_count":1}]`
+			stdout := `[{"playlist_name":"回收站","track_ids":["bad id"],"file_paths":["album/one.flac"],"track_count":1}]`
 			writeJSON(t, w, map[string]any{"logEntry": map[string]any{"exitCode": 0, "stdout": stdout, "timedOut": false}})
-		case "/api/v1/data-tables/table123/rows/delete":
-			if r.URL.Query().Get("dryRun") != "true" {
-				t.Errorf("expected only a dry run, got query %v", r.URL.Query())
-			}
-			w.WriteHeader(http.StatusForbidden)
 		case "/describe_index_stats":
 			pineconePreflightCalls++
 			writeJSON(t, w, map[string]any{"dimension": vectorDimensions})
@@ -379,7 +333,6 @@ func TestEmptyTrashMetadataCleanupFailuresStopBeforeFileDeletion(t *testing.T) {
 	for _, failurePoint := range []string{"state-delete", "vector-delete"} {
 		t.Run(failurePoint, func(t *testing.T) {
 			fileDeleteCalls := 0
-			stateDeleteCalls := 0
 			vectorDeleteCalls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
@@ -395,17 +348,6 @@ func TestEmptyTrashMetadataCleanupFailuresStopBeforeFileDeletion(t *testing.T) {
 					}
 					stdout := `[{"playlist_name":"回收站","track_ids":["song1"],"file_paths":["album/one.flac"],"track_count":1}]`
 					writeJSON(t, w, map[string]any{"logEntry": map[string]any{"exitCode": 0, "stdout": stdout, "timedOut": false}})
-				case "/api/v1/data-tables/table123/rows/delete":
-					if r.URL.Query().Get("dryRun") == "true" {
-						writeJSON(t, w, map[string]any{"success": true})
-						return
-					}
-					stateDeleteCalls++
-					if failurePoint == "state-delete" {
-						w.WriteHeader(http.StatusInternalServerError)
-						return
-					}
-					writeJSON(t, w, map[string]any{"success": true})
 				case "/describe_index_stats":
 					writeJSON(t, w, map[string]any{"dimension": vectorDimensions})
 				case "/vectors/delete":
@@ -416,23 +358,31 @@ func TestEmptyTrashMetadataCleanupFailuresStopBeforeFileDeletion(t *testing.T) {
 					}
 					writeJSON(t, w, map[string]any{})
 				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 					w.WriteHeader(http.StatusNotFound)
 				}
 			}))
 
-			result := testEmptyTrashService(t, server).run(t.Context(), nil)
+			service := testEmptyTrashService(t, server)
+			if err := service.stateTable.store.Enqueue(t.Context(), musicrag.Song{MusicID: "song1", Title: "一首", Status: musicrag.StatusReady}); err != nil {
+				t.Fatal(err)
+			}
+			if failurePoint == "state-delete" {
+				service.stateTable.failRealDelete = errors.New("写入失败")
+			}
+			result := service.run(t.Context(), nil)
 			server.Close()
-			if fileDeleteCalls != 0 {
-				t.Fatalf("metadata cleanup failure deleted %d files", fileDeleteCalls)
+			if fileDeleteCalls != 0 || service.stateTable.store.Count(t.Context()) != 1 {
+				t.Fatalf("metadata cleanup failure deleted files or the state row: files=%d remaining=%d", fileDeleteCalls, service.stateTable.store.Count(t.Context()))
 			}
 			switch failurePoint {
 			case "state-delete":
-				if result.StateError == nil || result.VectorError != nil || stateDeleteCalls != 1 || vectorDeleteCalls != 1 || !result.VectorsDeleted {
-					t.Fatalf("unexpected MusicRAG delete failure state: %#v state=%d vectors=%d", result, stateDeleteCalls, vectorDeleteCalls)
+				if result.StateError == nil || result.VectorError != nil || vectorDeleteCalls != 1 || !result.VectorsDeleted {
+					t.Fatalf("unexpected MusicRAG delete failure state: %#v vectors=%d", result, vectorDeleteCalls)
 				}
 			case "vector-delete":
-				if result.StateError != nil || result.VectorError == nil || stateDeleteCalls != 0 || vectorDeleteCalls != 1 || result.VectorsDeleted {
-					t.Fatalf("unexpected Pinecone delete failure state: %#v state=%d vectors=%d", result, stateDeleteCalls, vectorDeleteCalls)
+				if result.StateError != nil || result.VectorError == nil || vectorDeleteCalls != 1 || result.VectorsDeleted {
+					t.Fatalf("unexpected Pinecone delete failure state: %#v vectors=%d", result, vectorDeleteCalls)
 				}
 			}
 		})
@@ -595,6 +545,10 @@ func TestPendingEmptyTrashIsScopedAndExpires(t *testing.T) {
 }
 
 func TestNewEmptyTrashServiceRequiresMusicRAGBridge(t *testing.T) {
+	previous := openMusicRAG
+	openMusicRAG = func() (*musicrag.Store, error) { return nil, errors.New("disk") }
+	t.Cleanup(func() { openMusicRAG = previous })
+
 	_, err := newEmptyTrashService(&config.Config{
 		AIPlaylist: &config.AIPlaylistConfig{
 			PineconeHost:      "https://pinecone.example",
@@ -610,12 +564,13 @@ func TestNewEmptyTrashServiceRequiresMusicRAGBridge(t *testing.T) {
 			NavidromePassword: "nav-pass",
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "music_rag_table_id") {
+	if err == nil || !strings.Contains(err.Error(), "MusicRAG") {
 		t.Fatalf("service without MusicRAG bridge error = %v", err)
 	}
 }
 
 func TestNewEmptyTrashServiceDoesNotRequireNavidromeLogin(t *testing.T) {
+	useTempMusicRAG(t)
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
 
@@ -628,11 +583,6 @@ func TestNewEmptyTrashServiceDoesNotRequireNavidromeLogin(t *testing.T) {
 		PlaylistOrganizer: &config.PlaylistOrganizerConfig{
 			OliveTinURL:  server.URL,
 			NavidromeURL: server.URL,
-		},
-		N8NConfig: &config.N8NConfig{
-			N8NBaseUrl:      server.URL,
-			APIKey:          "n8n-key",
-			MusicRAGTableID: "table123",
 		},
 	})
 	if err != nil {
@@ -697,8 +647,7 @@ func testEmptyTrashService(t *testing.T, server *httptest.Server) *emptyTrashSer
 	if err != nil {
 		t.Fatal(err)
 	}
-	n8n := &config.N8NConfig{N8NBaseUrl: server.URL, APIKey: "n8n-test-key", MusicRAGTableID: "table123"}
-	stateTable := newMusicRAGSink(n8n, server.Client())
+	stateTable := newMusicRAGSink(openBotMusicRAG(t))
 	pineconeHost, err := validatePineconeHost(server.URL)
 	if err != nil {
 		t.Fatal(err)
@@ -713,30 +662,40 @@ func testEmptyTrashService(t *testing.T, server *httptest.Server) *emptyTrashSer
 	}
 }
 
-func TestMusicRAGDeleteRowsBatchesAndEncodesFilters(t *testing.T) {
-	var gotFilters []map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete || r.Header.Get("X-N8N-API-KEY") != "key" || r.URL.Query().Get("dryRun") == "true" {
-			t.Errorf("unexpected row deletion request: %s %s", r.Method, r.URL.Path)
-		}
-		var filter map[string]any
-		if err := json.Unmarshal([]byte(r.URL.Query().Get("filter")), &filter); err != nil {
-			t.Errorf("decode filter: %v", err)
-		}
-		gotFilters = append(gotFilters, filter)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	sink := newMusicRAGSink(&config.N8NConfig{N8NBaseUrl: server.URL, APIKey: "key", MusicRAGTableID: "table123"}, server.Client())
+func TestMusicRAGDeleteRowsKeepsADryRunAndRejectsUnsafeIDs(t *testing.T) {
+	sink := newMusicRAGSink(openBotMusicRAG(t))
 	ids := make([]string, 41)
 	for index := range ids {
 		ids[index] = fmt.Sprintf("song%d", index)
+		if err := sink.store.Enqueue(t.Context(), musicrag.Song{MusicID: ids[index], Title: ids[index], Status: musicrag.StatusReady}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := sink.deleteRows(t.Context(), ids, true); err != nil {
+		t.Fatal(err)
+	}
+	if sink.store.Count(t.Context()) != 41 {
+		t.Fatalf("dry run deleted rows, remaining %d", sink.store.Count(t.Context()))
+	}
+	if err := sink.deleteRows(t.Context(), append(append([]string{}, ids...), "bad id"), false); err == nil || !strings.Contains(err.Error(), "无效") {
+		t.Fatalf("unsafe id error = %v", err)
+	}
+	if sink.store.Count(t.Context()) != 41 {
+		t.Fatalf("invalid id deleted rows, remaining %d", sink.store.Count(t.Context()))
 	}
 	if err := sink.deleteRows(t.Context(), ids, false); err != nil {
 		t.Fatal(err)
 	}
-	if len(gotFilters) != 2 || len(gotFilters[0]["filters"].([]any)) != 40 || len(gotFilters[1]["filters"].([]any)) != 1 {
-		t.Fatalf("unexpected MusicRAG delete batches: %#v", gotFilters)
+	if sink.store.Count(t.Context()) != 0 {
+		t.Fatalf("rows left after delete: %d", sink.store.Count(t.Context()))
 	}
+}
+
+func useTempMusicRAG(t *testing.T) *musicrag.Store {
+	t.Helper()
+	store := openBotMusicRAG(t)
+	previous := openMusicRAG
+	openMusicRAG = func() (*musicrag.Store, error) { return store, nil }
+	t.Cleanup(func() { openMusicRAG = previous })
+	return store
 }
