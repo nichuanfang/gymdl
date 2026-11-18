@@ -202,6 +202,30 @@ func (s *Store) SourceError(ctx context.Context, b Binding, message string, paus
 	return old != message, err
 }
 
+func (s *Store) ActiveFavoriteTracks(ctx context.Context, user int64, platform, account string) (map[string]Track, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT track_id, track_json FROM discovery_favorites WHERE user_id=? AND platform=? AND account=? AND active=1`, user, platform, account)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]Track{}
+	for rows.Next() {
+		var id, raw string
+		if err = rows.Scan(&id, &raw); err != nil {
+			return nil, err
+		}
+		var track Track
+		if err = json.Unmarshal([]byte(raw), &track); err != nil {
+			return nil, err
+		}
+		if track.ID == "" {
+			track.ID = id
+		}
+		out[id] = track
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) Favorites(ctx context.Context, user int64) ([]Track, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT f.track_json,f.active FROM discovery_favorites f JOIN discovery_bindings b ON f.user_id=b.user_id AND f.platform=b.platform AND f.account=b.account WHERE f.user_id=?`, user)
 	if err != nil {

@@ -75,7 +75,7 @@ func (s *Service) Sync(ctx context.Context, user int64) ([]FreshFavorite, error)
 		if b.Paused || (s.Authorized != nil && !s.Authorized(b.User, b.Chat)) {
 			continue
 		}
-		snap, e := s.Provider.Fetch(ctx, b.Platform)
+		snap, e := s.fetchSnapshot(ctx, b)
 		if e == nil && snap.Platform != b.Platform {
 			e = fmt.Errorf("收藏来源标识不一致，未更新基线")
 		}
@@ -101,6 +101,60 @@ func (s *Service) Sync(ctx context.Context, user int64) ([]FreshFavorite, error)
 		return fresh, errors.New(strings.Join(failures, "\n"))
 	}
 	return fresh, nil
+}
+
+// fetchSnapshot keeps a routine NetEase sync to the liked-song id list.
+// Song details already stored for that account are reused, so a quiet poll
+// does not re-download the whole library.
+func (s *Service) fetchSnapshot(ctx context.Context, b Binding) (Snapshot, error) {
+	if b.Platform != "netease" {
+		return s.Provider.Fetch(ctx, b.Platform)
+	}
+	provider, ok := s.Provider.(*Providers)
+	if !ok {
+		return s.Provider.Fetch(ctx, b.Platform)
+	}
+	account, ids, err := provider.NeteaseLikedIDs(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if account != b.Account {
+		return Snapshot{Platform: "netease", Account: account, Complete: true}, nil
+	}
+	known, err := s.Store.ActiveFavoriteTracks(ctx, b.User, "netease", account)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	missing := make([]string, 0)
+	for _, id := range ids {
+		old, ok := known[id]
+		if !ok || old.Platform != "netease" || old.ID != id || !old.Verified || strings.TrimSpace(old.Title) == "" {
+			missing = append(missing, id)
+		}
+	}
+	fresh, err := provider.NeteaseTracks(ctx, missing)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	byID := make(map[string]Track, len(fresh))
+	for _, track := range fresh {
+		byID[track.ID] = track
+	}
+	tracks := make([]Track, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			return Snapshot{}, fmt.Errorf("网易云收藏 ID 数量不完整，未建立基线")
+		}
+		seen[id] = true
+		if track, ok := byID[id]; ok {
+			tracks = append(tracks, track)
+			continue
+		}
+		tracks = append(tracks, known[id])
+	}
+	snap := Snapshot{Platform: "netease", Account: account, Tracks: tracks, Complete: true}
+	return snap, validSnapshot(snap)
 }
 
 func (s *Service) Recommend(ctx context.Context, user int64) ([]Track, error) {

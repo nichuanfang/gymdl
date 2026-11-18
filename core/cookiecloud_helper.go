@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,14 +38,14 @@ var (
 
 // InitCookieCloud 初始化全局 CookieCloud，只会执行一次
 func InitCookieCloud(cfg *config.CookieCloudConfig) {
-    logger = utils.Logger()
-    GlobalCookieCloud = &CookieCloud{
-        Config: cfg,
-        Client: &http.Client{
-            Timeout:   10 * time.Second,
-            Transport: utils.SharedHTTPClient().Transport,
-        },
-    }
+	logger = utils.Logger()
+	GlobalCookieCloud = &CookieCloud{
+		Config: cfg,
+		Client: &http.Client{
+			Timeout:   10 * time.Second,
+			Transport: utils.SharedHTTPClient().Transport,
+		},
+	}
 }
 
 // CheckConnection 检查 CookieCloud 服务是否可用
@@ -109,12 +110,45 @@ func (cc *CookieCloud) Sync() {
 		return
 	}
 
-	if err := os.WriteFile(dstPath, netscapeData, 0o600); err != nil {
+	if err := writeCookieFile(dstPath, netscapeData); err != nil {
 		logger.Error(fmt.Sprintf("⚠️CookieCloud failed to write cookie file %s: %v", dstPath, err))
 		return
 	}
 
 	logger.Info("💡CookieCloud cookie updated successfully")
+}
+
+// writeCookieFile replaces the cookie file in one rename. Readers never see a
+// truncated MUSIC_U while CookieCloud is writing.
+func writeCookieFile(dstPath string, data []byte) error {
+	dir := filepath.Dir(dstPath)
+	tmp, err := os.CreateTemp(dir, ".cookies.*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err = tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(tmpName, dstPath); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 // fetchEncryptedData 获取加密的 cookie 数据

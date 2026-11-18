@@ -73,8 +73,48 @@ func fromSearch(i web.SearchResultItem) Track {
 	return Track{Platform: i.Platform, ID: id, URL: sourceURL, Title: i.Name, Artist: i.Artists, Album: i.Album, Duration: i.DurationSec, Verified: i.Name != "" && i.Artists != ""}
 }
 
+// neteaseRequestError is a transport failure. API codes such as login expiry
+// are separate errors and are not retried.
+type neteaseRequestError struct {
+	status int
+	cause  error
+}
+
+func (e neteaseRequestError) Error() string {
+	if e.status != 0 {
+		return fmt.Sprintf("网易云收藏请求失败（HTTP %d）", e.status)
+	}
+	if neteaseTimeout(e.cause) {
+		return "网易云收藏请求超时"
+	}
+	if e.cause != nil {
+		return "网易云收藏连接中断"
+	}
+	return "网易云收藏请求失败"
+}
+
+func (e neteaseRequestError) Unwrap() error { return e.cause }
+
+func neteaseTimeout(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err)
+}
+
+func retryableNetease(err error) bool {
+	var httpErr neteaseRequestError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	if errors.Is(httpErr.cause, context.Canceled) {
+		return false
+	}
+	if httpErr.status == 0 {
+		return true
+	}
+	return httpErr.status == 403 || httpErr.status == 408 || httpErr.status == 429 || httpErr.status >= 500
+}
+
 func (p *Providers) ncm(ctx context.Context, endpoint string, input any, out any) error {
-	if p.Config.CookieCloud == nil {
+	if p.Config == nil || p.Config.CookieCloud == nil {
 		return fmt.Errorf("请配置 CookieCloud")
 	}
 	cc := p.Config.CookieCloud
@@ -82,6 +122,27 @@ func (p *Providers) ncm(ctx context.Context, endpoint string, input any, out any
 	if musicU == "" {
 		return fmt.Errorf("网易云登录失效，请同步 CookieCloud")
 	}
+	var last error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(time.Duration(attempt) * 400 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+		err := p.ncmOnce(ctx, endpoint, input, musicU, out)
+		if err == nil || ctx.Err() != nil || !retryableNetease(err) {
+			return err
+		}
+		last = err
+	}
+	return last
+}
+
+func (p *Providers) ncmOnce(ctx context.Context, endpoint string, input any, musicU string, out any) error {
 	raw, err := json.Marshal(input)
 	if err != nil {
 		return err
@@ -99,12 +160,15 @@ func (p *Providers) ncm(ctx context.Context, endpoint string, input any, out any
 	req.AddCookie(&http.Cookie{Name: "appver", Value: "8.9.70"})
 	resp, err := p.client().Do(req)
 	if err != nil {
-		return fmt.Errorf("网易云收藏请求失败")
+		return neteaseRequestError{cause: err}
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil || resp.StatusCode != 200 {
-		return fmt.Errorf("网易云收藏请求失败")
+	if err != nil {
+		return neteaseRequestError{cause: err}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return neteaseRequestError{status: resp.StatusCode}
 	}
 	var code struct{ Code int }
 	if json.Unmarshal(data, &code) != nil {
@@ -123,19 +187,34 @@ func (p *Providers) ncm(ctx context.Context, endpoint string, input any, out any
 }
 
 func (p *Providers) netease(ctx context.Context) (Snapshot, error) {
+	account, ids, err := p.NeteaseLikedIDs(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	tracks, err := p.NeteaseTracks(ctx, ids)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snap := Snapshot{Platform: "netease", Account: account, Tracks: tracks, Complete: true}
+	return snap, validSnapshot(snap)
+}
+
+// NeteaseLikedIDs reads the account and the liked-song id list. It does not
+// download song details.
+func (p *Providers) NeteaseLikedIDs(ctx context.Context) (string, []string, error) {
 	var login ncmtypes.LoginStatusData
 	if err := p.ncm(ctx, "/api/w/nuser/account/get", map[string]any{}, &login); err != nil {
-		return Snapshot{}, err
+		return "", nil, err
 	}
 	uid := login.Account.Id
 	if uid <= 0 {
-		return Snapshot{}, fmt.Errorf("网易云登录失效，请同步 CookieCloud")
+		return "", nil, fmt.Errorf("网易云登录失效，请同步 CookieCloud")
 	}
 	var likedID int
 	for offset := 0; offset < 10000; offset += 100 {
 		var playlists ncmtypes.UserPlaylistData
 		if err := p.ncm(ctx, "/api/user/playlist", map[string]any{"uid": uid, "offset": offset, "limit": 100}, &playlists); err != nil {
-			return Snapshot{}, err
+			return "", nil, err
 		}
 		for _, list := range playlists.Playlist {
 			if list.SpecialType == 5 && list.UserId == uid {
@@ -147,48 +226,76 @@ func (p *Providers) netease(ctx context.Context) (Snapshot, error) {
 			break
 		}
 		if len(playlists.Playlist) == 0 {
-			return Snapshot{}, fmt.Errorf("网易云歌单分页不完整")
+			return "", nil, fmt.Errorf("网易云歌单分页不完整")
 		}
 	}
 	if likedID <= 0 {
-		return Snapshot{}, fmt.Errorf("未找到当前网易云账号的我喜欢的音乐")
+		return "", nil, fmt.Errorf("未找到当前网易云账号的我喜欢的音乐")
 	}
 	var detail ncmtypes.PlaylistDetailData
 	if err := p.ncm(ctx, "/api/v6/playlist/detail", map[string]any{"id": likedID, "n": 100000, "s": 0}, &detail); err != nil {
-		return Snapshot{}, err
+		return "", nil, err
 	}
 	if len(detail.Playlist.TrackIds) != detail.Playlist.TrackCount {
-		return Snapshot{}, fmt.Errorf("网易云收藏 ID 数量不完整，未建立基线")
+		return "", nil, fmt.Errorf("网易云收藏 ID 数量不完整，未建立基线")
 	}
-	snap := Snapshot{Platform: "netease", Account: strconv.Itoa(uid), Complete: true}
-	for start := 0; start < len(detail.Playlist.TrackIds); start += 100 {
-		ids := []map[string]int{}
+	ids := make([]string, 0, len(detail.Playlist.TrackIds))
+	for _, id := range detail.Playlist.TrackIds {
+		if id.Id <= 0 {
+			return "", nil, fmt.Errorf("网易云收藏 ID 数量不完整，未建立基线")
+		}
+		ids = append(ids, strconv.Itoa(id.Id))
+	}
+	return strconv.Itoa(uid), ids, nil
+}
+
+// NeteaseTracks loads details for the given song ids, in that order.
+func (p *Providers) NeteaseTracks(ctx context.Context, ids []string) ([]Track, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	tracks := make([]Track, 0, len(ids))
+	for start := 0; start < len(ids); start += 100 {
+		batch := ids[start:min(start+100, len(ids))]
+		body := make([]map[string]int, 0, len(batch))
 		expected := map[int]bool{}
-		for _, id := range detail.Playlist.TrackIds[start:min(start+100, len(detail.Playlist.TrackIds))] {
-			ids = append(ids, map[string]int{"id": id.Id})
-			expected[id.Id] = true
+		for _, id := range batch {
+			n, err := strconv.Atoi(id)
+			if err != nil || n <= 0 || expected[n] {
+				return nil, fmt.Errorf("网易云收藏歌曲详情不一致")
+			}
+			body = append(body, map[string]int{"id": n})
+			expected[n] = true
 		}
-		raw, _ := json.Marshal(ids)
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
 		var songs ncmtypes.SongsDetailData
-		if err := p.ncm(ctx, "/api/v3/song/detail", map[string]any{"c": string(raw)}, &songs); err != nil {
-			return Snapshot{}, err
+		if err = p.ncm(ctx, "/api/v3/song/detail", map[string]any{"c": string(raw)}, &songs); err != nil {
+			return nil, err
 		}
+		found := map[int]Track{}
 		for _, s := range songs.Songs {
 			if !expected[s.Id] {
-				return Snapshot{}, fmt.Errorf("网易云收藏歌曲详情不一致")
+				return nil, fmt.Errorf("网易云收藏歌曲详情不一致")
 			}
 			delete(expected, s.Id)
 			artists := []string{}
 			for _, a := range s.Ar {
 				artists = append(artists, a.Name)
 			}
-			snap.Tracks = append(snap.Tracks, Track{Platform: "netease", ID: strconv.Itoa(s.Id), URL: fmt.Sprintf("https://music.163.com/song?id=%d", s.Id), Title: s.Name, Artist: strings.Join(artists, " / "), Album: s.Al.Name, Duration: s.Dt / 1000, Verified: s.Name != "" && len(artists) > 0})
+			found[s.Id] = Track{Platform: "netease", ID: strconv.Itoa(s.Id), URL: fmt.Sprintf("https://music.163.com/song?id=%d", s.Id), Title: s.Name, Artist: strings.Join(artists, " / "), Album: s.Al.Name, Duration: s.Dt / 1000, Verified: s.Name != "" && len(artists) > 0}
 		}
 		if len(expected) > 0 {
-			return Snapshot{}, fmt.Errorf("网易云有收藏歌曲详情缺失，未更新基线")
+			return nil, fmt.Errorf("网易云有收藏歌曲详情缺失，未更新基线")
+		}
+		for _, id := range batch {
+			n, _ := strconv.Atoi(id)
+			tracks = append(tracks, found[n])
 		}
 	}
-	return snap, validSnapshot(snap)
+	return tracks, nil
 }
 
 type ytEntry struct {

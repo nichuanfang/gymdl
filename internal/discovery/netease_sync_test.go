@@ -1,0 +1,126 @@
+package discovery
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/nichuanfang/gymdl/config"
+)
+
+func neteaseProvider(t *testing.T, trip roundTripFunc) *Providers {
+	t.Helper()
+	dir := t.TempDir()
+	cookie := []byte("# Netscape HTTP Cookie File\n.music.163.com\tTRUE\t/\tFALSE\t0\tMUSIC_U\tok\n")
+	if err := os.WriteFile(filepath.Join(dir, "cookies.txt"), cookie, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return &Providers{
+		Config: &config.Config{CookieCloud: &config.CookieCloudConfig{CookieFilePath: dir, CookieFile: "cookies.txt"}},
+		Client: &http.Client{Transport: trip},
+	}
+}
+
+func TestNeteaseRequestRetriesTransientFailure(t *testing.T) {
+	calls := 0
+	p := neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader("busy")), Request: r}, nil
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"code":200}`)), Request: r}, nil
+	})
+	var out struct{ Code int }
+	if err := p.ncm(context.Background(), "/api/w/nuser/account/get", map[string]any{}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || out.Code != 200 {
+		t.Fatalf("calls=%d code=%d", calls, out.Code)
+	}
+}
+
+func TestNeteaseRequestKeepsTheFailureReason(t *testing.T) {
+	calls := 0
+	p := neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 400, Body: io.NopCloser(strings.NewReader("no")), Request: r}, nil
+	})
+	var out struct{ Code int }
+	err := p.ncm(context.Background(), "/api/w/nuser/account/get", map[string]any{}, &out)
+	if err == nil || !strings.Contains(err.Error(), "HTTP 400") || calls != 1 {
+		t.Fatal(calls, err)
+	}
+
+	calls = 0
+	p = neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"code":301}`)), Request: r}, nil
+	})
+	err = p.ncm(context.Background(), "/api/w/nuser/account/get", map[string]any{}, &out)
+	if err == nil || !strings.Contains(err.Error(), "登录失效") || calls != 1 {
+		t.Fatal(calls, err)
+	}
+
+	calls = 0
+	p = neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+		calls++
+		return nil, timeoutErr{}
+	})
+	err = p.ncm(context.Background(), "/api/w/nuser/account/get", map[string]any{}, &out)
+	if err == nil || !strings.Contains(err.Error(), "超时") || calls != 3 {
+		t.Fatal(calls, err)
+	}
+}
+
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+func TestSyncReusesStoredNeteaseSongs(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	if _, _, err := store.Apply(ctx, 1, 1, snapshot("9", testTrack("1", "旧歌", "甲")), true); err != nil {
+		t.Fatal(err)
+	}
+	detailCalls := 0
+	p := neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+		var body string
+		switch {
+		case strings.Contains(r.URL.Path, "account/get"):
+			body = `{"code":200,"account":{"id":9}}`
+		case strings.Contains(r.URL.Path, "user/playlist"):
+			body = `{"code":200,"more":false,"playlist":[{"id":50,"specialType":5,"userId":9}]}`
+		case strings.Contains(r.URL.Path, "playlist/detail"):
+			body = `{"code":200,"playlist":{"trackCount":2,"trackIds":[{"id":1},{"id":2}]}}`
+		case strings.Contains(r.URL.Path, "song/detail"):
+			detailCalls++
+			body = `{"code":200,"songs":[{"id":2,"name":"新歌","dt":180000,"ar":[{"name":"乙"}],"al":{"name":"专"}}]}`
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			return nil, errors.New("unexpected")
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	svc := Service{Store: store, Provider: p, Enabled: true}
+	fresh, err := svc.Sync(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detailCalls != 1 || len(fresh) != 1 || fresh[0].Track.Title != "新歌" {
+		t.Fatalf("detail calls=%d fresh=%+v", detailCalls, fresh)
+	}
+	kept, err := store.ActiveFavoriteTracks(ctx, 1, "netease", "9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept["1"].Title != "旧歌" || kept["2"].Title != "新歌" {
+		t.Fatalf("stored %#v", kept)
+	}
+}
