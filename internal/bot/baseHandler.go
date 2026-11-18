@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nichuanfang/gymdl/internal/audiodupe"
 	"github.com/nichuanfang/gymdl/internal/bot/dispatch"
 	"github.com/nichuanfang/gymdl/utils"
 
@@ -165,10 +166,18 @@ func (app *BotApp) HandleAudio(c tb.Context) error {
 	}
 	identity := musicdedupe.Track{Platform: string(processor.LinkForwardMusic)}
 	app.attachDownloadRecorder(session, processor.LinkForwardMusic, identity)
+	session.AskSimilar = app.askSimilarAudio(session, identity, "", nil)
 
 	// 处理音频
 	err = session.HandleMusic(forwardProcessor)
 	if err != nil {
+		if errors.Is(err, errDuplicateConfirmationPending) {
+			return nil
+		}
+		var heard *audiodupe.LibraryMatch
+		if errors.As(err, &heard) {
+			return nil
+		}
 		_, _ = b.Edit(msg, fmt.Sprintf("处理失败：%s", err.Error()))
 		return nil
 	}

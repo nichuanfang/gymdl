@@ -140,7 +140,7 @@ func (s *Store) Apply(ctx context.Context, user, chat int64, snap Snapshot, bind
 			return 0, nil, err
 		}
 		if !bind && !known[t.ID] {
-			res, e := enqueueTx(ctx, tx, user, chat, t, now, snap.Account)
+			res, e := enqueueTx(ctx, tx, user, chat, t, now, snap.Account, true)
 			if e != nil {
 				return 0, nil, e
 			}
@@ -161,12 +161,17 @@ func (s *Store) Apply(ctx context.Context, user, chat int64, snap Snapshot, bind
 	return count, fresh, nil
 }
 
-func enqueueTx(ctx context.Context, tx *sql.Tx, user, chat int64, t Track, now int64, account string) (sql.Result, error) {
+func enqueueTx(ctx context.Context, tx *sql.Tx, user, chat int64, t Track, now int64, account string, requeueCompleted bool) (sql.Result, error) {
 	data, err := json.Marshal(t)
 	if err != nil {
 		return nil, err
 	}
-	return tx.ExecContext(ctx, `INSERT INTO discovery_jobs(id,user_id,chat_id,identity,track_json,state,updated,source_platform,source_account) VALUES(?,?,?,?,?,'queued',?,?,?) ON CONFLICT(user_id,identity) DO NOTHING`, token(), user, chat, Identity(t), string(data), now, t.Platform, account)
+	if !requeueCompleted {
+		return tx.ExecContext(ctx, `INSERT INTO discovery_jobs(id,user_id,chat_id,identity,track_json,state,updated,source_platform,source_account) VALUES(?,?,?,?,?,'queued',?,?,?) ON CONFLICT(user_id,identity) DO NOTHING`, token(), user, chat, Identity(t), string(data), now, t.Platform, account)
+	}
+	// A song that already finished can be liked again. Queued, running, failed,
+	// ignored, and owned rows stay as they are, and a bind never reaches here.
+	return tx.ExecContext(ctx, `INSERT INTO discovery_jobs(id,user_id,chat_id,identity,track_json,state,updated,source_platform,source_account) VALUES(?,?,?,?,?,'queued',?,?,?) ON CONFLICT(user_id,identity) DO UPDATE SET chat_id=excluded.chat_id,track_json=excluded.track_json,state='queued',attempts=0,next_run=0,last_error='',updated=excluded.updated,result='',source_platform=excluded.source_platform,source_account=excluded.source_account,notified=0 WHERE discovery_jobs.state='completed'`, token(), user, chat, Identity(t), string(data), now, t.Platform, account)
 }
 
 func (s *Store) Enqueue(ctx context.Context, user, chat int64, t Track) (string, error) {
@@ -175,7 +180,7 @@ func (s *Store) Enqueue(ctx context.Context, user, chat int64, t Track) (string,
 		return "", err
 	}
 	defer tx.Rollback()
-	if _, err = enqueueTx(ctx, tx, user, chat, t, time.Now().Unix(), ""); err != nil {
+	if _, err = enqueueTx(ctx, tx, user, chat, t, time.Now().Unix(), "", false); err != nil {
 		return "", err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE discovery_jobs SET source_account='',state=CASE WHEN state IN ('failed','ignored') THEN 'queued' ELSE state END,next_run=0 WHERE user_id=? AND identity=?`, user, Identity(t)); err != nil {

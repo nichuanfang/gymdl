@@ -21,7 +21,8 @@ import (
 )
 
 // Library duplicate scan compares audio that is already in the library.
-// It never deletes files and never changes download or rediscover decisions.
+// Scanning never deletes files and never changes download or rediscover decisions.
+// A later keep request deletes only the versions the user checked in that group.
 
 type duplicateScanner struct {
 	mu      sync.Mutex

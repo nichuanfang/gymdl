@@ -3,7 +3,9 @@ package task
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core/linkparser"
+	"github.com/nichuanfang/gymdl/internal/audiodupe"
 	"github.com/nichuanfang/gymdl/internal/storage"
 	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/processor/music"
@@ -31,15 +34,17 @@ const (
 
 // Task 下载任务
 type Task struct {
-	ID        string            `json:"id"`
-	URL       string            `json:"url"`
-	Platform  string            `json:"platform"`
-	Status    TaskStatus        `json:"status"`
-	Progress  string            `json:"progress"`
-	Error     string            `json:"error,omitempty"`
-	SongInfo  []*music.SongInfo `json:"song_info,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	ID           string            `json:"id"`
+	URL          string            `json:"url"`
+	Platform     string            `json:"platform"`
+	Status       TaskStatus        `json:"status"`
+	Progress     string            `json:"progress"`
+	Error        string            `json:"error,omitempty"`
+	SongInfo     []*music.SongInfo `json:"song_info,omitempty"`
+	AudioConfirm bool              `json:"audio_confirm,omitempty"`
+	KeepSimilar  bool              `json:"-"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
 }
 
 // TaskManager 任务管理器
@@ -146,6 +151,10 @@ func (tm *TaskManager) SetConfig(cfg *config.Config) {
 }
 
 func (tm *TaskManager) SubmitTask(rawURL string) (*Task, error) {
+	return tm.SubmitTaskWithOptions(rawURL, false)
+}
+
+func (tm *TaskManager) SubmitTaskWithOptions(rawURL string, keepSimilar bool) (*Task, error) {
 	if tm.historyErr != nil {
 		return nil, fmt.Errorf("下载历史数据库不可用: %v", tm.historyErr)
 	}
@@ -160,12 +169,13 @@ func (tm *TaskManager) SubmitTask(rawURL string) (*Task, error) {
 
 	tm.mu.Lock()
 	task := &Task{
-		ID:        uuid.New().String(),
-		URL:       link,
-		Platform:  string(executor.Name()),
-		Status:    TaskStatusPending,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		ID:          uuid.New().String(),
+		URL:         link,
+		Platform:    string(executor.Name()),
+		Status:      TaskStatusPending,
+		KeepSimilar: keepSimilar,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}
 	tm.tasks[task.ID] = task
 	tm.order = append(tm.order, task.ID)
@@ -207,9 +217,11 @@ func (tm *TaskManager) runTask(task *Task, executor processor.Processor, cfg *co
 func (tm *TaskManager) execMusicTask(task *Task, p music.Processor) {
 	tm.updateTask(task.ID, func(t *Task) { t.Status = TaskStatusRunning })
 
-	_, err := music.RunWorkflow(context.Background(), p, task.URL, func(progress string) {
+	_, err := music.RunWorkflowWithHooks(context.Background(), p, task.URL, func(progress string) {
 		tm.updateTask(task.ID, func(t *Task) { t.Progress = progress })
-	})
+	}, music.WorkflowHooks{BeforeStore: func() error {
+		return reviewProcessorAudio(p, task.KeepSimilar)
+	}})
 	tm.finishMusicTask(task.ID, p, err)
 }
 
@@ -233,12 +245,31 @@ func (tm *TaskManager) finishWithError(id string, err error) {
 }
 
 // finishMusicTask 音乐任务完成
+func reviewProcessorAudio(p music.Processor, bypass bool) error {
+	var one *music.SongInfo
+	count := 0
+	for _, song := range p.Songs() {
+		if song == nil {
+			continue
+		}
+		count++
+		one = song
+	}
+	if count != 1 || strings.TrimSpace(one.MusicPath) == "" {
+		return nil
+	}
+	return audiodupe.ReviewFile(context.Background(), one.MusicPath, float64(one.Duration), bypass)
+}
+
 func (tm *TaskManager) finishMusicTask(id string, p music.Processor, err error) {
+	var heard *audiodupe.LibraryMatch
+	confirm := err != nil && errors.As(err, &heard) && heard.Decision == audiodupe.DecisionConfirm
 	tm.updateTask(id, func(t *Task) {
 		t.SongInfo = p.Songs()
 		if err != nil {
 			t.Status = TaskStatusFailed
 			t.Error = utils.TruncateString(err.Error(), 500)
+			t.AudioConfirm = confirm
 		} else {
 			t.Status = TaskStatusCompleted
 		}

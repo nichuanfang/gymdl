@@ -216,6 +216,18 @@ func (s *Store) SetError(ctx context.Context, id, message string) error {
 	return err
 }
 
+// Ready returns songs whose embedding finished. Pending and failed rows are
+// not neighbors yet.
+func (s *Store) Ready(ctx context.Context) ([]Song, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT music_id,title,artist,album,year,url,music_created_at,genre,mood,language,description,status,error_message
+		FROM music_rag WHERE status=?`, StatusReady)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSongs(rows)
+}
+
 func (s *Store) IDs(ctx context.Context) (map[string]struct{}, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT music_id FROM music_rag WHERE status=?`, StatusReady)
 	if err != nil {

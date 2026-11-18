@@ -2,13 +2,14 @@ package bot
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core/linkparser"
+	"github.com/nichuanfang/gymdl/internal/audiodupe"
 	"github.com/nichuanfang/gymdl/internal/bot/dispatch"
 	"github.com/nichuanfang/gymdl/internal/musicdedupe"
 	"github.com/nichuanfang/gymdl/processor"
@@ -86,6 +87,7 @@ func (app *BotApp) handleMusicWithDuplicateCheck(session *dispatch.Session, p mu
 		return errDuplicateConfirmationPending
 	}
 
+	session.AskSimilar = app.askSimilarAudio(session, track, reservationKey, &reserved)
 	session.BeforeDownload = func() error {
 		match, err := app.musicDedupe.FindDuplicate(context.Background(), track)
 		if err != nil {
@@ -187,18 +189,13 @@ func (app *BotApp) askDuplicateConfirmation(session *dispatch.Session, incoming 
 	app.pendingMusic[token] = item
 	app.pendingMu.Unlock()
 
-	markup := &tb.ReplyMarkup{}
-	continueButton := markup.Data("继续下载", duplicateCallbackUnique, "continue", token)
-	cancelButton := markup.Data("取消", duplicateCallbackUnique, "cancel", token)
-	markup.Inline(markup.Row(continueButton, cancelButton))
-	message := fmt.Sprintf(
-		"⚠️ 检测到可能重复的歌曲\n\n歌名：《%s》\n歌手：%s\n专辑：%s\n\n匹配依据：%s\n仍要继续下载吗？",
-		displaySongValue(firstNonEmpty(match.Title, incoming.Title)),
-		displaySongValue(firstNonEmpty(match.Artist, incoming.Artist)),
-		displaySongValue(firstNonEmpty(match.Album, incoming.Album)),
+	message := duplicateConfirmText(
+		firstNonEmpty(match.Title, incoming.Title),
+		firstNonEmpty(match.Artist, incoming.Artist),
+		firstNonEmpty(match.Album, incoming.Album),
 		matchReason(match.MatchedBy),
 	)
-	if _, err := session.Bot.Edit(session.Msg, message, markup); err != nil {
+	if _, err := session.Bot.Edit(session.Msg, utils.EscapeHTML(message), duplicateChoiceMarkup(token), tb.ModeHTML); err != nil {
 		app.pendingMu.Lock()
 		delete(app.pendingMusic, token)
 		app.pendingMu.Unlock()
@@ -272,6 +269,7 @@ func (app *BotApp) HandleDuplicateMusicCallback(c tb.Context) error {
 		Start:                   time.Now(),
 		Cfg:                     pending.cfg,
 		CandidateToken:          pending.candidateToken,
+		AcceptSimilarAudio:      true,
 		CreateMusicActionMarkup: app.musicActionMarkup,
 		SetMusicActionMessages:  app.setMusicActionMessages,
 	}
@@ -311,14 +309,102 @@ func (app *BotApp) purgeExpiredPendingLocked(now time.Time) {
 	}
 }
 
+func (app *BotApp) askSimilarAudio(session *dispatch.Session, track musicdedupe.Track, reservationKey string, reserved *bool) func(error) error {
+	return func(err error) error {
+		var match *audiodupe.LibraryMatch
+		if !errors.As(err, &match) {
+			return err
+		}
+		if askErr := app.askAudioConfirmation(session, track, match, reservationKey); askErr != nil {
+			return askErr
+		}
+		if reserved != nil {
+			*reserved = false
+		}
+		return errDuplicateConfirmationPending
+	}
+}
+
+func (app *BotApp) askAudioConfirmation(session *dispatch.Session, incoming musicdedupe.Track, match *audiodupe.LibraryMatch, reservationKey string) error {
+	token := strings.ReplaceAll(uuid.NewString(), "-", "")
+	item := pendingMusicDownload{
+		userID:         session.User.ID,
+		origin:         session.Msg,
+		link:           session.Link,
+		cfg:            session.Cfg,
+		track:          incoming,
+		reservationKey: reservationKey,
+		candidateToken: session.CandidateToken,
+		expiresAt:      time.Now().Add(duplicateConfirmationTTL),
+	}
+	if session.Context != nil && session.Context.Chat() != nil {
+		item.chatID = session.Context.Chat().ID
+	}
+	app.pendingMu.Lock()
+	app.purgeExpiredPendingLocked(time.Now())
+	app.pendingMusic[token] = item
+	app.pendingMu.Unlock()
+
+	message := match.Error() + "\n\n要再存一份吗？"
+	if _, err := session.Bot.Edit(session.Msg, utils.EscapeHTML(message), duplicateChoiceMarkup(token), tb.ModeHTML); err != nil {
+		app.pendingMu.Lock()
+		delete(app.pendingMusic, token)
+		app.pendingMu.Unlock()
+		return err
+	}
+	return nil
+}
+
+func duplicateChoiceMarkup(token string) *tb.ReplyMarkup {
+	markup := &tb.ReplyMarkup{}
+	markup.Inline(markup.Row(
+		markup.Data("再存一份", duplicateCallbackUnique, "continue", token),
+		markup.Data("取消", duplicateCallbackUnique, "cancel", token),
+	))
+	return markup
+}
+
+func duplicateConfirmText(title, artist, album, reason string) string {
+	var b strings.Builder
+	b.WriteString("可能是同一首歌\n\n")
+	wrote := false
+	for _, line := range []string{cleanCardLine(title), cleanCardLine(artist), cleanCardLine(album)} {
+		if line == "" {
+			continue
+		}
+		if wrote {
+			b.WriteByte('\n')
+		}
+		b.WriteString(line)
+		wrote = true
+	}
+	if !wrote {
+		b.WriteString("一首已入库的歌")
+	}
+	if reason = cleanCardLine(reason); reason != "" {
+		b.WriteString("\n\n")
+		b.WriteString(reason)
+	}
+	b.WriteString("\n\n要再存一份吗？")
+	return b.String()
+}
+
+func cleanCardLine(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "未知" {
+		return ""
+	}
+	return value
+}
+
 func matchReason(reason string) string {
 	switch reason {
 	case "platform_id":
-		return "平台曲目 ID 相同"
+		return "同一条平台曲目"
 	case "url":
-		return "来源 URL 相同"
+		return "同一个链接"
 	default:
-		return "歌手、歌曲名和专辑相同"
+		return "歌名、歌手和专辑一致"
 	}
 }
 

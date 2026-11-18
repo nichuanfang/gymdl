@@ -203,6 +203,7 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 		fmt.Fprintf(&text, "《%s》\n", utils.EscapeHTML(utils.TruncateString(album, 32)))
 	}
 	if fact := rediscoverFactLine(track); fact != "" {
+		text.WriteByte('\n')
 		fmt.Fprintf(&text, "%s\n", fact)
 	}
 	var notes []string
@@ -447,9 +448,9 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 	var text strings.Builder
 	text.WriteString("收藏\n")
 	if app.discovery.Enabled {
-		fmt.Fprintf(&text, "每 %d 分钟看一次新喜欢，有新歌会发一条消息。\n", max(1, int(app.discovery.PollInterval/time.Minute)))
+		fmt.Fprintf(&text, "\n每 %d 分钟看一次新喜欢\n有新歌会发一条消息", max(1, int(app.discovery.PollInterval/time.Minute)))
 	} else {
-		text.WriteString("自动同步还没开。绑定后，新增喜欢不会自动入库。\n")
+		text.WriteString("\n自动同步还没开\n绑定后，新增喜欢不会自动入库")
 	}
 	byPlatform := map[string]discovery.Binding{}
 	for _, binding := range bindings {
@@ -460,7 +461,7 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 		binding, ok := byPlatform[platform]
 		name := aichat.PlatformLabel(platform)
 		if !ok {
-			fmt.Fprintf(&text, "\n%s  未绑定", name)
+			fmt.Fprintf(&text, "\n\n%s\n未绑定", name)
 			appendDiscoveryRows(markup, markup.Row(markup.Data("绑定 "+name, discoveryCallbackUnique, "probe", platform)))
 			continue
 		}
@@ -471,9 +472,9 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 		if !app.discovery.Enabled {
 			state = "已绑定"
 		}
-		fmt.Fprintf(&text, "\n%s  %s", name, state)
+		fmt.Fprintf(&text, "\n\n%s\n%s", name, state)
 		if account := maskedDiscoveryAccount(binding.Account); account != "" {
-			fmt.Fprintf(&text, "  %s", account)
+			fmt.Fprintf(&text, "\n%s", account)
 		}
 		if binding.Error != "" {
 			fmt.Fprintf(&text, "\n%s", utils.TruncateString(binding.Error, 60))
@@ -936,14 +937,14 @@ func discoveryPendingCard(job discovery.Job, index, total int) (string, *tb.Repl
 	if total > 1 {
 		fmt.Fprintf(&text, "%d / %d\n", index+1, total)
 	}
-	text.WriteByte('\n')
+	text.WriteString("\n")
 	fmt.Fprintf(&text, "<b>%s</b>\n", discoveryListenTitle(job.Track.Title, job.Track.URL))
 	if artist := strings.TrimSpace(job.Track.Artist); artist != "" {
 		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
 	}
 	if note := strings.TrimSpace(job.Error); note != "" {
 		text.WriteByte('\n')
-		text.WriteString(utils.EscapeHTML(utils.TruncateString(note, 120)))
+		text.WriteString(utils.EscapeHTML(utils.TruncateString(note, 180)))
 	}
 	markup := &tb.ReplyMarkup{}
 	appendDiscoveryRows(markup, markup.Row(

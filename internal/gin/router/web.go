@@ -82,9 +82,10 @@ func SetupWebRoutesWithTaskManager(rg *gin.RouterGroup, c *config.Config, tm *ta
 	group.POST("/ai/playlists/preview", web.HandleAIPlaylistPreview)
 	group.POST("/ai/playlists/confirm", web.HandleAIPlaylistConfirm)
 
-	// 曲库重复检测只扫描和分组，不删除文件，也不参与下载或找回遗珠判断。
+	// 查重本身不删除。只有选定留下的版本后，才会删同组里勾选的文件。
 	group.GET("/duplicates", web.HandleLibraryDuplicates)
 	group.POST("/duplicates/scan", web.HandleStartLibraryDuplicateScan)
+	group.POST("/duplicates/keep", web.HandleKeepLibraryDuplicate)
 
 	// 文件
 	group.GET("/files", web.HandleListFiles)

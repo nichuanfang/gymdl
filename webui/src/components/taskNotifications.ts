@@ -1,7 +1,9 @@
 export interface TaskEvent {
   id: string
+  url?: string
   status: string
   error?: string
+  audio_confirm?: boolean
   song_info?: Array<{ SongName: string; SongArtists: string }>
 }
 

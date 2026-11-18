@@ -19,8 +19,9 @@ func RunWorkflow(ctx context.Context, p Processor, link string, progress func(st
 // WorkflowHooks keeps the final duplicate check and successful recording inside
 // the same gate as file processing, closing races between manual and auto work.
 type WorkflowHooks struct {
-	Before func() error
-	After  func([]*SongInfo) error
+	Before      func() error
+	BeforeStore func() error
+	After       func([]*SongInfo) error
 }
 
 var ErrWorkflowCommitted = errors.New("文件已整理，需要复核成功记录")
@@ -51,6 +52,11 @@ func RunWorkflowWithHooks(ctx context.Context, p Processor, link string, progres
 		return nil, fmt.Errorf("文件处理失败: %w", err)
 	}
 	progress("开始入库…")
+	if hooks.BeforeStore != nil {
+		if err := hooks.BeforeStore(); err != nil {
+			return nil, err
+		}
+	}
 	if err := p.TidyMusic(); err != nil {
 		return nil, fmt.Errorf("文件入库失败: %w", err)
 	}

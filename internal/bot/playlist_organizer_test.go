@@ -781,7 +781,7 @@ func TestPlaylistAssignmentUsesLegacyWebAppForEachSong(t *testing.T) {
 		song:            unplaylistSong{ID: "song-1", Title: "Song", Artist: "Artist"},
 		webAppButtonURL: "https://webapp.example.com/?data=%7B%7D",
 	}
-	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "归档：待选择") || strings.Contains(text, "打开歌单选择页面") {
+	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "还没选歌单") || strings.Contains(text, "打开歌单选择页面") {
 		t.Fatalf("per-song selection copy = %q", text)
 	}
 	menuMarkup := playlistAssignmentMarkup(menu)
@@ -813,7 +813,7 @@ func TestPlaylistAssignmentUsesLegacyWebAppForEachSong(t *testing.T) {
 	if strings.Join(labels, ",") != "✅ 确认加入,重新选择,跳过本首,结束整理" {
 		t.Fatalf("song controls = %#v", labels)
 	}
-	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "归档到：华语、摇滚") || !strings.Contains(text, "📌 新歌归档") {
+	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "归档到：华语、摇滚") || !strings.Contains(text, "新歌归档") {
 		t.Fatalf("song preview copy = %q", text)
 	}
 
@@ -843,9 +843,10 @@ func TestPlaylistAssignmentMessageIsCompactAndDoesNotRepeatButtonInstructions(t 
 	}
 	message := formatPlaylistAssignment(assignment)
 	for _, expected := range []string{
-		"雨下一整晚",
-		"周杰伦 · 跨时代 · 2010",
-		"归档：待选择",
+		"新歌归档\n\n雨下一整晚",
+		"周杰伦",
+		"跨时代 · 2010",
+		"还没选歌单",
 		"🤖 AI 建议：中文、弦乐",
 		"进度：已确认 2 · 跳过 0",
 	} {
@@ -853,8 +854,8 @@ func TestPlaylistAssignmentMessageIsCompactAndDoesNotRepeatButtonInstructions(t 
 			t.Errorf("message %q does not contain %q", message, expected)
 		}
 	}
-	if strings.Count(message, "\n\n") > 1 || strings.Contains(message, "打开歌单选择页面") || strings.Contains(message, "同歌手歌单：") {
-		t.Fatalf("message contains excessive spacing or repeats the button action: %q", message)
+	if strings.Contains(message, "打开歌单选择页面") || strings.Contains(message, "同歌手歌单：") {
+		t.Fatalf("message repeats the button action: %q", message)
 	}
 }
 

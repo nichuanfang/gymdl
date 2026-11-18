@@ -17,6 +17,7 @@ export interface Task {
   status: TaskStatus
   progress: string
   error?: string
+  audio_confirm?: boolean
   song_info?: SongInfo[]
   created_at: string
   updated_at: string

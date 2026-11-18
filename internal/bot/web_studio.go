@@ -70,6 +70,11 @@ func (s webStudio) Rediscover(ctx context.Context, platform string, limit int) (
 	if err != nil {
 		return web.DiscoveryBatch{}, err
 	}
+	for _, track := range batch.Tracks {
+		if err = s.app.discovery.Store.Preference(ctx, user, track, false); err != nil {
+			return web.DiscoveryBatch{}, err
+		}
+	}
 	tracks := make([]web.DiscoveryTrack, 0, len(batch.Tracks))
 	for _, track := range batch.Tracks {
 		tracks = append(tracks, webDiscoveryTrack(track))
@@ -185,7 +190,17 @@ func (s webStudio) Preview(ctx context.Context, req web.AIPreviewRequest) (web.A
 		presetText = preset.Text
 	}
 	request := mergeAIPlaylistRequest(presetText, req.Request)
-	if request == "" {
+	if seed := strings.TrimSpace(req.Seed); seed != "" {
+		if _, seeded := splitPlaylistSeed(seed); !seeded {
+			seed = "像这首歌 " + seed
+		}
+		if request != "" {
+			request = seed + "\n" + request
+		} else {
+			request = seed
+		}
+	}
+	if strings.TrimSpace(request) == "" {
 		return web.AIPreviewPage{}, errors.New("请写明希望生成的音乐主题")
 	}
 	if len([]rune(request)) > aiPlaylistRequestMaxRunes {

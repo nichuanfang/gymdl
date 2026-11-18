@@ -2,11 +2,13 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"path/filepath"
 	"strings"
 
+	"github.com/nichuanfang/gymdl/internal/audiodupe"
 	"github.com/nichuanfang/gymdl/processor/music"
 	"github.com/nichuanfang/gymdl/utils"
 	tb "gopkg.in/telebot.v4"
@@ -32,6 +34,17 @@ func (s *Session) HandleMusic(p music.Processor) error {
 			return err
 		}
 		return nil
+	}, BeforeStore: func() error {
+		err := reviewSessionAudio(s, p)
+		if err == nil {
+			return nil
+		}
+		var match *audiodupe.LibraryMatch
+		if errors.As(err, &match) && match.Decision == audiodupe.DecisionConfirm && s.AskSimilar != nil {
+			preflightStopped = true
+			return s.AskSimilar(err)
+		}
+		return err
 	}, After: func(songs []*music.SongInfo) error {
 		s.setStoredMusicPaths(songs)
 		if s.OnMusicDownloaded != nil {
@@ -128,6 +141,14 @@ func (s *Session) sendMusicFeedback(p music.Processor) {
 	)
 
 	s.editMusicSuccess(successMsg, songs)
+}
+
+func reviewSessionAudio(s *Session, p music.Processor) error {
+	songs := nonNilMusicSongs(p.Songs())
+	if len(songs) != 1 || strings.TrimSpace(songs[0].MusicPath) == "" {
+		return nil
+	}
+	return audiodupe.ReviewFile(context.Background(), songs[0].MusicPath, float64(songs[0].Duration), s.AcceptSimilarAudio)
 }
 
 func nonNilMusicSongs(songs []*music.SongInfo) []*music.SongInfo {

@@ -61,7 +61,7 @@ func HandleSubmitTask(c *gin.Context) {
 		}
 	}
 
-	t, err := manager.SubmitTask(req.URL)
+	t, err := manager.SubmitTaskWithOptions(req.URL, req.ForceDownload)
 	if err != nil {
 		response.Fail(c, http.StatusBadRequest, err.Error())
 		return

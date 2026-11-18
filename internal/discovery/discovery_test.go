@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/internal/audiodupe"
 )
 
 func testStore(t *testing.T) *Store {
@@ -332,6 +333,212 @@ func TestRecommendRanksEvidenceAndExcludesOwnedShownDismissed(t *testing.T) {
 	}
 }
 
+func TestRediscoverReservesHistoryBesideFavorites(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	favorites := []Track{
+		testTrack("f1", "FavHigh", "FA"),
+		testTrack("f2", "FavMid", "FB"),
+		testTrack("f3", "FavLow", "FC"),
+	}
+	favorites[0].Plays, favorites[1].Plays, favorites[2].Plays = 100, 90, 80
+	if _, _, err := store.Apply(ctx, 1, 1, snapshot("account", favorites...), true); err != nil {
+		t.Fatal(err)
+	}
+	history := []Track{
+		testTrack("h1", "HistHigh", "HA"),
+		testTrack("h2", "HistMid", "HB"),
+		testTrack("h3", "HistLow", "HC"),
+	}
+	history[0].Plays, history[1].Plays, history[2].Plays = 10, 9, 1
+	svc := Service{Store: store, Provider: stubProvider{}, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
+		return history, nil
+	}}
+	batch, err := svc.Rediscover(ctx, 1, "netease", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Tracks) != 3 || batch.Tracks[0].Title != "HistHigh" || batch.Tracks[1].Title != "HistMid" || batch.Tracks[2].Title != "FavHigh" {
+		t.Fatalf("history should take the odd slot: %+v", batch.Tracks)
+	}
+	shortHistory := history[:1]
+	svc.History = func(context.Context) ([]Track, error) { return shortHistory, nil }
+	svc.historyReady = false
+	batch, err = svc.Rediscover(ctx, 1, "netease", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Tracks) != 3 || batch.Tracks[0].Title != "HistHigh" || batch.Tracks[1].Title != "FavHigh" || batch.Tracks[2].Title != "FavMid" {
+		t.Fatalf("short history should be filled from favorites: %+v", batch.Tracks)
+	}
+}
+
+func TestRediscoverHistoryBudgetDoesNotStarveFavorites(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	favorite := testTrack("fav", "仍想听", "收藏歌手")
+	if _, _, err := store.Apply(ctx, 1, 1, snapshot("account", favorite), true); err != nil {
+		t.Fatal(err)
+	}
+	history := make([]Track, 0, 20)
+	for i := 0; i < 20; i++ {
+		history = append(history, testTrack(fmt.Sprintf("h%d", i), fmt.Sprintf("历史%d", i), fmt.Sprintf("歌手%d", i)))
+	}
+	provider := &countingProvider{}
+	provider.resolveOn = func(track Track, platform string) (Track, error) {
+		if strings.HasPrefix(track.Title, "历史") {
+			return Track{}, ErrNoUniqueRecording
+		}
+		track.Platform = platform
+		track.Verified = true
+		return track, nil
+	}
+	svc := Service{Store: store, Provider: provider, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
+		return history, nil
+	}}
+	batch, err := svc.Rediscover(ctx, 1, "netease", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Tracks) != 1 || batch.Tracks[0].Title != "仍想听" {
+		t.Fatalf("favorite was starved: %+v", batch.Tracks)
+	}
+}
+
+func TestRediscoverIgnoresInactiveFavorites(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	gone := testTrack("old", "取消收藏", "甲")
+	kept := testTrack("keep", "仍收藏", "乙")
+	if _, _, err := store.Apply(ctx, 1, 1, snapshot("account", gone, kept), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Apply(ctx, 1, 1, snapshot("account", kept), false); err != nil {
+		t.Fatal(err)
+	}
+	svc := Service{Store: store, Provider: stubProvider{}, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
+		return []Track{testTrack("h", "听过", "丙")}, nil
+	}}
+	batch, err := svc.Rediscover(ctx, 1, "netease", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, track := range batch.Tracks {
+		if track.Title == "取消收藏" {
+			t.Fatalf("unliked song used a history slot: %+v", batch.Tracks)
+		}
+	}
+	if len(batch.Tracks) != 2 || batch.Tracks[0].Title != "听过" || batch.Tracks[1].Title != "仍收藏" {
+		t.Fatalf("batch = %+v", batch.Tracks)
+	}
+}
+
+func TestRelikeAfterCompletedRequeuesOnce(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	oldSong := testTrack("1", "旧歌", "甲")
+	song := testTrack("2", "重喜欢", "乙")
+	if _, _, err := store.Apply(ctx, 1, 1, snapshot("acc", oldSong), true); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, err := store.Apply(ctx, 1, 1, snapshot("acc", oldSong, song), false); err != nil || n != 1 {
+		t.Fatalf("first like n=%d err=%v", n, err)
+	}
+	if _, err := store.db.Exec(`UPDATE discovery_jobs SET state='completed', attempts=4 WHERE user_id=1`); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, err := store.Apply(ctx, 1, 1, snapshot("acc", oldSong), false); err != nil || n != 0 {
+		t.Fatalf("unlike n=%d err=%v", n, err)
+	}
+	n, fresh, err := store.Apply(ctx, 1, 1, snapshot("acc", oldSong, song), false)
+	if err != nil || n != 1 || len(fresh) != 1 || fresh[0].Title != "重喜欢" {
+		t.Fatalf("relike n=%d fresh=%+v err=%v", n, fresh, err)
+	}
+	job := jobByTitle(t, store, "重喜欢")
+	if job.State != Queued || job.Attempts != 0 {
+		t.Fatalf("relike job = %+v", job)
+	}
+	if n, fresh, err = store.Apply(ctx, 1, 1, snapshot("acc", oldSong, song), false); err != nil || n != 0 || len(fresh) != 0 {
+		t.Fatalf("repeat relike n=%d fresh=%+v err=%v", n, fresh, err)
+	}
+	if again := jobByTitle(t, store, "重喜欢"); again.State != Queued || again.ID != job.ID {
+		t.Fatalf("repeat changed the queued job: %+v", again)
+	}
+
+	if _, err := store.db.Exec(`UPDATE discovery_jobs SET state='failed' WHERE id=?`, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Apply(ctx, 1, 1, snapshot("acc", oldSong), false); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, err := store.Apply(ctx, 1, 1, snapshot("acc", oldSong, song), false); err != nil || n != 0 {
+		t.Fatalf("failed job was revived n=%d err=%v", n, err)
+	}
+	if failed := jobByTitle(t, store, "重喜欢"); failed.State != Failed {
+		t.Fatalf("failed job = %+v", failed)
+	}
+
+	if _, err := store.db.Exec(`UPDATE discovery_jobs SET state='completed' WHERE id=?`, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, _, err := store.Apply(ctx, 1, 1, snapshot("acc", oldSong, song), true); err != nil || n != 0 {
+		t.Fatalf("bind requeued n=%d err=%v", n, err)
+	}
+	if bound := jobByTitle(t, store, "重喜欢"); bound.State != Completed {
+		t.Fatalf("bind changed a completed job: %+v", bound)
+	}
+}
+
+func jobByTitle(t *testing.T, store *Store, title string) Job {
+	t.Helper()
+	jobs, err := store.Jobs(context.Background(), 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, job := range jobs {
+		if job.Track.Title == title {
+			return job
+		}
+	}
+	t.Fatalf("missing job %q in %+v", title, jobs)
+	return Job{}
+}
+
+func TestNeteaseRefreshRotatesStoredSongs(t *testing.T) {
+	svc := &Service{}
+	ids := make([]string, 25)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%02d", i+1)
+	}
+	first := svc.neteaseRefreshIDs("9", ids)
+	second := svc.neteaseRefreshIDs("9", ids)
+	if len(first) != 20 || first[0] != "01" || first[19] != "20" {
+		t.Fatalf("first window = %#v", first)
+	}
+	if len(second) != 20 || second[0] != "21" || second[4] != "25" || second[5] != "01" {
+		t.Fatalf("second window = %#v", second)
+	}
+}
+
+func TestAcceptPlatformHitIgnoresAlbumTitleWhenVersionAndDurationMatch(t *testing.T) {
+	source := Track{Title: "晴天", Artist: "周杰伦", Album: "叶惠美", Duration: 269}
+	otherAlbum := Track{Title: "晴天", Artist: "周杰伦", Album: "November's Chopin", Duration: 270, Verified: true}
+	if !acceptPlatformHit(source, otherAlbum) {
+		t.Fatal("a different album title should still match")
+	}
+	live := otherAlbum
+	live.Album = "The Era Tour (Live)"
+	live.Duration = 269
+	if acceptPlatformHit(source, live) {
+		t.Fatal("a live album is a different version")
+	}
+	far := otherAlbum
+	far.Duration = 320
+	if acceptPlatformHit(source, far) {
+		t.Fatal("duration must stay strict")
+	}
+}
+
 func TestRediscoverCountsVersionsThePlatformCannotConfirm(t *testing.T) {
 	s := testStore(t)
 	tracks := []Track{
@@ -609,6 +816,53 @@ func TestWorkerProcessorPanicBecomesVisibleFailure(t *testing.T) {
 	jobs, _ := s.Jobs(ctx, 1, false)
 	if len(jobs) != 1 || jobs[0].State != Failed || jobs[0].Error == "" {
 		t.Fatal("panic left a stuck running task")
+	}
+}
+
+type resolveCounter struct {
+	stubProvider
+	n *int
+}
+
+func (p resolveCounter) Resolve(ctx context.Context, track Track, exclude string) (Track, error) {
+	*p.n++
+	return p.stubProvider.Resolve(ctx, track, exclude)
+}
+
+func TestAudioMatchStopsBeforeAnotherPlatform(t *testing.T) {
+	for _, tc := range []struct {
+		decision audiodupe.Decision
+		want     string
+	}{
+		{audiodupe.DecisionSkip, Owned},
+		{audiodupe.DecisionConfirm, NeedsConfirmation},
+	} {
+		t.Run(string(tc.decision), func(t *testing.T) {
+			s := testStore(t)
+			ctx := context.Background()
+			s.Enqueue(ctx, 1, 1, testTrack("1", "Song", "Artist"))
+			resolves := 0
+			alt := testTrack("q", "Song", "Artist")
+			alt.Platform = "qq"
+			svc := Service{
+				Store:    s,
+				Provider: resolveCounter{stubProvider: stubProvider{alternate: alt}, n: &resolves},
+				Library:  stubLibrary{},
+				Download: func(context.Context, Track) (DownloadResult, error) {
+					return DownloadResult{}, &audiodupe.LibraryMatch{Path: "lib/song.flac", Similarity: 0.97, Decision: tc.decision}
+				},
+			}
+			if err := svc.ProcessOne(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if resolves != 0 {
+				t.Fatal("tried another platform", resolves)
+			}
+			jobs, err := s.Jobs(ctx, 1, false)
+			if err != nil || len(jobs) != 1 || jobs[0].State != tc.want || !strings.Contains(jobs[0].Error, "song.flac") {
+				t.Fatal(jobs, err)
+			}
+		})
 	}
 }
 

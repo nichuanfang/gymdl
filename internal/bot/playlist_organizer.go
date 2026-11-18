@@ -1696,8 +1696,7 @@ func formatPlaylistNameList(names []string) string {
 func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 	var text strings.Builder
 	if assignment.song.ID == "" {
-		text.WriteString("📌 新歌归档")
-		text.WriteString("\n──────────────────")
+		text.WriteString("新歌归档\n")
 		if assignment.statusNote != "" {
 			text.WriteString("\n")
 			text.WriteString(assignment.statusNote)
@@ -1706,25 +1705,25 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 		}
 		return text.String()
 	}
-	text.WriteString("📌 新歌归档")
-	text.WriteString("\n──────────────────\n")
+	text.WriteString("新歌归档\n\n")
 	text.WriteString(displaySongValue(assignment.song.Title))
 	text.WriteString("\n")
 	text.WriteString(displaySongValue(assignment.song.Artist))
-	if album := strings.TrimSpace(assignment.song.Album); album != "" {
-		text.WriteString(" · ")
-		text.WriteString(displaySongValue(album))
-	}
-	if assignment.song.Year > 0 {
-		fmt.Fprintf(&text, " · %d", assignment.song.Year)
+	album := strings.TrimSpace(assignment.song.Album)
+	if album != "" && assignment.song.Year > 0 {
+		fmt.Fprintf(&text, "\n%s · %d", displaySongValue(album), assignment.song.Year)
+	} else if album != "" {
+		fmt.Fprintf(&text, "\n%s", displaySongValue(album))
+	} else if assignment.song.Year > 0 {
+		fmt.Fprintf(&text, "\n%d", assignment.song.Year)
 	}
 	if assignment.selectionComplete {
-		fmt.Fprintf(&text, "\n归档到：%s", formatPlaylistNameList(assignment.selectedPlaylists))
+		fmt.Fprintf(&text, "\n\n归档到：%s", formatPlaylistNameList(assignment.selectedPlaylists))
 	} else {
-		text.WriteString("\n归档：待选择")
+		text.WriteString("\n\n还没选歌单")
 	}
 	if assignment.processedCount > 0 || assignment.skippedCount > 0 {
-		fmt.Fprintf(&text, "\n进度：已确认 %d · 跳过 %d", assignment.processedCount, assignment.skippedCount)
+		fmt.Fprintf(&text, "\n\n进度：已确认 %d · 跳过 %d", assignment.processedCount, assignment.skippedCount)
 	}
 	status := app.playlistAssignmentStatus(assignment)
 	if status != "" {

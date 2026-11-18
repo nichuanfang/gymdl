@@ -678,6 +678,54 @@ func parseSingleRange(header string, size int64) (int64, int64, error) {
 	return start, end, nil
 }
 
+func removeLibraryAudio(cfg *config.Config, relPath string) error {
+	if cfg == nil || cfg.Tidy == nil {
+		return errors.New("整理目录还没准备好")
+	}
+	relPath = strings.TrimSpace(relPath)
+	if relPath == "" || relPath == "/" || relPath == "." || !audioExtension(relPath) {
+		return errors.New("只能删除音频文件")
+	}
+	if cfg.Tidy.Mode == 2 {
+		if core.GlobalWebDAV == nil || core.GlobalWebDAV.Client == nil {
+			return errors.New("WebDAV 未初始化")
+		}
+		remotePath, err := remoteSafePath(webDAVDirectory(cfg), relPath)
+		remoteRoot, _ := remoteSafePath(webDAVDirectory(cfg), "/")
+		if err != nil || remotePath == "/" || remotePath == remoteRoot {
+			return errors.New("非法路径")
+		}
+		info, err := core.GlobalWebDAV.Client.Stat(remotePath)
+		if err != nil {
+			return errors.New("文件不存在")
+		}
+		if info.IsDir() {
+			return errors.New("不能删除目录")
+		}
+		if err := core.GlobalWebDAV.Client.Remove(remotePath); err != nil {
+			return errors.New("删除文件失败")
+		}
+		invalidateWebDAVFileIndexes()
+		return nil
+	}
+	fullPath, err := localSafePath(cfg.Tidy.DistDir, relPath)
+	if err != nil {
+		return errors.New("非法路径")
+	}
+	root, _ := filepath.Abs(cfg.Tidy.DistDir)
+	if fullPath == root {
+		return errors.New("不能删除根目录")
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return errors.New("文件不存在")
+	}
+	if info.IsDir() {
+		return errors.New("不能删除目录")
+	}
+	return os.Remove(fullPath)
+}
+
 func HandleDeleteFile(c *gin.Context) {
 	cfg := GetWebConfig()
 	if cfg == nil || cfg.Tidy == nil {

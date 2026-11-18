@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/nichuanfang/gymdl/internal/storage"
@@ -49,6 +50,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_audio_fingerprints_duration ON audio_fingerprints(duration)`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
@@ -57,6 +62,65 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+func (s *Store) HasAny(ctx context.Context) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("指纹库不可用")
+	}
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM audio_fingerprints LIMIT 1`).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) HasDuration(ctx context.Context, lo, hi float64) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("指纹库不可用")
+	}
+	if hi <= 0 {
+		return false, nil
+	}
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM audio_fingerprints WHERE duration >= ? AND duration <= ? LIMIT 1`, lo, hi).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ListDuration loads only fingerprints whose length can still be the same recording.
+func (s *Store) ListDuration(ctx context.Context, lo, hi float64, excludePath string) ([]Track, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("指纹库不可用")
+	}
+	if hi <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT path, duration, items FROM audio_fingerprints WHERE duration >= ? AND duration <= ? AND path <> ?`, lo, hi, excludePath)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tracks []Track
+	for rows.Next() {
+		var track Track
+		var blob []byte
+		if err = rows.Scan(&track.Path, &track.Fingerprint.Duration, &blob); err != nil {
+			return nil, err
+		}
+		track.Fingerprint.Items = decodeItems(blob)
+		tracks = append(tracks, track)
+	}
+	return tracks, rows.Err()
 }
 
 func (s *Store) LoadFingerprint(ctx context.Context, path string, size, modUnix int64) (Fingerprint, bool, error) {
@@ -70,6 +134,14 @@ func (s *Store) LoadFingerprint(ctx context.Context, path string, size, modUnix 
 		return Fingerprint{}, false, err
 	}
 	return Fingerprint{Duration: duration, Items: decodeItems(blob)}, true, nil
+}
+
+func (s *Store) DeleteFingerprint(ctx context.Context, path string) error {
+	if s == nil || s.db == nil {
+		return errors.New("指纹库不可用")
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM audio_fingerprints WHERE path=?`, path)
+	return err
 }
 
 func (s *Store) SaveFingerprint(ctx context.Context, path string, size, modUnix int64, fp Fingerprint) error {

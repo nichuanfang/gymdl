@@ -2,7 +2,7 @@ import { h } from 'vue'
 import { useDialog } from 'naive-ui'
 import { submitTask } from '../api'
 import type { ApiResponse } from '../api/http'
-import type { TaskSubmitResponse } from '../api'
+import type { DuplicateCheckResult, TaskSubmitResponse } from '../api'
 
 export function useTaskSubmission() {
   const dialog = useDialog()
@@ -13,14 +13,9 @@ export function useTaskSubmission() {
     if (response.code !== 409 || !confirmation?.confirmation_required || !confirmation.duplicate) return response
 
     const result = confirmation.duplicate
-    const title = result.status === 'duplicate' ? '发现重复歌曲' : '暂时无法确认是否重复'
-    const detail = result.status === 'duplicate'
-      ? `已存在文件：${result.match?.path || result.match?.name || '整理目录中的音频'}\n歌曲名、歌手、专辑名和格式均一致。`
-      : result.reason || '重复检查暂不可用。继续下载可能会产生重复文件。'
-    const target = result.target
-    const targetDetail = target
-      ? `\n\n本次下载：${target.name} / ${target.artist} / ${target.album} · ${target.ext}`
-      : ''
+    const duplicate = result.status === 'duplicate'
+    const title = duplicate ? '可能是同一首歌' : '还没法确定'
+    const detail = duplicate ? duplicateCard(result) : `${result.reason || '这次没能核对曲库'}\n\n仍要下载吗？`
     const confirmed = await new Promise<boolean>((resolve) => {
       let settled = false
       const finish = (value: boolean) => {
@@ -30,8 +25,8 @@ export function useTaskSubmission() {
       }
       dialog.warning({
         title,
-        content: () => h('div', { style: 'white-space: pre-line; line-height: 1.7' }, detail + targetDetail),
-        positiveText: '仍然下载',
+        content: () => h('div', { style: 'white-space: pre-line; line-height: 1.8; max-width: 28em' }, detail),
+        positiveText: duplicate ? '再存一份' : '仍然下载',
         negativeText: '取消',
         maskClosable: false,
         closeOnEsc: true,
@@ -47,4 +42,15 @@ export function useTaskSubmission() {
   }
 
   return { submitWithDuplicateConfirmation }
+}
+
+function duplicateCard(result: DuplicateCheckResult): string {
+  const lines = [result.match?.name || result.match?.path || '一首已入库的歌']
+  if (result.target?.name) {
+    lines.push('', result.target.name)
+  }
+  if (result.target?.artist) lines.push(result.target.artist)
+  if (result.target?.album) lines.push(result.target.album)
+  lines.push('', '歌名、歌手、专辑和格式一致', '', '要再存一份吗？')
+  return lines.join('\n')
 }

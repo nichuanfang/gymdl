@@ -424,6 +424,13 @@ func (p *Providers) Enrich(ctx context.Context, t Track) (Track, bool, error) {
 	return t, false, nil
 }
 
+// acceptPlatformHit reports that a store result is the recording we searched for.
+// Album titles often disagree between Last.fm and the download platform.
+// Edition markers and duration still have to agree.
+func acceptPlatformHit(source, hit Track) bool {
+	return SameRecording(source, hit)
+}
+
 // Resolve returns a unique matching recording from real provider results.
 // An explicit source URL is preserved; searches never invent links or editions.
 var ErrAmbiguousRecording = errors.New("跨平台存在多个可能版本，需要确认")
@@ -481,10 +488,7 @@ func (p *Providers) matchOnPlatform(ctx context.Context, t Track, platform strin
 	matches := map[string]Track{}
 	for _, h := range hits {
 		other := fromSearch(h.SearchResultItem)
-		if !SameRecording(t, other) {
-			continue
-		}
-		if t.Album != "" && Normalize(t.Album) != Normalize(other.Album) {
+		if !acceptPlatformHit(t, other) {
 			continue
 		}
 		matches[other.ID] = other

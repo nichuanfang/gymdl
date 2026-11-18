@@ -130,8 +130,9 @@ type AIPlaylistConfig struct {
 	EmbeddingModel    string `yaml:"embedding_model"`    // Must match the model used to populate the index
 	QueryModel        string `yaml:"query_model"`        // Optional intent extraction model; defaults to ai.model
 	PlaylistModel     string `yaml:"playlist_model"`     // Optional playlist planning model; defaults to ai.model
-	PlaylistSize      int    `yaml:"playlist_size"`      // Desired number of songs per generated playlist
-	CandidateCount    int    `yaml:"candidate_count"`    // Maximum Pinecone candidates to rank
+	PlaylistSize      int     `yaml:"playlist_size"`      // Desired number of songs per generated playlist
+	CandidateCount    int     `yaml:"candidate_count"`    // Maximum Pinecone candidates to rank
+	MinScore          float64 `yaml:"min_score"`          // Lowest Pinecone cosine similarity kept as a candidate
 }
 
 // MCPServerConfig 定义一个可选的MCP服务。AllowedTools为空时不会暴露任何工具。

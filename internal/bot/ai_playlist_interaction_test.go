@@ -166,6 +166,59 @@ func TestAIPlaylistNewFlowAsksNameBeforeThemeAndKeepsPreviewNonMutating(t *testi
 	}
 }
 
+func TestAIPlaylistSeedButtonKeepsTheNextLineAsASong(t *testing.T) {
+	app := &BotApp{}
+	message := &tb.Message{ID: 7, Chat: &tb.Chat{ID: 10}}
+	if !app.registerAIPlaylistSession(pendingAIPlaylistSession{
+		token: "token", userID: 20, chatID: 10, message: message,
+		target:    aiPlaylist{ID: "playlist-1", Name: "[AI] 夜间"},
+		expiresAt: time.Now().Add(time.Minute),
+	}) {
+		t.Fatal("failed to register session")
+	}
+	ctx := &aiPlaylistInteractionTestContext{
+		args: []string{"seed", "token"}, sender: &tb.User{ID: 20},
+		callback: &tb.Callback{Message: message}, chat: message.Chat,
+	}
+	if err := app.HandleAIPlaylistCallback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	session, ok := app.getAIPlaylistSession("token")
+	if !ok || !session.awaitingSeed || !session.awaitingInput || !strings.Contains(session.notice, "晴天 - 周杰伦") {
+		t.Fatalf("seed prompt = %#v", session)
+	}
+	if got := composeAIPlaylistFollowup(session, "晴天"); got != "像这首歌 晴天" {
+		t.Fatalf("plain title = %q", got)
+	}
+	if got := composeAIPlaylistFollowup(session, "像这首歌 晴天 - 周杰伦"); got != "像这首歌 晴天 - 周杰伦" {
+		t.Fatalf("prefixed title = %q", got)
+	}
+	session.request = "适合通勤"
+	if got := composeAIPlaylistFollowup(session, "晴天 - 周杰伦"); got != "像这首歌 晴天 - 周杰伦\n适合通勤" {
+		t.Fatalf("kept theme = %q", got)
+	}
+	session.draft = &aiPlaylistDraft{Description: "seed", Plan: aiPlaylistPlan{Playlist: []aiPlaylistPlanItem{{ID: "song-near"}}}}
+	session.awaitingSeed = true
+	app.updateAIPlaylistSession(session)
+	updated, ok := app.setAIPlaylistAwaitingInput("token", true, "请补充")
+	if !ok || updated.awaitingSeed {
+		t.Fatalf("refine should leave seed mode: %#v", updated)
+	}
+	markup := aiPlaylistSessionMarkup(pendingAIPlaylistSession{token: strings.Repeat("a", 32), target: aiPlaylist{ID: "playlist", Name: "[AI] 夜间"}})
+	assertTelegramButtons(t, markup)
+	found := false
+	for _, row := range markup.InlineKeyboard {
+		for _, button := range row {
+			if button.Text == "像这首歌" && strings.Contains(button.Data, "seed|") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("seed button missing")
+	}
+}
+
 func TestAIPlaylistPresetCallbacksFitTelegramLimit(t *testing.T) {
 	markup := aiPlaylistSessionMarkup(pendingAIPlaylistSession{
 		token:  strings.Repeat("a", 32),
@@ -294,7 +347,7 @@ func TestAIPlaylistMessageUsesPlainTextHouseStyle(t *testing.T) {
 		},
 	}
 	message := formatAIPlaylistSession(session)
-	for _, expected := range []string{"🤖 AI 智能歌单预览", "──────────────────", "🎵 歌单：[AI] <夜间>", "<Song> - A & B", "贴合安静氛围"} {
+	for _, expected := range []string{"歌单预览", "[AI] <夜间>", "<Song>", "A & B", "贴合安静氛围"} {
 		if !strings.Contains(message, expected) {
 			t.Errorf("message %q does not contain %q", message, expected)
 		}
@@ -380,7 +433,7 @@ func TestAIPlaylistPendingWriteShowsOnlyContinueAndCancel(t *testing.T) {
 	if strings.Join(labels, ",") != "↻ 继续写入,取消" {
 		t.Fatalf("pending write controls = %#v", labels)
 	}
-	if message := formatAIPlaylistSession(session); !strings.Contains(message, "AI 智能歌单续写") || strings.Contains(message, "旧预览") {
+	if message := formatAIPlaylistSession(session); !strings.Contains(message, "继续写入") || strings.Contains(message, "旧预览") {
 		t.Fatalf("pending write should not show a stale preview: %q", message)
 	}
 }

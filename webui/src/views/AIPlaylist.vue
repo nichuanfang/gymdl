@@ -32,11 +32,12 @@
           @click="togglePreset(preset.id)"
         >{{ preset.label }}</button>
       </div>
+      <n-input v-model:value="seedText" placeholder="按某首歌找相似，例如：晴天 - 周杰伦" class="field" />
       <n-input
         v-model:value="requestText"
         type="textarea"
         :autosize="{ minRows: 2, maxRows: 5 }"
-        placeholder="补充想听的主题。只选上面的氛围也可以。"
+        placeholder="补充想听的主题。只选上面的氛围，或只填一首种子歌也可以。"
       />
       <div class="form-actions">
         <n-button type="primary" :loading="previewing" :disabled="confirming" @click="preview">生成预览</n-button>
@@ -89,6 +90,7 @@ const playlistId = ref<string | null>(null)
 const newName = ref('')
 const selectedPreset = ref('')
 const requestText = ref('')
+const seedText = ref('')
 const previewPage = ref<AIPreviewPage | null>(null)
 let skipActivate = true
 
@@ -121,8 +123,8 @@ async function load() {
 
 async function preview() {
   const body = mode.value === 'existing'
-    ? { playlist_id: playlistId.value || '', name: '', request: requestText.value, preset: selectedPreset.value }
-    : { playlist_id: '', name: newName.value, request: requestText.value, preset: selectedPreset.value }
+    ? { playlist_id: playlistId.value || '', name: '', request: requestText.value, preset: selectedPreset.value, seed: seedText.value }
+    : { playlist_id: '', name: newName.value, request: requestText.value, preset: selectedPreset.value, seed: seedText.value }
   if (mode.value === 'existing' && !body.playlist_id) {
     message.warning('请选择已有歌单，或改成新建')
     return
@@ -131,8 +133,8 @@ async function preview() {
     message.warning('请填写新歌单名称')
     return
   }
-  if (!selectedPreset.value && !requestText.value.trim()) {
-    message.warning('请选择氛围，或写明主题')
+  if (!selectedPreset.value && !requestText.value.trim() && !seedText.value.trim()) {
+    message.warning('请选择氛围，写明主题，或填一首种子歌')
     return
   }
   previewing.value = true

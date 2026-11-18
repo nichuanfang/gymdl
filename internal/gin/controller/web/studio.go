@@ -75,6 +75,7 @@ type AIPreviewRequest struct {
 	Name       string `json:"name"`
 	Request    string `json:"request"`
 	Preset     string `json:"preset"`
+	Seed       string `json:"seed"`
 }
 
 type AIPreviewSong struct {

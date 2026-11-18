@@ -59,6 +59,23 @@ func TestStoreImportKeepsExistingStatusAndListsOnlyPending(t *testing.T) {
 	}
 }
 
+func TestReadyListsOnlySuccessfulRows(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	rows := []Song{
+		{MusicID: "done", Title: "晴天", Artist: "周杰伦", Status: StatusReady},
+		{MusicID: "wait", Title: "晴天", Artist: "周杰伦", Status: StatusPending},
+		{MusicID: "failed", Title: "晴天", Artist: "周杰伦", Status: StatusFailed},
+	}
+	if _, err := store.Import(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := store.Ready(ctx)
+	if err != nil || len(ready) != 1 || ready[0].MusicID != "done" {
+		t.Fatalf("ready = %#v, %v", ready, err)
+	}
+}
+
 func TestStoreRejectsUnsafeIDs(t *testing.T) {
 	store := openTestStore(t)
 	if err := store.Enqueue(context.Background(), Song{MusicID: "bad id"}); err == nil {

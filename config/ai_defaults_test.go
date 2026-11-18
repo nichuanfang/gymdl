@@ -26,7 +26,7 @@ func TestAISetDefaultsFillsAgentFields(t *testing.T) {
 	if c.Lastfm == nil || c.Lastfm.Enable || c.Lastfm.Username != "" || c.Lastfm.APIKey != "" || c.AI.HistoryWriteDSN != "" {
 		t.Fatalf("Last.fm writer must stay opt-in: lastfm=%#v write=%q", c.Lastfm, c.AI.HistoryWriteDSN)
 	}
-	if c.AIPlaylist == nil || c.AIPlaylist.PineconeNamespace != "data-music" || c.AIPlaylist.EmbeddingModel != "text-embedding-3-small" || c.AIPlaylist.PlaylistSize != 80 || c.AIPlaylist.CandidateCount != 150 {
+	if c.AIPlaylist == nil || c.AIPlaylist.PineconeNamespace != "data-music" || c.AIPlaylist.EmbeddingModel != "text-embedding-3-small" || c.AIPlaylist.PlaylistSize != 80 || c.AIPlaylist.CandidateCount != 150 || c.AIPlaylist.MinScore != 0.35 {
 		t.Fatalf("unexpected AI playlist defaults: %#v", c.AIPlaylist)
 	}
 }
@@ -64,7 +64,7 @@ func TestAIPlaylistSetDefaultsPreservesSecretsAndFillsLimits(t *testing.T) {
 	if c.AIPlaylist.PineconeHost != "https://index.example" || c.AIPlaylist.PineconeAPIKey != "configured-secret" || c.AIPlaylist.PlaylistSize != 40 {
 		t.Fatalf("explicit AI playlist values overwritten: %#v", c.AIPlaylist)
 	}
-	if c.AIPlaylist.PineconeNamespace != "data-music" || c.AIPlaylist.EmbeddingModel != "text-embedding-3-small" || c.AIPlaylist.CandidateCount != 150 {
+	if c.AIPlaylist.PineconeNamespace != "data-music" || c.AIPlaylist.EmbeddingModel != "text-embedding-3-small" || c.AIPlaylist.CandidateCount != 150 || c.AIPlaylist.MinScore != 0.35 {
 		t.Fatalf("missing AI playlist defaults not filled: %#v", c.AIPlaylist)
 	}
 }

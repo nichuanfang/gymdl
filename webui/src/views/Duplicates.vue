@@ -8,7 +8,7 @@
       </template>
     </PageHeading>
 
-    <n-alert type="info" :show-icon="false">只扫描、只分组，不删除文件，也不改变入库和找回遗珠的判断。</n-alert>
+    <n-alert type="info" :show-icon="false">查重只分组。选定留下的版本后，才会删掉同组里勾选的文件，并清掉曲库记录和向量。</n-alert>
     <n-alert v-if="error" type="error" :show-icon="false">{{ error }}</n-alert>
 
     <n-card size="small" :bordered="false" class="studio-card">
@@ -30,13 +30,25 @@
       </header>
       <ul>
         <li v-for="track in group.tracks" :key="track.path">
+          <label class="choice">
+            <input type="radio" :name="groupKey(group, index)" :value="track.path" :checked="keepOf[groupKey(group, index)] === track.path" @change="chooseKeep(group, index, track.path)" />
+            留下
+          </label>
           <div>
             <strong>{{ track.name || track.path }}</strong>
             <p>{{ track.path }}</p>
           </div>
+          <label v-if="keepOf[groupKey(group, index)] !== track.path" class="choice">
+            <input type="checkbox" :checked="isRemoved(group, index, track.path)" @change="toggleRemove(group, index, track.path)" />
+            删除
+          </label>
           <a :href="streamUrl(track.path)" target="_blank" rel="noopener noreferrer">试听</a>
         </li>
       </ul>
+      <p v-if="group.kind !== 'same'" class="studio-help">这组只是听感接近。要删哪一版，需要你自己勾。</p>
+      <n-button size="small" type="primary" :disabled="running || applying || !canApply(group, index)" :loading="applying" @click="apply(group, index)">
+        留下所选
+      </n-button>
     </article>
 
     <n-empty v-if="!running && report.status === 'done' && !report.groups.length" description="这次没有发现重复或相似的歌曲" />
@@ -45,15 +57,20 @@
 
 <script setup lang="ts">
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
-import { NAlert, NButton, NCard, NEmpty, NTag, useMessage } from 'naive-ui'
+import { h } from 'vue'
+import { NAlert, NButton, NCard, NEmpty, NTag, useDialog, useMessage } from 'naive-ui'
 import PageHeading from '../components/PageHeading.vue'
-import { getFileStreamUrl, getLibraryDuplicates, startLibraryDuplicateScan, type LibraryDuplicateReport } from '../api'
+import { getFileStreamUrl, getLibraryDuplicates, keepLibraryDuplicate, startLibraryDuplicateScan, type LibraryDuplicateGroup, type LibraryDuplicateReport } from '../api'
 
 defineOptions({ name: 'Duplicates' })
 
 const message = useMessage()
+const dialog = useDialog()
 const starting = ref(false)
+const applying = ref(false)
 const error = ref('')
+const keepOf = ref<Record<string, string>>({})
+const removeOf = ref<Record<string, string[]>>({})
 const report = ref<LibraryDuplicateReport>({ status: 'idle', scanned: 0, total: 0, skipped: 0, groups: [] })
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let disposed = false
@@ -71,6 +88,74 @@ const statusText = computed(() => {
   return '还没有查过这套曲库'
 })
 
+function groupKey(group: LibraryDuplicateGroup, index: number) {
+  return `${group.kind}-${index}-${(group.tracks || []).map((track) => track.path).join('|')}`
+}
+function chooseKeep(group: LibraryDuplicateGroup, index: number, path: string) {
+  const key = groupKey(group, index)
+  keepOf.value = { ...keepOf.value, [key]: path }
+  removeOf.value = { ...removeOf.value, [key]: (removeOf.value[key] || []).filter((item) => item !== path) }
+}
+function isRemoved(group: LibraryDuplicateGroup, index: number, path: string) {
+  return (removeOf.value[groupKey(group, index)] || []).includes(path)
+}
+function toggleRemove(group: LibraryDuplicateGroup, index: number, path: string) {
+  const key = groupKey(group, index)
+  const current = removeOf.value[key] || []
+  const next = current.includes(path) ? current.filter((item) => item !== path) : [...current, path]
+  removeOf.value = { ...removeOf.value, [key]: next }
+}
+function canApply(group: LibraryDuplicateGroup, index: number) {
+  const key = groupKey(group, index)
+  const keep = keepOf.value[key]
+  const remove = (removeOf.value[key] || []).filter((path) => path && path !== keep)
+  return Boolean(keep && remove.length)
+}
+function seedChoices(next: LibraryDuplicateReport) {
+  const keep: Record<string, string> = {}
+  const remove: Record<string, string[]> = {}
+  for (const [index, group] of (next.groups || []).entries()) {
+    const key = groupKey(group, index)
+    const paths = (group.tracks || []).map((track) => track.path).filter(Boolean)
+    if (!paths.length) continue
+    keep[key] = keepOf.value[key] && paths.includes(keepOf.value[key]) ? keepOf.value[key] : paths[0]
+    const previous = (removeOf.value[key] || []).filter((path) => path !== keep[key] && paths.includes(path))
+    remove[key] = previous.length || group.kind !== 'same' ? previous : paths.filter((path) => path !== keep[key])
+  }
+  keepOf.value = keep
+  removeOf.value = remove
+}
+function apply(group: LibraryDuplicateGroup, index: number) {
+  const key = groupKey(group, index)
+  const keep = keepOf.value[key]
+  const remove = (removeOf.value[key] || []).filter((path) => path && path !== keep)
+  if (!keep || !remove.length || applying.value) return
+  const names = remove.map((path) => path.split('/').pop() || path).join('\n')
+  dialog.warning({
+    title: '留下这一版',
+    content: () => h('div', { style: 'white-space: pre-line; line-height: 1.8' }, `留下\n${keep.split('/').pop() || keep}\n\n删除\n${names}\n\n曲库记录和向量会一起清掉。`),
+    positiveText: '删除勾选的版本',
+    negativeText: '取消',
+    maskClosable: false,
+    onPositiveClick: () => { void commitKeep(keep, remove) },
+  })
+}
+async function commitKeep(keep: string, remove: string[]) {
+  applying.value = true
+  error.value = ''
+  try {
+    const response = await keepLibraryDuplicate(keep, remove)
+    if (response.code !== 200) throw new Error(response.message || '没有删成')
+    message.success('已留下所选版本')
+    await refresh()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '没有删成'
+    message.error(error.value)
+    await refresh()
+  } finally {
+    applying.value = false
+  }
+}
 function streamUrl(path: string) {
   return getFileStreamUrl(path)
 }
@@ -93,6 +178,7 @@ async function refresh() {
     const response = await getLibraryDuplicates()
     if (response.code !== 200 || !response.data) throw new Error(response.message || '读取查重结果失败')
     report.value = { ...response.data, groups: response.data.groups || [] }
+    seedChoices(report.value)
     error.value = report.value.status === 'error' ? (report.value.error || '查重没有完成') : ''
   } catch (err) {
     error.value = err instanceof Error ? err.message : '读取查重结果失败'
@@ -109,6 +195,7 @@ async function scan() {
     const response = await startLibraryDuplicateScan()
     if (response.code === 200 && response.data) {
       report.value = { ...response.data, groups: response.data.groups || [] }
+      seedChoices(report.value)
       schedule()
       return
     }
@@ -163,6 +250,8 @@ onUnmounted(() => {
 .group-card strong { display: block; }
 .group-card p { margin: 3px 0 0; overflow-wrap: anywhere; }
 .group-card a { color: #63e2b7; text-decoration: none; flex-shrink: 0; }
+.group-card .n-button { margin-top: 12px; }
+.choice { display: flex; align-items: center; gap: 6px; color: #d5e4de; font-size: 13px; flex-shrink: 0; }
 @media (max-width: 700px) {
   .group-card li { align-items: flex-start; }
 }

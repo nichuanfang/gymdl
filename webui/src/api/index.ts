@@ -156,7 +156,7 @@ export interface AIConfirmPage {
 }
 
 export const listAIPlaylists = () => get<AIPlaylistPage>('/ai/playlists')
-export const previewAIPlaylist = (body: { playlist_id?: string; name?: string; request: string; preset: string }) =>
+export const previewAIPlaylist = (body: { playlist_id?: string; name?: string; request: string; preset: string; seed?: string }) =>
   post<AIPreviewPage>('/ai/playlists/preview', body)
 export const confirmAIPlaylist = (token: string) => post<AIConfirmPage>('/ai/playlists/confirm', { token })
 
@@ -185,3 +185,4 @@ export interface LibraryDuplicateReport {
 
 export const getLibraryDuplicates = () => get<LibraryDuplicateReport>('/duplicates')
 export const startLibraryDuplicateScan = () => post<LibraryDuplicateReport>('/duplicates/scan')
+export const keepLibraryDuplicate = (keep: string, remove: string[]) => post<{ kept: string; removed: string[] }>('/duplicates/keep', { keep, remove })

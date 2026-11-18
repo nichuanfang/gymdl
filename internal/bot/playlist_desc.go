@@ -303,11 +303,11 @@ func formatPlaylistDesc(session pendingPlaylistDesc, notice string) (string, *tb
 	var text strings.Builder
 	text.WriteString("歌单描述")
 	if notice != "" {
-		text.WriteString("\n")
+		text.WriteString("\n\n")
 		text.WriteString(notice)
 	}
 	if !session.synced {
-		text.WriteString("\n还没同步。同步后，Navidrome 里的新歌单会出现在这里。原来 yaml 里的描述会留给同名新歌单。")
+		text.WriteString("\n\n还没同步\n同步后，新歌单会出现在这里")
 		markup.Inline(
 			markup.Row(markup.Data("↻ 同步歌单", playlistDescCallbackUnique, "sync", session.token)),
 			markup.Row(markup.Data("✕ 取消", playlistDescCallbackUnique, "cancel", session.token)),
@@ -316,20 +316,20 @@ func formatPlaylistDesc(session pendingPlaylistDesc, notice string) (string, *tb
 	}
 	if session.editingID != "" {
 		current := playlistByID(session.playlists, session.editingID)
-		fmt.Fprintf(&text, "\n%s", utils.TruncateString(current.Name, 40))
+		fmt.Fprintf(&text, "\n\n%s", utils.TruncateString(current.Name, 40))
 		if strings.TrimSpace(current.Desc) == "" {
-			text.WriteString("\n当前还没有描述。")
+			text.WriteString("\n\n还没有描述")
 		} else {
-			fmt.Fprintf(&text, "\n当前：%s", utils.TruncateString(current.Desc, 180))
+			fmt.Fprintf(&text, "\n\n%s", utils.TruncateString(current.Desc, 180))
 		}
-		text.WriteString("\n\n直接发送新描述，最多 200 字。")
+		text.WriteString("\n\n直接发送新描述\n最多 200 字")
 		markup.Inline(
 			markup.Row(markup.Data("↩ 返回", playlistDescCallbackUnique, "back", session.token), markup.Data("⌫ 清空", playlistDescCallbackUnique, "clear", session.token)),
 			markup.Row(markup.Data("✕ 取消", playlistDescCallbackUnique, "cancel", session.token)),
 		)
 		return text.String(), markup
 	}
-	fmt.Fprintf(&text, "\n%d 张在用。点名称修改。没有描述的排在前面。", len(session.playlists))
+	fmt.Fprintf(&text, "\n\n%d 张在用\n点名称修改\n没有描述的排在前面", len(session.playlists))
 	start := session.page * playlistDescPageSize
 	if start > len(session.playlists) {
 		start = 0

@@ -90,3 +90,16 @@ func TestWorkflowStagesFailuresAndCommittedResults(t *testing.T) {
 		t.Fatal("cancelled work executed")
 	}
 }
+
+func TestBeforeStoreRejectionSkipsTidy(t *testing.T) {
+	steps := []string{}
+	_, err := RunWorkflowWithHooks(context.Background(), &workflowStub{steps: &steps}, "song", nil, WorkflowHooks{BeforeStore: func() error {
+		return errors.New("听感很接近")
+	}})
+	if err == nil || err.Error() != "听感很接近" {
+		t.Fatal(err)
+	}
+	if len(steps) != 2 || steps[0] != "download" || steps[1] != "tag" {
+		t.Fatal(steps)
+	}
+}

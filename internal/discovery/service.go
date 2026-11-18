@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nichuanfang/gymdl/internal/audiodupe"
 )
 
 type DownloadResult struct {
@@ -24,19 +26,20 @@ type Service struct {
 	Download func(context.Context, Track) (DownloadResult, error)
 	Pending  func(context.Context, Track) (bool, error)
 	// Notify returns an error on delivery failure so digests remain unacknowledged.
-	Notify          func(int64, string) error
-	OnError         func(error)
-	Authorized      func(int64, int64) bool
-	Enabled         bool
-	PollInterval    time.Duration
-	SummaryInterval time.Duration
-	syncMu          sync.Mutex
-	workMu          sync.Mutex
-	cacheMu         sync.Mutex
-	historyTracks   []Track
-	historyAt       time.Time
-	historyReady    bool
-	resolveCache    map[string]resolveCacheEntry
+	Notify               func(int64, string) error
+	OnError              func(error)
+	Authorized           func(int64, int64) bool
+	Enabled              bool
+	PollInterval         time.Duration
+	SummaryInterval      time.Duration
+	syncMu               sync.Mutex
+	workMu               sync.Mutex
+	cacheMu              sync.Mutex
+	historyTracks        []Track
+	historyAt            time.Time
+	historyReady         bool
+	resolveCache         map[string]resolveCacheEntry
+	neteaseRefreshCursor map[string]int
 }
 
 const (
@@ -126,10 +129,12 @@ func (s *Service) fetchSnapshot(ctx context.Context, b Binding) (Snapshot, error
 		return Snapshot{}, err
 	}
 	missing := make([]string, 0)
+	missingSet := map[string]bool{}
 	for _, id := range ids {
 		old, ok := known[id]
 		if !ok || old.Platform != "netease" || old.ID != id || !old.Verified || strings.TrimSpace(old.Title) == "" {
 			missing = append(missing, id)
+			missingSet[id] = true
 		}
 	}
 	fresh, err := provider.NeteaseTracks(ctx, missing)
@@ -139,6 +144,23 @@ func (s *Service) fetchSnapshot(ctx context.Context, b Binding) (Snapshot, error
 	byID := make(map[string]Track, len(fresh))
 	for _, track := range fresh {
 		byID[track.ID] = track
+	}
+	refreshIDs := make([]string, 0)
+	for _, id := range ids {
+		if !missingSet[id] {
+			refreshIDs = append(refreshIDs, id)
+		}
+	}
+	sort.Strings(refreshIDs)
+	if batch := s.neteaseRefreshIDs(account, refreshIDs); len(batch) > 0 {
+		refreshed, refreshErr := provider.NeteaseTracks(ctx, batch)
+		if refreshErr == nil {
+			for _, track := range refreshed {
+				if track.Verified && strings.TrimSpace(track.Title) != "" {
+					byID[track.ID] = track
+				}
+			}
+		}
 	}
 	tracks := make([]Track, 0, len(ids))
 	seen := map[string]bool{}
@@ -155,6 +177,35 @@ func (s *Service) fetchSnapshot(ctx context.Context, b Binding) (Snapshot, error
 	}
 	snap := Snapshot{Platform: "netease", Account: account, Tracks: tracks, Complete: true}
 	return snap, validSnapshot(snap)
+}
+
+const neteaseMetadataRefreshBatch = 20
+
+// neteaseRefreshIDs returns the next slice of already stored songs. A failed
+// refresh keeps the stored JSON; this cursor only moves when a batch is chosen.
+func (s *Service) neteaseRefreshIDs(account string, ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.neteaseRefreshCursor == nil {
+		s.neteaseRefreshCursor = map[string]int{}
+	}
+	start := s.neteaseRefreshCursor[account]
+	if start < 0 || start >= len(ids) {
+		start = 0
+	}
+	n := neteaseMetadataRefreshBatch
+	if n > len(ids) {
+		n = len(ids)
+	}
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, ids[(start+i)%len(ids)])
+	}
+	s.neteaseRefreshCursor[account] = (start + n) % len(ids)
+	return out
 }
 
 func (s *Service) Recommend(ctx context.Context, user int64) ([]Track, error) {
@@ -225,8 +276,14 @@ func (s *Service) recommend(ctx context.Context, user int64, platform string, li
 	if historyErr != nil && len(favorites) == 0 {
 		return nil, 0, 0, historyErr
 	}
+	activeFavorites := make([]Track, 0, len(favorites))
+	for _, track := range favorites {
+		if track.Favorite {
+			activeFavorites = append(activeFavorites, track)
+		}
+	}
 	merged := map[string]Track{}
-	for _, t := range append(history, favorites...) {
+	for _, t := range append(history, activeFavorites...) {
 		key := Identity(t)
 		old, ok := merged[key]
 		if !ok {
@@ -274,83 +331,161 @@ func (s *Service) recommend(ctx context.Context, user int64, platform string, li
 		}
 		return Identity(a) < Identity(b)
 	})
-	var out []Track
-	artists := map[string]int{}
-	skippedOwned := map[string]struct{}{}
-	unconfirmed := map[string]struct{}{}
-	markDistinct := func(dst map[string]struct{}, t Track) {
-		key := ownershipTitle(t.Title)
-		if key == "" {
-			key = Identity(t)
-		}
-		dst[key] = struct{}{}
+	state := &recommendPick{
+		artists:     map[string]int{},
+		skipped:     map[string]struct{}{},
+		unconfirmed: map[string]struct{}{},
 	}
-	markOwned := func(t Track) { markDistinct(skippedOwned, t) }
-	attempts := 0
-	maxAttempts := 0
-	if platform != "" {
-		maxAttempts = limit * 8
-	}
-	for _, t := range ranked {
-		if err := ctx.Err(); err != nil {
-			if len(out) > 0 {
-				return out, len(skippedOwned), len(unconfirmed), nil
-			}
+	finish := func(err error) ([]Track, int, int, error) {
+		if err != nil {
 			return nil, 0, 0, err
 		}
-		if artists[Normalize(t.Artist)] >= 2 {
+		// Rendering, not selection, commits shown timestamps. A Telegram delivery
+		// failure must not hide this batch for a month.
+		return state.out, len(state.skipped), len(state.unconfirmed), nil
+	}
+	if platform == "" {
+		_, stop, err := s.pickTracks(ctx, state, ranked, limit, platform, 0)
+		if stop {
+			return finish(nil)
+		}
+		return finish(err)
+	}
+	var historyRows, favoriteRows []Track
+	for _, track := range ranked {
+		if track.Favorite {
+			favoriteRows = append(favoriteRows, track)
 			continue
 		}
-		owned, e := s.Library.Contains(ctx, t)
-		if e != nil {
-			return nil, 0, 0, e
+		historyRows = append(historyRows, track)
+	}
+	historyQuota, favoriteQuota := discoveryQuotas(limit)
+	// Each side has its own resolve budget. Burning the history budget must
+	// still leave the favorite pass, and a cancelled request still stops both.
+	restHistory, stop, err := s.pickTracks(ctx, state, historyRows, historyQuota, platform, resolveAttemptBudget(historyQuota))
+	if err != nil || stop {
+		if stop {
+			err = nil
+		}
+		return finish(err)
+	}
+	restFavorites, stop, err := s.pickTracks(ctx, state, favoriteRows, favoriteQuota, platform, resolveAttemptBudget(favoriteQuota))
+	if err != nil || stop {
+		if stop {
+			err = nil
+		}
+		return finish(err)
+	}
+	if len(state.out) < limit {
+		_, stop, err = s.pickTracks(ctx, state, append(restHistory, restFavorites...), limit-len(state.out), platform, resolveAttemptBudget(limit-len(state.out)))
+		if stop {
+			err = nil
+		}
+	}
+	return finish(err)
+}
+
+func resolveAttemptBudget(want int) int {
+	if want <= 0 {
+		return 0
+	}
+	return want * 8
+}
+
+// discoveryQuotas keeps listening history on the card when favorites are much
+// larger. The extra song on an odd limit goes to history.
+func discoveryQuotas(limit int) (history int, favorite int) {
+	if limit <= 0 {
+		return 0, 0
+	}
+	history = limit/2 + limit%2
+	return history, limit - history
+}
+
+type recommendPick struct {
+	out         []Track
+	artists     map[string]int
+	skipped     map[string]struct{}
+	unconfirmed map[string]struct{}
+}
+
+func (s *Service) pickTracks(ctx context.Context, state *recommendPick, ranked []Track, want int, platform string, budget int) ([]Track, bool, error) {
+	if want <= 0 {
+		return ranked, false, nil
+	}
+	attempts := 0
+	got := 0
+	for i, t := range ranked {
+		if got >= want {
+			return ranked[i:], false, nil
+		}
+		if err := ctx.Err(); err != nil {
+			if len(state.out) > 0 {
+				return nil, true, nil
+			}
+			return nil, false, err
+		}
+		if state.artists[Normalize(t.Artist)] >= 2 {
+			continue
+		}
+		owned, err := s.Library.Contains(ctx, t)
+		if err != nil {
+			return nil, false, err
 		}
 		if owned {
-			markOwned(t)
+			state.markOwned(t)
 			continue
 		}
 		if s.Pending != nil {
-			pending, e := s.Pending(ctx, t)
-			if e != nil {
-				return nil, 0, 0, e
+			pending, err := s.Pending(ctx, t)
+			if err != nil {
+				return nil, false, err
 			}
 			if pending {
 				continue
 			}
 		}
 		attempts++
-		if maxAttempts > 0 && attempts > maxAttempts {
-			break
+		if budget > 0 && attempts > budget {
+			return ranked[i:], false, nil
 		}
-		resolved, e := s.resolveCandidate(ctx, t, platform)
-		if e != nil {
-			if errors.Is(e, ErrAmbiguousRecording) || errors.Is(e, ErrNoUniqueRecording) {
-				markDistinct(unconfirmed, t)
+		resolved, err := s.resolveCandidate(ctx, t, platform)
+		if err != nil {
+			if errors.Is(err, ErrAmbiguousRecording) || errors.Is(err, ErrNoUniqueRecording) {
+				state.markDistinct(state.unconfirmed, t)
 			}
 			continue
 		}
-		owned, e = s.Library.Contains(ctx, resolved)
-		if e != nil {
-			return nil, 0, 0, e
+		owned, err = s.Library.Contains(ctx, resolved)
+		if err != nil {
+			return nil, false, err
 		}
-		if owned || batchHasWork(out, resolved) {
+		if owned || batchHasWork(state.out, resolved) {
 			if owned {
-				markOwned(resolved)
+				state.markOwned(resolved)
 			}
 			continue
 		}
 		resolved.Plays = t.Plays
 		resolved.LastPlayed = t.LastPlayed
 		resolved.Favorite = t.Favorite
-		out = append(out, resolved)
-		artists[Normalize(t.Artist)]++
-		if len(out) == limit {
-			break
-		}
+		state.out = append(state.out, resolved)
+		state.artists[Normalize(t.Artist)]++
+		got++
 	}
-	// Rendering, not selection, commits shown timestamps. A Telegram delivery
-	// failure must not hide this batch for a month.
-	return out, len(skippedOwned), len(unconfirmed), nil
+	return nil, false, nil
+}
+
+func (state *recommendPick) markOwned(t Track) {
+	state.markDistinct(state.skipped, t)
+}
+
+func (state *recommendPick) markDistinct(dst map[string]struct{}, t Track) {
+	key := ownershipTitle(t.Title)
+	if key == "" {
+		key = Identity(t)
+	}
+	dst[key] = struct{}{}
 }
 
 func batchHasWork(out []Track, candidate Track) bool {
@@ -533,6 +668,15 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 	}
 	result, err := s.Download(ctx, t)
 	if err != nil {
+		var heard *audiodupe.LibraryMatch
+		if errors.As(err, &heard) {
+			switch heard.Decision {
+			case audiodupe.DecisionSkip:
+				return finish(Owned, heard.Error(), "", 0)
+			case audiodupe.DecisionConfirm:
+				return finish(NeedsConfirmation, heard.Error(), "", 0)
+			}
+		}
 		if t.Approved {
 			return retry(err)
 		}

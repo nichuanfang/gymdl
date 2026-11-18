@@ -1,39 +1,15 @@
 package bot
 
-import (
-	"testing"
+import "testing"
 
-	"github.com/nichuanfang/gymdl/internal/musicdedupe"
-	"github.com/nichuanfang/gymdl/processor"
-	"github.com/nichuanfang/gymdl/processor/music"
-)
-
-func TestSuccessfulDownloadRecordDoesNotPersistSyntheticAlbumAsSourceMetadata(t *testing.T) {
-	identity := musicdedupe.Track{
-		Platform:         string(processor.LinkYoutubeMusic),
-		PlatformTrackID:  "video-id",
-		SourceURL:        "https://music.youtube.com/watch?v=video-id",
-		Title:            "Song",
-		Artist:           "Artist",
-		MetadataResolved: true,
+func TestDuplicateConfirmTextKeepsRoom(t *testing.T) {
+	text := duplicateConfirmText("晴天", "周杰伦", "叶惠美", "同一个链接")
+	want := "可能是同一首歌\n\n晴天\n周杰伦\n叶惠美\n\n同一个链接\n\n要再存一份吗？"
+	if text != want {
+		t.Fatalf("%q", text)
 	}
-	song := &music.SongInfo{SongName: "Song", SongArtists: "Artist", SongAlbum: "Artist Singles"}
-
-	record := successfulDownloadRecord(processor.LinkYoutubeMusic, identity.SourceURL, identity, song, 1)
-	if record.Album != "" {
-		t.Fatalf("preflight album was unavailable, but synthesized file tag leaked into dedupe metadata: %q", record.Album)
-	}
-	if record.PlatformTrackID != "video-id" || record.SourceURL == "" {
-		t.Fatalf("single-track identity not retained: %#v", record)
-	}
-}
-
-func TestSuccessfulDownloadRecordUsesFileMetadataWithoutPreflight(t *testing.T) {
-	identity := musicdedupe.Track{Platform: string(processor.LinkAppleMusic), PlatformTrackID: "123"}
-	song := &music.SongInfo{SongName: "Song", SongArtists: "Artist", SongAlbum: "Album"}
-
-	record := successfulDownloadRecord(processor.LinkAppleMusic, "https://music.apple.com/us/song/song/123", identity, song, 1)
-	if record.Title != "Song" || record.Artist != "Artist" || record.Album != "Album" {
-		t.Fatalf("expected post-download metadata fallback: %#v", record)
+	sparse := duplicateConfirmText("晴天", "未知", "", "歌名、歌手和专辑一致")
+	if sparse != "可能是同一首歌\n\n晴天\n\n歌名、歌手和专辑一致\n\n要再存一份吗？" {
+		t.Fatalf("%q", sparse)
 	}
 }

@@ -251,6 +251,7 @@ func (c *Config) setDefaults() {
 			PlaylistModel:     "",
 			PlaylistSize:      80,
 			CandidateCount:    150,
+			MinScore:          0.35,
 		}
 	} else {
 		if c.AIPlaylist.PineconeNamespace == "" {
@@ -264,6 +265,9 @@ func (c *Config) setDefaults() {
 		}
 		if c.AIPlaylist.CandidateCount <= 0 {
 			c.AIPlaylist.CandidateCount = 150
+		}
+		if c.AIPlaylist.MinScore <= 0 {
+			c.AIPlaylist.MinScore = 0.35
 		}
 	}
 	if c.Lastfm == nil {

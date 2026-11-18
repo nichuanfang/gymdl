@@ -10,6 +10,7 @@ import (
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/core/linkparser"
+	"github.com/nichuanfang/gymdl/internal/audiodupe"
 	"github.com/nichuanfang/gymdl/internal/musicdedupe"
 	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/processor/music"
@@ -75,6 +76,8 @@ func Download(ctx context.Context, cfg *config.Config, store *musicdedupe.Store,
 			}
 		}
 		return nil
+	}, BeforeStore: func() error {
+		return reviewOneSong(ctx, p.Songs(), t.Approved)
 	}, After: func(songs []*music.SongInfo) error {
 		for _, song := range songs {
 			actual := t
@@ -130,6 +133,22 @@ func PendingTrack(ctx context.Context, store *musicdedupe.Store, t Track) (bool,
 		}
 	}
 	return false, nil
+}
+
+func reviewOneSong(ctx context.Context, songs []*music.SongInfo, bypass bool) error {
+	var one *music.SongInfo
+	count := 0
+	for _, song := range songs {
+		if song == nil {
+			continue
+		}
+		count++
+		one = song
+	}
+	if count != 1 || strings.TrimSpace(one.MusicPath) == "" {
+		return nil
+	}
+	return audiodupe.ReviewFile(ctx, one.MusicPath, float64(one.Duration), bypass)
 }
 
 func musicSourceURL(t Track) string {

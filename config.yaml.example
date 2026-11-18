@@ -164,6 +164,7 @@ ai_playlist:
   playlist_model: "" # 歌单编排模型；留空时使用 ai.model
   playlist_size: 80 # 每个歌单目标歌曲数
   candidate_count: 150 # Pinecone 最大召回数量
+  min_score: 0.35 # 余弦相似度下限，低于此值的召回不进入候选
 
 # Last.fm 增量收听同步。写入 ai.history_write_dsn 指向的原表。未启用时不注册任务。
 lastfm:

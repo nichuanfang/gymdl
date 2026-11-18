@@ -113,7 +113,7 @@ func TestSyncReusesStoredNeteaseSongs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if detailCalls != 1 || len(fresh) != 1 || fresh[0].Track.Title != "新歌" {
+	if detailCalls != 2 || len(fresh) != 1 || fresh[0].Track.Title != "新歌" {
 		t.Fatalf("detail calls=%d fresh=%+v", detailCalls, fresh)
 	}
 	kept, err := store.ActiveFavoriteTracks(ctx, 1, "netease", "9")
@@ -122,5 +122,85 @@ func TestSyncReusesStoredNeteaseSongs(t *testing.T) {
 	}
 	if kept["1"].Title != "旧歌" || kept["2"].Title != "新歌" {
 		t.Fatalf("stored %#v", kept)
+	}
+}
+
+func TestNeteaseRefreshUpdatesAStoredTitle(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	if _, _, err := store.Apply(ctx, 1, 1, snapshot("9", testTrack("1", "旧名", "甲")), true); err != nil {
+		t.Fatal(err)
+	}
+	detailCalls := 0
+	p := neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+		var body string
+		switch {
+		case strings.Contains(r.URL.Path, "account/get"):
+			body = `{"code":200,"account":{"id":9}}`
+		case strings.Contains(r.URL.Path, "user/playlist"):
+			body = `{"code":200,"more":false,"playlist":[{"id":50,"specialType":5,"userId":9}]}`
+		case strings.Contains(r.URL.Path, "playlist/detail"):
+			body = `{"code":200,"playlist":{"trackCount":1,"trackIds":[{"id":1}]}}`
+		case strings.Contains(r.URL.Path, "song/detail"):
+			detailCalls++
+			body = `{"code":200,"songs":[{"id":1,"name":"新名","dt":180000,"ar":[{"name":"甲"}],"al":{"name":"专"}}]}`
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			return nil, errors.New("unexpected")
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	svc := Service{Store: store, Provider: p, Enabled: true}
+	fresh, err := svc.Sync(ctx, 1)
+	if err != nil || len(fresh) != 0 || detailCalls != 1 {
+		t.Fatalf("detail calls=%d fresh=%+v err=%v", detailCalls, fresh, err)
+	}
+	kept, err := store.ActiveFavoriteTracks(ctx, 1, "netease", "9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept["1"].Title != "新名" {
+		t.Fatalf("stored title = %q", kept["1"].Title)
+	}
+}
+
+func TestNeteaseRefreshFailureKeepsTheStoredTitle(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	if _, _, err := store.Apply(ctx, 1, 1, snapshot("9", testTrack("1", "旧名", "甲")), true); err != nil {
+		t.Fatal(err)
+	}
+	detailCalls := 0
+	p := neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+		var body string
+		status := 200
+		switch {
+		case strings.Contains(r.URL.Path, "account/get"):
+			body = `{"code":200,"account":{"id":9}}`
+		case strings.Contains(r.URL.Path, "user/playlist"):
+			body = `{"code":200,"more":false,"playlist":[{"id":50,"specialType":5,"userId":9}]}`
+		case strings.Contains(r.URL.Path, "playlist/detail"):
+			body = `{"code":200,"playlist":{"trackCount":1,"trackIds":[{"id":1}]}}`
+		case strings.Contains(r.URL.Path, "song/detail"):
+			detailCalls++
+			status = 400
+			body = "down"
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			return nil, errors.New("unexpected")
+		}
+		return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	svc := Service{Store: store, Provider: p, Enabled: true}
+	fresh, err := svc.Sync(ctx, 1)
+	if err != nil || len(fresh) != 0 || detailCalls != 1 {
+		t.Fatalf("detail calls=%d fresh=%+v err=%v", detailCalls, fresh, err)
+	}
+	kept, err := store.ActiveFavoriteTracks(ctx, 1, "netease", "9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept["1"].Title != "旧名" {
+		t.Fatalf("stored title = %q", kept["1"].Title)
 	}
 }
