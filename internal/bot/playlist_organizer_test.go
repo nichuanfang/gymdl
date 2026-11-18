@@ -993,6 +993,16 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 			want: "正在生成归档建议",
 		},
 		{
+			name: "manual retry says it is reorganizing",
+			assignment: pendingPlaylistAssignment{
+				song:                unplaylistSong{ID: "song-1", Title: "Song"},
+				playlistAssist:      true,
+				aiSuggestionLoading: true,
+				aiSuggestionManual:  true,
+			},
+			want: "正在重新整理",
+		},
+		{
 			name: "search completed without reliable match",
 			assignment: pendingPlaylistAssignment{
 				song:           unplaylistSong{ID: "song-1", Title: "Song"},
@@ -1022,6 +1032,7 @@ func TestPlaylistAssignmentSuggestionsUpdateChooserDefaultsWithoutLosingSession(
 		webAppButtonURL:     "https://webapp.example.com/?old=1",
 		aiSuggestionLoading: true,
 		handledSongIDs:      map[string]struct{}{},
+		aiSuggestionSeq:     1,
 		expiresAt:           time.Now().Add(time.Minute),
 	}
 	if !app.registerPlaylistAssignment(assignment) {
@@ -1040,7 +1051,7 @@ func TestPlaylistAssignmentSuggestionsUpdateChooserDefaultsWithoutLosingSession(
 	if !loadingButtons["跳过本首"] || !loadingButtons["结束整理"] {
 		t.Fatalf("skip and end controls should remain available while AI loads: %#v", loadingButtons)
 	}
-	updated, ok := app.storePlaylistAssignmentAISuggestions(assignment.token, "song-1", []string{"摇滚"}, false)
+	updated, ok := app.storePlaylistAssignmentAISuggestions(assignment.token, "song-1", 1, []string{"摇滚"}, false)
 	if !ok || updated.aiSuggestionLoading || len(updated.aiSuggestedPlaylists) != 1 || updated.aiSuggestedPlaylists[0] != "摇滚" {
 		t.Fatalf("suggestions were not stored: %#v, ok=%t", updated, ok)
 	}
@@ -1063,8 +1074,77 @@ func TestPlaylistAssignmentSuggestionsUpdateChooserDefaultsWithoutLosingSession(
 	if !foundChooser {
 		t.Fatal("legacy chooser should appear after AI defaults are ready")
 	}
-	if _, ok := app.storePlaylistAssignmentAISuggestions(assignment.token, "another-song", []string{"华语"}, false); ok {
+	if _, ok := app.storePlaylistAssignmentAISuggestions(assignment.token, "another-song", 1, []string{"华语"}, false); ok {
 		t.Fatal("stale background result must not overwrite a different song")
+	}
+}
+
+func TestPlaylistAssignmentOffersAnotherAIPassBesideTheChooser(t *testing.T) {
+	app := &BotApp{}
+	assignment := pendingPlaylistAssignment{
+		token:                "01234567890123456789012345678901",
+		chatID:               10,
+		song:                 unplaylistSong{ID: "song-1", Title: "雨下一整晚", Artist: "周杰伦"},
+		playlists:            []config.PlaylistInfo{{Name: "华语"}, {Name: "摇滚"}},
+		webAppBaseURL:        "https://webapp.example.com",
+		webAppButtonURL:      "https://webapp.example.com/?data=%7B%7D",
+		selectionToken:       "selection-old",
+		playlistAssist:       true,
+		aiSuggestedPlaylists: []string{"摇滚"},
+		aiSuggestionSeq:      1,
+		handledSongIDs:       map[string]struct{}{},
+		expiresAt:            time.Now().Add(time.Minute),
+	}
+	if !app.registerPlaylistAssignment(assignment) {
+		t.Fatal("failed to register assignment")
+	}
+	markup := playlistAssignmentMarkup(assignment)
+	row := markup.InlineKeyboard[0]
+	if len(row) != 2 || row[0].Text != "📂 选择歌单" || row[0].WebApp == nil || row[1].Text != "重新整理" {
+		t.Fatalf("chooser row = %#v", row)
+	}
+	if row[1].Unique != playlistAssignmentCallbackUnique || len(row[1].Data) > 64 || !strings.Contains(row[1].Data, "redo") {
+		t.Fatalf("reorganize callback = %#v", row[1])
+	}
+	if playlistAssignmentTemperature(assignment) != 0.1 {
+		t.Fatal("first pass should stay deterministic")
+	}
+	updated, ok := app.beginPlaylistAssignmentReorganize(assignment.token)
+	if !ok || !updated.aiSuggestionLoading || !updated.aiSuggestionManual || updated.aiSuggestionSeq != 2 || len(updated.aiSuggestedPlaylists) != 0 || updated.selectionToken == "selection-old" {
+		t.Fatalf("reorganize did not start a fresh pass: %#v", updated)
+	}
+	if playlistAssignmentTemperature(updated) != 0.6 {
+		t.Fatal("a manual retry should be allowed to differ")
+	}
+	if _, ok := app.storePlaylistAssignmentAISuggestions(assignment.token, "song-1", 1, []string{"华语"}, false); ok {
+		t.Fatal("the previous AI pass overwrote the retry")
+	}
+	stored, ok := app.storePlaylistAssignmentAISuggestions(assignment.token, "song-1", 2, []string{"华语"}, false)
+	if !ok || stored.aiSuggestionLoading || stored.aiSuggestionManual || len(stored.aiSuggestedPlaylists) != 1 {
+		t.Fatalf("fresh pass was not stored: %#v ok=%t", stored, ok)
+	}
+	if text := formatPlaylistAssignment(updated); !strings.Contains(text, "正在重新整理") {
+		t.Fatalf("retry copy = %q", text)
+	}
+	loading := playlistAssignmentMarkup(updated)
+	for _, buttons := range loading.InlineKeyboard {
+		for _, button := range buttons {
+			if button.Text == "重新整理" || button.WebApp != nil {
+				t.Fatalf("chooser stayed open while reorganizing: %#v", button)
+			}
+		}
+	}
+	finished := assignment
+	finished.selectionComplete = true
+	finished.playlistAssist = true
+	if !app.registerPlaylistAssignment(pendingPlaylistAssignment{token: "other", chatID: 11, expiresAt: time.Now().Add(time.Minute)}) {
+		t.Fatal("register")
+	}
+	app.playlistAssignmentMu.Lock()
+	app.playlistAssignments[assignment.token] = finished
+	app.playlistAssignmentMu.Unlock()
+	if _, ok := app.beginPlaylistAssignmentReorganize(assignment.token); ok {
+		t.Fatal("a confirmed selection must not be wiped by reorganize")
 	}
 }
 

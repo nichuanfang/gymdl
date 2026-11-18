@@ -28,7 +28,6 @@ ARG YT_DLP_VERSION=2026.10.26
 RUN python3 -m pip install --no-cache-dir --break-system-packages "yt-dlp[default]==${YT_DLP_VERSION}"
 COPY requirements.txt ./
 COPY config.yaml.example ./config.yaml.example
-COPY config.playlists.example.yaml ./config.playlists.example.yaml
 COPY skills ./skills
 COPY --from=builder /app/app ./app
 COPY --from=builder /app/discovery-check ./discovery-check

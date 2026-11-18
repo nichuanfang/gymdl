@@ -214,7 +214,7 @@ func HandleSyncPlaylists(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
 	defer cancel()
-	result, err := playlistcatalog.Sync(ctx, cfg.PlaylistOrganizer, currentPlaylistDBPath(), cfg.PlaylistOrganizer.TidyPlaylist)
+	result, err := playlistcatalog.Sync(ctx, cfg.PlaylistOrganizer, currentPlaylistDBPath(), nil)
 	if err != nil {
 		response.Fail(c, http.StatusBadGateway, err.Error())
 		return

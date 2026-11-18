@@ -68,13 +68,14 @@ func validSnapshot(s Snapshot) error {
 
 // Apply atomically records the whole snapshot and queues only new favourites.
 // Rebinding is explicit and makes a new baseline; it never imports the backlog.
-func (s *Store) Apply(ctx context.Context, user, chat int64, snap Snapshot, bind bool) (int, error) {
+// The returned tracks are only the favorites newly queued by this call.
+func (s *Store) Apply(ctx context.Context, user, chat int64, snap Snapshot, bind bool) (int, []Track, error) {
 	if err := validSnapshot(snap); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer tx.Rollback()
 	var account string
@@ -82,39 +83,40 @@ func (s *Store) Apply(ctx context.Context, user, chat int64, snap Snapshot, bind
 	err = tx.QueryRowContext(ctx, `SELECT account,paused FROM discovery_bindings WHERE user_id=? AND platform=?`, user, snap.Platform).Scan(&account, &paused)
 	if !bind {
 		if err != nil {
-			return 0, fmt.Errorf("请先绑定收藏账号")
+			return 0, nil, fmt.Errorf("请先绑定收藏账号")
 		}
 		if paused {
-			return 0, fmt.Errorf("该来源已暂停")
+			return 0, nil, fmt.Errorf("该来源已暂停")
 		}
 		if account != snap.Account {
-			return 0, fmt.Errorf("收藏账号已变化，请重新预览并绑定；原基线保留")
+			return 0, nil, fmt.Errorf("收藏账号已变化，请重新预览并绑定；原基线保留")
 		}
 	}
 	known := map[string]bool{}
 	if !bind {
 		rows, e := tx.QueryContext(ctx, `SELECT track_id FROM discovery_favorites WHERE user_id=? AND platform=? AND account=? AND active=1`, user, snap.Platform, snap.Account)
 		if e != nil {
-			return 0, e
+			return 0, nil, e
 		}
 		for rows.Next() {
 			var id string
 			if e = rows.Scan(&id); e != nil {
 				rows.Close()
-				return 0, e
+				return 0, nil, e
 			}
 			known[id] = true
 		}
 		e = rows.Err()
 		rows.Close()
 		if e != nil {
-			return 0, e
+			return 0, nil, e
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE discovery_favorites SET active=0 WHERE user_id=? AND platform=?`, user, snap.Platform); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	count := 0
+	var fresh []Track
 	now := time.Now().Unix()
 	for _, t := range snap.Tracks {
 		if !t.Verified {
@@ -127,27 +129,36 @@ func (s *Store) Apply(ctx context.Context, user, chat int64, snap Snapshot, bind
 			}
 		}
 		t.Favorite = true
+		t.CardAction = ""
+		t.IngestID = ""
+		t.IngestNote = ""
 		data, e := json.Marshal(t)
 		if e != nil {
-			return 0, e
+			return 0, nil, e
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO discovery_favorites(user_id,platform,account,track_id,track_json,active) VALUES(?,?,?,?,?,1) ON CONFLICT(user_id,platform,account,track_id) DO UPDATE SET track_json=excluded.track_json,active=1`, user, snap.Platform, snap.Account, t.ID, string(data)); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 		if !bind && !known[t.ID] {
 			res, e := enqueueTx(ctx, tx, user, chat, t, now, snap.Account)
 			if e != nil {
-				return 0, e
+				return 0, nil, e
 			}
 			n, _ := res.RowsAffected()
 			count += int(n)
+			if n > 0 {
+				fresh = append(fresh, t)
+			}
 		}
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO discovery_bindings(user_id,chat_id,platform,account,paused,last_sync,last_error) VALUES(?,?,?,?,0,?,'') ON CONFLICT(user_id,platform) DO UPDATE SET chat_id=excluded.chat_id,account=excluded.account,paused=0,last_sync=excluded.last_sync,last_error=''`, user, chat, snap.Platform, snap.Account, now)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	return count, tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return 0, nil, err
+	}
+	return count, fresh, nil
 }
 
 func enqueueTx(ctx context.Context, tx *sql.Tx, user, chat int64, t Track, now int64, account string) (sql.Result, error) {
@@ -158,19 +169,23 @@ func enqueueTx(ctx context.Context, tx *sql.Tx, user, chat int64, t Track, now i
 	return tx.ExecContext(ctx, `INSERT INTO discovery_jobs(id,user_id,chat_id,identity,track_json,state,updated,source_platform,source_account) VALUES(?,?,?,?,?,'queued',?,?,?) ON CONFLICT(user_id,identity) DO NOTHING`, token(), user, chat, Identity(t), string(data), now, t.Platform, account)
 }
 
-func (s *Store) Enqueue(ctx context.Context, user, chat int64, t Track) error {
+func (s *Store) Enqueue(ctx context.Context, user, chat int64, t Track) (string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer tx.Rollback()
 	if _, err = enqueueTx(ctx, tx, user, chat, t, time.Now().Unix(), ""); err != nil {
-		return err
+		return "", err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE discovery_jobs SET source_account='',state=CASE WHEN state IN ('failed','ignored') THEN 'queued' ELSE state END,next_run=0 WHERE user_id=? AND identity=?`, user, Identity(t)); err != nil {
-		return err
+		return "", err
 	}
-	return tx.Commit()
+	var id string
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM discovery_jobs WHERE user_id=? AND identity=?`, user, Identity(t)).Scan(&id); err != nil {
+		return "", err
+	}
+	return id, tx.Commit()
 }
 
 func (s *Store) Pause(ctx context.Context, user int64, platform string, pause bool) error {
@@ -289,6 +304,10 @@ func scanJob(row interface{ Scan(...any) error }) (Job, error) {
 }
 
 const jobColumns = `id,user_id,chat_id,track_json,state,attempts,next_run,last_error,updated,result`
+
+func (s *Store) Job(ctx context.Context, id string) (Job, error) {
+	return scanJob(s.db.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM discovery_jobs WHERE id=?`, id))
+}
 
 func (s *Store) Jobs(ctx context.Context, user int64, unnotified bool) ([]Job, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+jobColumns+` FROM discovery_jobs WHERE (?=0 OR user_id=?) AND (?=0 OR (notified=0 AND state NOT IN ('queued','running'))) ORDER BY updated DESC LIMIT 100`, user, user, unnotified)

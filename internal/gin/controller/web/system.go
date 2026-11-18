@@ -76,8 +76,8 @@ func cloneWebConfig(c *config.Config) *config.Config {
 }
 
 // SetConfigFilePath injects the YAML path and loads a raw document so edits preserve
-// keys that are not yet represented by this binary's Config struct. The playlist
-// sidecar is merged into the logical document so the WebUI keeps one editing surface.
+// keys that are not yet represented by this binary's Config struct. Playlist names
+// and descriptions live in SQLite, so the editor never shows the retired list.
 func SetConfigFilePath(path string) {
 	configFilePath = path
 	if path == "" {
@@ -87,8 +87,8 @@ func SetConfigFilePath(path string) {
 		var doc map[string]any
 		if yaml.Unmarshal(data, &doc) == nil && doc != nil {
 			doc = removeMigratedN8NWorkflowFields(doc)
-			doc = withPlaylistSidecar(doc, path)
 			doc = withConfigDefaults(doc)
+			doc = stripTidyPlaylist(doc)
 			savedConfigMu.Lock()
 			savedConfig = doc
 			savedConfigMu.Unlock()
@@ -100,7 +100,7 @@ func SetConfigFilePath(path string) {
 			var doc map[string]any
 			if yaml.Unmarshal(data, &doc) == nil {
 				savedConfigMu.Lock()
-				savedConfig = doc
+				savedConfig = stripTidyPlaylist(doc)
 				savedConfigMu.Unlock()
 			}
 		}
@@ -134,37 +134,17 @@ func removeMigratedN8NWorkflowFields(doc map[string]any) map[string]any {
 	return doc
 }
 
-func withPlaylistSidecar(doc map[string]any, configPath string) map[string]any {
-	entries, present, err := config.LoadPlaylistFile(config.PlaylistFilePath(configPath))
-	if err != nil {
-		// Startup already warns about a broken sidecar. Keep the inline list so the
-		// WebUI remains usable and can overwrite the broken file on the next save.
-		return doc
-	}
-	if !present {
-		return doc
-	}
+func stripTidyPlaylist(doc map[string]any) map[string]any {
 	out := cloneYAMLMap(doc)
 	if out == nil {
-		out = make(map[string]any)
+		return map[string]any{}
 	}
-	playlist, _ := out["playlist_organizer"].(map[string]any)
-	if playlist == nil {
-		playlist = make(map[string]any)
-		out["playlist_organizer"] = playlist
+	if playlist, ok := out["playlist_organizer"].(map[string]any); ok {
+		delete(playlist, "tidy_playlist")
 	}
-	encoded, err := yaml.Marshal(entries)
-	if err != nil {
-		return out
+	if n8n, ok := out["n8n_config"].(map[string]any); ok {
+		delete(n8n, "tidy_playlist")
 	}
-	var list []any
-	if err := yaml.Unmarshal(encoded, &list); err != nil {
-		return out
-	}
-	if list == nil {
-		list = []any{}
-	}
-	playlist["tidy_playlist"] = list
 	return out
 }
 
@@ -246,38 +226,18 @@ func HandleUpdateConfig(c *gin.Context) {
 		return
 	}
 
-	playlists, mainDoc, err := detachTidyPlaylist(merged)
-	if err != nil {
-		response.Fail(c, http.StatusBadRequest, "歌单配置格式错误: "+err.Error())
-		return
-	}
+	mainDoc := stripTidyPlaylist(merged)
 	encodedMain, err := yaml.Marshal(mainDoc)
 	if err != nil {
 		response.Fail(c, http.StatusBadRequest, "配置无法序列化: "+err.Error())
 		return
 	}
-	playlistPath := config.PlaylistFilePath(configFilePath)
-	previousPlaylist, previousPlaylistErr := os.ReadFile(playlistPath)
-	playlistExisted := previousPlaylistErr == nil
-	if previousPlaylistErr != nil && !errors.Is(previousPlaylistErr, os.ErrNotExist) {
-		response.Fail(c, http.StatusInternalServerError, "读取歌单配置失败: "+previousPlaylistErr.Error())
-		return
-	}
-	if err := config.WritePlaylistFile(playlistPath, playlists); err != nil {
-		response.Fail(c, http.StatusInternalServerError, "保存歌单配置失败: "+err.Error())
-		return
-	}
 	if err := writeConfigAtomically(configFilePath, encodedMain); err != nil {
-		rollbackErr := rollbackPlaylistFile(playlistPath, previousPlaylist, playlistExisted)
-		if rollbackErr != nil {
-			response.Fail(c, http.StatusInternalServerError, fmt.Sprintf("保存配置失败: %v；回滚歌单配置失败: %v", err, rollbackErr))
-			return
-		}
 		response.Fail(c, http.StatusInternalServerError, "保存配置失败: "+err.Error())
 		return
 	}
 
-	changed := changedConfigPaths(before, merged, "")
+	changed := changedConfigPaths(before, mainDoc, "")
 	hotReload := make([]string, 0, 2)
 	restartRequired := make([]string, 0)
 	for _, path := range changed {
@@ -302,13 +262,13 @@ func HandleUpdateConfig(c *gin.Context) {
 	if manager != nil {
 		manager.SetConfig(active)
 	}
-	savedConfig = merged
+	savedConfig = mainDoc
 	response.Success(c, gin.H{
 		"updated":           true,
 		"hot_reload_fields": hotReload,
 		"restart_required":  len(restartRequired) > 0,
 		"restart_fields":    restartRequired,
-		"config":            redactSecrets(cloneYAMLMap(merged)),
+		"config":            redactSecrets(cloneYAMLMap(mainDoc)),
 	})
 }
 
@@ -426,50 +386,6 @@ func validateWebConfig(c *config.Config) error {
 	}
 	if c.QQMusicApiConfig != nil && (c.QQMusicApiConfig.LoginType < 0 || c.QQMusicApiConfig.LoginType > 2) {
 		return errors.New("qq_music_api.login_type 必须在 0 到 2 之间")
-	}
-	return nil
-}
-
-func detachTidyPlaylist(doc map[string]any) ([]config.PlaylistInfo, map[string]any, error) {
-	main := cloneYAMLMap(doc)
-	if main == nil {
-		main = make(map[string]any)
-	}
-	rawPlaylists := []any{}
-	if playlist, ok := main["playlist_organizer"].(map[string]any); ok {
-		if value, exists := playlist["tidy_playlist"]; exists {
-			list, ok := value.([]any)
-			if !ok && value != nil {
-				return nil, nil, errors.New("tidy_playlist 必须是数组")
-			}
-			if ok {
-				rawPlaylists = list
-			}
-			delete(playlist, "tidy_playlist")
-		}
-	}
-	encoded, err := yaml.Marshal(rawPlaylists)
-	if err != nil {
-		return nil, nil, err
-	}
-	var playlists []config.PlaylistInfo
-	if err := yaml.Unmarshal(encoded, &playlists); err != nil {
-		return nil, nil, err
-	}
-	if playlists == nil {
-		playlists = []config.PlaylistInfo{}
-	}
-	return playlists, main, nil
-}
-
-func rollbackPlaylistFile(path string, previous []byte, existed bool) error {
-	if existed {
-		return config.RestorePlaylistFile(path, previous)
-	}
-	for _, candidate := range []string{path, path + ".bak"} {
-		if err := os.Remove(candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
 	}
 	return nil
 }

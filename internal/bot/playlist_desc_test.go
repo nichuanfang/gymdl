@@ -14,22 +14,21 @@ import (
 	tb "gopkg.in/telebot.v4"
 )
 
-func TestSyncedCatalogReplacesTheYamlPlaylistList(t *testing.T) {
+func TestSyncedCatalogIsTheOnlyPlaylistList(t *testing.T) {
 	store, err := playlistcatalog.Open(filepath.Join(t.TempDir(), "gymdl.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
 	ctx := context.Background()
-	fallback := []config.PlaylistInfo{{Name: "旧歌单", Desc: "yaml"}}
-	before, synced, err := loadTidyPlaylists(ctx, store, fallback)
-	if err != nil || synced || len(before) != 1 || before[0].Name != "旧歌单" {
+	before, synced, err := loadTidyPlaylists(ctx, store)
+	if err != nil || synced || len(before) != 0 {
 		t.Fatalf("before sync = %#v synced=%v err=%v", before, synced, err)
 	}
 	if _, err = store.Apply(ctx, []playlistcatalog.Remote{{ID: "zh", Name: "中文"}}, []config.PlaylistInfo{{Name: "中文", Desc: "中文歌曲"}}, time.Unix(1_700_000_000, 0)); err != nil {
 		t.Fatal(err)
 	}
-	after, synced, err := loadTidyPlaylists(ctx, store, fallback)
+	after, synced, err := loadTidyPlaylists(ctx, store)
 	if err != nil || !synced || len(after) != 1 || after[0].Name != "中文" || after[0].Desc != "中文歌曲" {
 		t.Fatalf("after sync = %#v synced=%v err=%v", after, synced, err)
 	}

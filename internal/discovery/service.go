@@ -51,16 +51,25 @@ type resolveCacheEntry struct {
 	at    time.Time
 }
 
-func (s *Service) Sync(ctx context.Context, user int64) error {
+// FreshFavorite is one song the latest sync queued for the first time.
+type FreshFavorite struct {
+	User     int64
+	Chat     int64
+	Platform string
+	Track    Track
+}
+
+func (s *Service) Sync(ctx context.Context, user int64) ([]FreshFavorite, error) {
 	if !s.Enabled {
-		return fmt.Errorf("自动收藏同步未启用，请先配置 favorites.enable: true；可先预览并绑定账号")
+		return nil, fmt.Errorf("自动收藏同步未启用，请先配置 favorites.enable: true；可先预览并绑定账号")
 	}
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 	bindings, err := s.Store.Bindings(ctx, user)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var fresh []FreshFavorite
 	var failures []string
 	for _, b := range bindings {
 		if b.Paused || (s.Authorized != nil && !s.Authorized(b.User, b.Chat)) {
@@ -70,8 +79,9 @@ func (s *Service) Sync(ctx context.Context, user int64) error {
 		if e == nil && snap.Platform != b.Platform {
 			e = fmt.Errorf("收藏来源标识不一致，未更新基线")
 		}
+		var added []Track
 		if e == nil {
-			_, e = s.Store.Apply(ctx, b.User, b.Chat, snap, false)
+			_, added, e = s.Store.Apply(ctx, b.User, b.Chat, snap, false)
 		}
 		if e != nil {
 			message := b.Platform + "：" + e.Error()
@@ -81,12 +91,16 @@ func (s *Service) Sync(ctx context.Context, user int64) error {
 				_ = s.Notify(b.Chat, "⚠️ 收藏同步异常\n"+message)
 			}
 			failures = append(failures, message)
+			continue
+		}
+		for _, track := range added {
+			fresh = append(fresh, FreshFavorite{User: b.User, Chat: b.Chat, Platform: b.Platform, Track: track})
 		}
 	}
 	if len(failures) > 0 {
-		return errors.New(strings.Join(failures, "\n"))
+		return fresh, errors.New(strings.Join(failures, "\n"))
 	}
-	return nil
+	return fresh, nil
 }
 
 func (s *Service) Recommend(ctx context.Context, user int64) ([]Track, error) {
@@ -376,7 +390,8 @@ func (s *Service) Run(ctx context.Context) error {
 		case <-ticker.C:
 			if time.Now().After(nextPoll) {
 				if s.Enabled {
-					_ = s.Sync(ctx, 0)
+					fresh, _ := s.Sync(ctx, 0)
+					s.notifyFresh(fresh)
 				}
 				nextPoll = time.Now().Add(poll)
 			}

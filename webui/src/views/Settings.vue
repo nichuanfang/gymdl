@@ -140,7 +140,7 @@ async function handleSaveConfig() {
       clearSecrets.value = []
       restartFields.value = response.data.restart_fields || []
       hotReloadFields.value = response.data.hot_reload_fields || []
-      message.success('配置已安全写入 config.yaml（歌单写入 config.playlists.yaml）')
+      message.success('配置已写入 config.yaml。歌单名称和描述保存在数据库里。')
     } else message.error(response.message || '保存失败')
   } catch (error) {
     message.error(error instanceof Error ? `保存失败：${error.message}` : '保存失败')

@@ -21,7 +21,6 @@ func LoadConfig(file string) *Config {
 		if err != nil {
 			fmt.Println("⚙️ 配置文件未找到或读取失败:", err)
 			c := createDefaultConfig()
-			applyPlaylistSidecar(file, c)
 			go saveDefaultConfig(file, c)
 			configCache = c
 			return
@@ -30,7 +29,6 @@ func LoadConfig(file string) *Config {
 		if len(bytes) == 0 {
 			fmt.Println("⚠️ 配置文件为空，生成默认配置")
 			c := createDefaultConfig()
-			applyPlaylistSidecar(file, c)
 			go saveDefaultConfig(file, c)
 			configCache = c
 			return
@@ -41,7 +39,6 @@ func LoadConfig(file string) *Config {
 			fmt.Println("⚠️ 配置文件解析失败:", err)
 			go backupOldConfig(file, bytes)
 			c = createDefaultConfig()
-			applyPlaylistSidecar(file, c)
 			go saveDefaultConfig(file, c)
 			configCache = c
 			return
@@ -49,7 +46,7 @@ func LoadConfig(file string) *Config {
 
 		preferExplicitPlaylistConfig(bytes, c)
 		c.setDefaults()
-		applyPlaylistSidecar(file, c)
+		dropRetiredPlaylistList(c)
 		configCache = c
 	})
 
@@ -73,21 +70,19 @@ func preferExplicitPlaylistConfig(data []byte, c *Config) {
 	}
 }
 
-// applyPlaylistSidecar overlays config.playlists.yaml when it is present.
-// A broken sidecar must not prevent startup: keep the inline list and surface a
-// warning so the operator can repair it from the WebUI.
-func applyPlaylistSidecar(file string, c *Config) {
-	EnsurePlaylistFile(file)
-	if err := ApplyPlaylistFile(c, file); err != nil {
-		fmt.Println("⚠️ 歌单配置文件加载失败，继续使用 config.yaml 内联歌单:", err)
-	}
-}
-
 // 创建默认配置
 func createDefaultConfig() *Config {
 	c := &Config{}
 	c.setDefaults()
+	dropRetiredPlaylistList(c)
 	return c
+}
+
+// dropRetiredPlaylistList 丢掉旧版内联歌单。名称和描述只保存在 SQLite。
+func dropRetiredPlaylistList(c *Config) {
+	if c != nil && c.PlaylistOrganizer != nil {
+		c.PlaylistOrganizer.TidyPlaylist = nil
+	}
 }
 
 // 保存默认配置

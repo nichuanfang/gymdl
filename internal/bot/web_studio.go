@@ -111,7 +111,7 @@ func (s webStudio) Enqueue(ctx context.Context, tracks []web.DiscoveryTrack) (in
 			skipped++
 			continue
 		}
-		if err = s.app.discovery.Store.Enqueue(ctx, user, user, track); err != nil {
+		if _, err = s.app.discovery.Store.Enqueue(ctx, user, user, track); err != nil {
 			return queued, skipped, err
 		}
 		excluded[identity] = true

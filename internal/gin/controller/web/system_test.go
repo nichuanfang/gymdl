@@ -245,7 +245,7 @@ func TestConfigValidationRejectsInvalidTidyMode(t *testing.T) {
 	}
 }
 
-func TestSystemConfigMovesTidyPlaylistToSidecarOnFirstSave(t *testing.T) {
+func TestSystemConfigDropsRetiredPlaylistListOnSave(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.yaml")
@@ -305,21 +305,16 @@ n8n_config:
 		t.Fatalf("first save failed HTTP %d: %s", putRecorder.Code, putRecorder.Body.String())
 	}
 
-	playlistPath := config.PlaylistFilePath(configPath)
-	entries, present, err := config.LoadPlaylistFile(playlistPath)
-	if err != nil || !present || len(entries) != 2 || entries[0].Name != "sidecar one" {
-		t.Fatalf("sidecar was not written: entries=%#v present=%v err=%v", entries, present, err)
-	}
-	info, err := os.Stat(playlistPath)
-	if err != nil || info.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("sidecar permission is too open: %v %v", info, err)
+	playlistPath := filepath.Join(dir, "config.playlists.yaml")
+	if _, err := os.Stat(playlistPath); !os.IsNotExist(err) {
+		t.Fatalf("save must not create a playlist sidecar: %v", err)
 	}
 	mainDoc := readMainConfigMap(t, configPath)
 	if _, exists := mainDoc["n8n_config"].(map[string]any)["tidy_playlist"]; exists {
 		t.Fatal("legacy inline tidy_playlist must be removed after the first save")
 	}
 	if _, exists := mainDoc["playlist_organizer"].(map[string]any)["tidy_playlist"]; exists {
-		t.Fatal("playlist options must stay in the sidecar after the first save")
+		t.Fatal("playlist names must not be written back into config.yaml")
 	}
 	if mainDoc["playlist_organizer"].(map[string]any)["playlist_assist"] != false {
 		t.Fatal("legacy playlist_assist must move under playlist_organizer")
@@ -341,9 +336,8 @@ n8n_config:
 	if err := json.Unmarshal(getRecorder.Body.Bytes(), &getResult); err != nil {
 		t.Fatal(err)
 	}
-	loaded := getResult.Data.Config["playlist_organizer"].(map[string]any)["tidy_playlist"].([]any)
-	if len(loaded) != 2 || loaded[1].(map[string]any)["name"] != "sidecar two" {
-		t.Fatalf("reloaded config should show sidecar playlists: %#v", loaded)
+	if _, exists := getResult.Data.Config["playlist_organizer"].(map[string]any)["tidy_playlist"]; exists {
+		t.Fatal("settings must not offer the retired playlist list")
 	}
 
 	payload = saveCurrentConfigPayload(t, func(cfg map[string]any) {
@@ -358,9 +352,8 @@ n8n_config:
 	if putRecorder.Code != http.StatusOK {
 		t.Fatalf("second save failed HTTP %d: %s", putRecorder.Code, putRecorder.Body.String())
 	}
-	entries, _, err = config.LoadPlaylistFile(playlistPath)
-	if err != nil || len(entries) != 1 || entries[0].Name != "only" {
-		t.Fatalf("second save did not replace sidecar: %#v err=%v", entries, err)
+	if _, err := os.Stat(playlistPath); !os.IsNotExist(err) {
+		t.Fatalf("second save created a playlist sidecar: %v", err)
 	}
 	if mainDoc = readMainConfigMap(t, configPath); mainDoc["playlist_organizer"].(map[string]any)["tidy_playlist"] != nil {
 		t.Fatal("repeated saves must not reintroduce inline playlists")
@@ -374,7 +367,7 @@ func TestSystemConfigRollsBackSidecarWhenMainConfigWriteFails(t *testing.T) {
 	if err := os.Mkdir(configPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	playlistPath := config.PlaylistFilePath(configPath)
+	playlistPath := filepath.Join(dir, "config.playlists.yaml")
 	previous := []byte("tidy_playlist:\n  - name: previous\n    desc: keep\n")
 	if err := os.WriteFile(playlistPath, previous, 0o600); err != nil {
 		t.Fatal(err)
@@ -415,11 +408,7 @@ func TestSystemConfigRollsBackSidecarWhenMainConfigWriteFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(after) != string(previous) {
-		t.Fatalf("sidecar was not rolled back:\n%s", after)
-	}
-	entries, present, err := config.LoadPlaylistFile(playlistPath)
-	if err != nil || !present || len(entries) != 1 || entries[0].Name != "previous" {
-		t.Fatalf("rollback produced invalid sidecar: %#v present=%v err=%v", entries, present, err)
+		t.Fatal("a failed settings save must leave a leftover playlist file untouched")
 	}
 }
 
@@ -513,7 +502,7 @@ func TestSystemConfigRemovesNewSidecarOnFailedFirstSave(t *testing.T) {
 	if putRecorder.Code == http.StatusOK {
 		t.Fatal("expected save to fail")
 	}
-	for _, candidate := range []string{config.PlaylistFilePath(configPath), config.PlaylistFilePath(configPath) + ".bak"} {
+	for _, candidate := range []string{filepath.Join(dir, "config.playlists.yaml"), filepath.Join(dir, "config.playlists.yaml.bak")} {
 		if _, err := os.Stat(candidate); !os.IsNotExist(err) {
 			t.Fatalf("failed first save must not leave %s: %v", candidate, err)
 		}

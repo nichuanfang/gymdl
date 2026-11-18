@@ -28,6 +28,7 @@ type BotApp struct {
 	discoveryCancel            context.CancelFunc
 	discoveryDone              chan struct{}
 	discoveryCommandMu         sync.Mutex
+	rediscoverMu               sync.Mutex
 	bot                        *tb.Bot
 	cfg                        *config.Config
 	musicDedupe                *musicdedupe.Store

@@ -16,6 +16,6 @@ func syncPlaylists(c *config.Config) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	_, err := playlistcatalog.Sync(ctx, c.PlaylistOrganizer, storage.DefaultDatabasePath, c.PlaylistOrganizer.TidyPlaylist)
+	_, err := playlistcatalog.Sync(ctx, c.PlaylistOrganizer, storage.DefaultDatabasePath, nil)
 	return err
 }

@@ -38,7 +38,7 @@ func TestSnapshotBaselineIncrementalRebindAndIncomplete(t *testing.T) {
 	ctx := context.Background()
 	a := testTrack("1", "歌一", "艺人")
 	b := testTrack("2", "歌二", "艺人")
-	if n, err := s.Apply(ctx, 1, 1, snapshot("first", a), true); err != nil || n != 0 {
+	if n, _, err := s.Apply(ctx, 1, 1, snapshot("first", a), true); err != nil || n != 0 {
 		t.Fatalf("baseline n=%d err=%v", n, err)
 	}
 	if jobs, _ := s.Jobs(ctx, 1, false); len(jobs) != 0 {
@@ -46,22 +46,22 @@ func TestSnapshotBaselineIncrementalRebindAndIncomplete(t *testing.T) {
 	}
 	incomplete := snapshot("first", a, b)
 	incomplete.Complete = false
-	if _, err := s.Apply(ctx, 1, 1, incomplete, false); err == nil {
+	if _, _, err := s.Apply(ctx, 1, 1, incomplete, false); err == nil {
 		t.Fatal("partial snapshot accepted")
 	}
 	if tracks, _ := s.Favorites(ctx, 1); len(tracks) != 1 {
 		t.Fatal("partial snapshot advanced baseline")
 	}
-	if n, err := s.Apply(ctx, 1, 1, snapshot("first", a, b), false); err != nil || n != 1 {
+	if n, fresh, err := s.Apply(ctx, 1, 1, snapshot("first", a, b), false); err != nil || n != 1 || len(fresh) != 1 || fresh[0].Title != "歌二" {
 		t.Fatalf("incremental n=%d err=%v", n, err)
 	}
-	if n, err := s.Apply(ctx, 1, 1, snapshot("first", a, b), false); err != nil || n != 0 {
+	if n, fresh, err := s.Apply(ctx, 1, 1, snapshot("first", a, b), false); err != nil || n != 0 || len(fresh) != 0 {
 		t.Fatal("repeat created jobs", n, err)
 	}
-	if _, err := s.Apply(ctx, 1, 1, snapshot("second", a), false); err == nil {
+	if _, _, err := s.Apply(ctx, 1, 1, snapshot("second", a), false); err == nil {
 		t.Fatal("account switch accepted silently")
 	}
-	if _, err := s.Apply(ctx, 1, 1, snapshot("second", a), true); err != nil {
+	if _, _, err := s.Apply(ctx, 1, 1, snapshot("second", a), true); err != nil {
 		t.Fatal(err)
 	}
 	if jobs, _ := s.Jobs(ctx, 1, false); len(jobs) != 1 {
@@ -72,6 +72,58 @@ func TestSnapshotBaselineIncrementalRebindAndIncomplete(t *testing.T) {
 	}
 	if tracks, _ := s.Favorites(ctx, 1); len(tracks) != 1 {
 		t.Fatal("old account favourites leaked after rebind")
+	}
+}
+
+func TestSyncAnnouncesOnlyNewFavorites(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	oldSong := testTrack("1", "旧歌", "甲")
+	newSong := testTrack("2", "新歌", "乙")
+	if _, _, err := s.Apply(ctx, 1, 9, snapshot("acc", oldSong), true); err != nil {
+		t.Fatal(err)
+	}
+	var notes []string
+	svc := Service{
+		Store:      s,
+		Enabled:    true,
+		Provider:   stubProvider{snap: snapshot("acc", oldSong, newSong)},
+		Authorized: func(user, chat int64) bool { return user == 1 && chat == 9 },
+		Notify: func(chat int64, msg string) error {
+			if chat != 9 {
+				t.Fatalf("notice chat = %d", chat)
+			}
+			notes = append(notes, msg)
+			return nil
+		},
+	}
+	fresh, err := svc.Sync(ctx, 1)
+	if err != nil || len(fresh) != 1 || fresh[0].Track.Title != "新歌" || fresh[0].Chat != 9 {
+		t.Fatalf("fresh = %#v err=%v", fresh, err)
+	}
+	svc.notifyFresh(fresh)
+	if len(notes) != 1 || !strings.Contains(notes[0], "收藏有新歌") || !strings.Contains(notes[0], "网易云 1 首") || !strings.Contains(notes[0], "新歌") || strings.Contains(notes[0], "旧歌") || !strings.Contains(notes[0], "已排队入库") {
+		t.Fatalf("notice = %#v", notes)
+	}
+	fresh, err = svc.Sync(ctx, 1)
+	if err != nil || len(fresh) != 0 {
+		t.Fatalf("repeat fresh = %#v err=%v", fresh, err)
+	}
+	svc.notifyFresh(fresh)
+	if len(notes) != 1 {
+		t.Fatalf("empty sync sent another notice: %#v", notes)
+	}
+}
+
+func TestFreshFavoriteNoticeKeepsAShortList(t *testing.T) {
+	items := make([]FreshFavorite, 0, 9)
+	for i := 1; i <= 9; i++ {
+		items = append(items, FreshFavorite{Chat: 3, Platform: "qq", Track: testTrack(fmt.Sprint(i), fmt.Sprintf("歌%d", i), "歌手")})
+	}
+	items = append(items, FreshFavorite{Chat: 3, Platform: "netease", Track: testTrack("n", "网易新歌", "另一人")})
+	text := formatFreshFavoriteNotices(items)[3]
+	if !strings.Contains(text, "网易云 1 首 · QQ 音乐 9 首") || !strings.Contains(text, "还有 2 首") || strings.Count(text, "\n· ") > 8 {
+		t.Fatal(text)
 	}
 }
 

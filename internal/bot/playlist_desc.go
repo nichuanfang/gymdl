@@ -45,25 +45,26 @@ func (app *BotApp) initPlaylistCatalog() {
 	app.playlistCatalog = store
 }
 
-func loadTidyPlaylists(ctx context.Context, catalog *playlistcatalog.Store, fallback []config.PlaylistInfo) ([]config.PlaylistInfo, bool, error) {
-	if catalog != nil {
-		synced, err := catalog.Synced(ctx)
-		if err != nil {
-			return nil, false, err
-		}
-		if synced {
-			rows, err := catalog.Active(ctx)
-			if err != nil {
-				return nil, true, err
-			}
-			entries := make([]config.PlaylistInfo, 0, len(rows))
-			for _, row := range rows {
-				entries = append(entries, config.PlaylistInfo{Name: row.Name, Desc: row.Desc})
-			}
-			return tidyPlaylistEntries(entries), true, nil
-		}
+func loadTidyPlaylists(ctx context.Context, catalog *playlistcatalog.Store) ([]config.PlaylistInfo, bool, error) {
+	if catalog == nil {
+		return nil, false, nil
 	}
-	return tidyPlaylistEntries(fallback), false, nil
+	synced, err := catalog.Synced(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	if !synced {
+		return nil, false, nil
+	}
+	rows, err := catalog.Active(ctx)
+	if err != nil {
+		return nil, true, err
+	}
+	entries := make([]config.PlaylistInfo, 0, len(rows))
+	for _, row := range rows {
+		entries = append(entries, config.PlaylistInfo{Name: row.Name, Desc: row.Desc})
+	}
+	return tidyPlaylistEntries(entries), true, nil
 }
 
 func tidyPlaylistEntries(entries []config.PlaylistInfo) []config.PlaylistInfo {
@@ -242,11 +243,7 @@ func (app *BotApp) syncPlaylistDesc(c tb.Context, session pendingPlaylistDesc) e
 	if err != nil {
 		return editPlaylistDescMessage(c, "同步失败："+err.Error())
 	}
-	var seeds []config.PlaylistInfo
-	if app.cfg.PlaylistOrganizer != nil {
-		seeds = app.cfg.PlaylistOrganizer.TidyPlaylist
-	}
-	result, err := app.playlistCatalog.Apply(ctx, remotes, seeds, time.Now())
+	result, err := app.playlistCatalog.Apply(ctx, remotes, nil, time.Now())
 	if err != nil {
 		return editPlaylistDescMessage(c, "同步失败："+err.Error())
 	}

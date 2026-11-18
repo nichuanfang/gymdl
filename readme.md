@@ -279,7 +279,7 @@ playlist_organizer:
   navidrome_password: '' # Navidrome密码
   web_app_url: '' # Nginx 上 Telegram 歌单选择页面地址，例如 https://webapp.example.com
   playlist_assist: false # 是否使用 AI 为歌单整理预选分类
-  # 歌单列表保存在同目录的 config.playlists.yaml，示例见 config.playlists.example.yaml
+  # 歌单名称和描述保存在 SQLite，用 /playlist_desc 或控制台维护
 
 # 收藏自动入库与遗珠找回
 favorites:
@@ -346,7 +346,7 @@ n8n_config:
 
 > ℹ️ **提示**：展开查看每个字段的详细注释说明，方便初学者直接修改配置。完整模板见仓库中的 [`config.yaml.example`](config.yaml.example)。
 
-> 📚 **歌单配置**：歌单选项归属 `playlist_organizer`，列表从同目录的 `config.playlists.yaml` 读取，格式见 [`config.playlists.example.yaml`](config.playlists.example.yaml)。旧版位于 `n8n_config` 的歌单列表和 AI 分类设置会自动迁移；首次在 WebUI 保存设置时，旧版内联列表会迁移到该文件。修改后需重启服务。
+> 📚 **歌单配置**：连接信息归属 `playlist_organizer`。歌单名称和描述只保存在 SQLite。每天 04:10 从 Navidrome 同步名称，已有描述保持不变；新歌单的第一句描述来自 Navidrome 备注。用 `/playlist_desc` 或控制台修改描述。
 
 > 🎼 **歌单整理**：`/assign_playlist` 由 gymdl 逐首处理。每首歌先展示歌曲卡片；开启 AI 建议后，WebSearch 和分类完成时才显示长期使用的 Nginx 歌单选择页面，确保 AI 匹配能作为默认勾选项。等待期间可跳过本首或结束整理；AI 不可用时仍可手动选择。AI 建议需要开启 `playlist_organizer.playlist_assist` 和 `ai.enable`，会使用歌曲来源备注协助核验。MusicRAG 仍消费 n8n `music_rag` 表；请配置 `n8n_config.n8n_base_url`、有数据表行读取/新增/删除权限的 `n8n_config.api_key` 和 `n8n_config.music_rag_table_id`。未配置时歌单仍会更新，但机器人会明确提示 MusicRAG 状态未同步；`/empty_trash` 必须配置状态表桥接后才会执行。
 > 🤖 **AI 智能歌单**：`/ai_playlist` 在 gymdl 中直接调用 AI、Pinecone 和 Navidrome，可从已有的 `[AI]` 歌单中选择空歌单或已有曲目的歌单。文本模型复用 `ai.base_url`、`ai.api_key` 和 `ai.model`；Embedding 可单独设置 `embedding_base_url`、`embedding_api_key` 与服务返回的模型 ID。Embedding 模型、namespace 和 1536 维索引必须与 MusicRAG 入库配置一致；检索意图和歌单编排模型可通过 `query_model` / `playlist_model` 覆盖。
@@ -388,7 +388,6 @@ go run main.go
 ```bash
 # 1. 准备配置与目录
 cp config.yaml.example config.yaml
-cp config.playlists.example.yaml config.playlists.yaml
 mkdir -p data
 
 # 2. 准备 Compose 文件（需先创建外部网络 mynet）
@@ -400,7 +399,7 @@ docker compose up -d
 ```
 
 > 镜像：`ghcr.io/nichuanfang/gymdl:latest`。当前发布镜像目标平台为 `linux/amd64`，ARM 主机通过 Compose 示例中的 `platform: linux/amd64` 模拟运行。
-> Compose 示例必须挂载 `./config.yaml`、`./config.playlists.yaml` 与 `./data`（SQLite、历史、下载目录、日志、临时文件等均在其中），否则将无法启动或丢失数据。歌单文件需先创建再启动容器，避免 Docker 把不存在的文件挂成目录。
+> Compose 示例必须挂载 `./config.yaml` 与 `./data`（SQLite、历史、下载目录、日志、临时文件等均在其中），否则将无法启动或丢失数据。歌单描述在数据库里，不需要单独的歌单配置文件。
 
 > [!TIP]
 > 推荐的三种运行模式

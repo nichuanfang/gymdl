@@ -202,42 +202,36 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 			waiting++
 		}
 	}
-	fmt.Fprintf(&text, "遗珠\n第 %d 组 · 还剩 %d 首\n", page+1, waiting)
+	fmt.Fprintf(&text, "%s\n", rediscoverHeading(card.Tracks))
+	if pages > 1 {
+		fmt.Fprintf(&text, "第 %d 组，共 %d 组 · 还剩 %d 首", page+1, pages, waiting)
+	} else {
+		fmt.Fprintf(&text, "第 %d 组 · 还剩 %d 首", page+1, waiting)
+	}
+	if rediscoverHasListenLink(visible) {
+		text.WriteString(" · 点歌名试听")
+	}
+	text.WriteString("\n")
 	if card.SkippedOwned > 0 {
 		fmt.Fprintf(&text, "已避开曲库里的 %d 首\n", card.SkippedOwned)
 	}
 	if line := rediscoverShortfallLine(card); line != "" {
 		text.WriteString(line)
 	}
-	for _, t := range visible {
-		if strings.TrimSpace(t.URL) != "" {
-			text.WriteString("点歌名试听。\n")
-			break
-		}
-	}
 	markup := &tb.ReplyMarkup{}
 	for offset, t := range visible {
 		index := start + offset
-		reason := "听过"
-		if t.Favorite {
-			reason = "收藏"
-		}
-		if t.Plays > 0 {
-			reason += fmt.Sprintf(" · %d 次", t.Plays)
-		}
-		switch t.CardAction {
-		case "queued":
-			reason += " · 已提交入库"
-		case "dismissed":
-			reason += " · 不再推荐"
-		}
-		fmt.Fprintf(&text, "\n%s\n%s\n%s\n", discoveryListenTitle(t.Title, t.URL), utils.EscapeHTML(utils.TruncateString(t.Artist, 32)), reason)
+		fmt.Fprintf(&text, "\n%d. %s\n%s\n", offset+1, discoveryListenTitle(t.Title, t.URL), rediscoverMetaLine(t))
 		if t.CardAction == "" {
+			number := strconv.Itoa(offset + 1)
 			appendDiscoveryRows(markup, markup.Row(
-				markup.Data("入库", discoveryCallbackUnique, "download", card.Token, strconv.Itoa(index)),
-				markup.Data("不再推荐", discoveryCallbackUnique, "ignore", card.Token, strconv.Itoa(index)),
+				markup.Data(number+" 入库", discoveryCallbackUnique, "download", card.Token, strconv.Itoa(index)),
+				markup.Data(number+" 不再推荐", discoveryCallbackUnique, "ignore", card.Token, strconv.Itoa(index)),
 			))
 		}
+	}
+	if rediscoverNeedsConfirmation(card.Tracks) {
+		text.WriteString("\n有待确认的歌曲，发送 /favorites 处理。")
 	}
 	footer := tb.Row{}
 	if end < len(card.Tracks) {
@@ -251,10 +245,101 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	if len(footer) > 0 {
 		appendDiscoveryRows(markup, footer)
 	}
-	if pages > 1 {
-		fmt.Fprintf(&text, "\n共 %d 组，换组不重新检索。", pages)
-	}
 	return text.String(), markup
+}
+
+func rediscoverHeading(tracks []discovery.Track) string {
+	platform := ""
+	for _, track := range tracks {
+		if track.Platform == "" {
+			continue
+		}
+		if platform == "" {
+			platform = track.Platform
+			continue
+		}
+		if platform != track.Platform {
+			return "遗珠"
+		}
+	}
+	if platform == "" {
+		return "遗珠"
+	}
+	return "遗珠 · " + aichat.PlatformLabel(platform)
+}
+
+func rediscoverHasListenLink(tracks []discovery.Track) bool {
+	for _, track := range tracks {
+		if strings.TrimSpace(track.URL) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func rediscoverMetaLine(track discovery.Track) string {
+	parts := []string{utils.EscapeHTML(utils.TruncateString(track.Artist, 32))}
+	reason := "听过"
+	if track.Favorite {
+		reason = "收藏"
+	}
+	if track.Plays > 0 {
+		reason += fmt.Sprintf(" %d 次", track.Plays)
+	}
+	parts = append(parts, reason)
+	if decision := rediscoverDecision(track); decision != "" {
+		parts = append(parts, decision)
+	}
+	return strings.Join(parts, " · ")
+}
+
+func rediscoverDecision(track discovery.Track) string {
+	switch track.CardAction {
+	case "":
+		return ""
+	case "dismissed":
+		return "不再推荐"
+	case discovery.Queued:
+		return "排队"
+	case discovery.Running:
+		return "下载中"
+	case discovery.PendingUpload:
+		return "待上传"
+	case discovery.Completed:
+		return "已入库"
+	case discovery.Owned:
+		return "曲库已有"
+	case discovery.NeedsConfirmation:
+		return "待确认"
+	case discovery.Ignored:
+		return "已跳过"
+	case discovery.Failed:
+		note := strings.Join(strings.Fields(track.IngestNote), " ")
+		if note == "" {
+			return "失败"
+		}
+		return "失败 · " + utils.EscapeHTML(utils.TruncateString(note, 24))
+	default:
+		return ""
+	}
+}
+
+func rediscoverNeedsConfirmation(tracks []discovery.Track) bool {
+	for _, track := range tracks {
+		if track.CardAction == discovery.NeedsConfirmation {
+			return true
+		}
+	}
+	return false
+}
+
+func rediscoverSettled(action string) bool {
+	switch action {
+	case discovery.Completed, discovery.Owned, discovery.Failed, discovery.Ignored, discovery.NeedsConfirmation, "dismissed":
+		return true
+	default:
+		return false
+	}
 }
 
 func rediscoverShortfallLine(card discovery.Card) string {
@@ -357,7 +442,7 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 	var text strings.Builder
 	text.WriteString("收藏\n")
 	if app.discovery.Enabled {
-		fmt.Fprintf(&text, "每 %d 分钟看一次新喜欢。\n", max(1, int(app.discovery.PollInterval/time.Minute)))
+		fmt.Fprintf(&text, "每 %d 分钟看一次新喜欢，有新歌会发一条消息。\n", max(1, int(app.discovery.PollInterval/time.Minute)))
 	} else {
 		text.WriteString("自动同步还没开。绑定后，新增喜欢不会自动入库。\n")
 	}
@@ -425,6 +510,13 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 		appendDiscoveryRows(markup, extra)
 	}
 	return text.String(), markup, nil
+}
+
+func favoritesSyncNotice(fresh []discovery.FreshFavorite) string {
+	if len(fresh) == 0 {
+		return "看过了，没有新的收藏。"
+	}
+	return fmt.Sprintf("新增 %d 首，已排队入库。", len(fresh))
 }
 
 func maskedDiscoveryAccount(s string) string {
@@ -519,10 +611,16 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			defer app.discoveryCommandMu.Unlock()
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
-			if err := app.discovery.Sync(ctx, c.Sender().ID); err != nil {
-				return app.presentFavorites(c, "❌ "+err.Error())
+			fresh, syncErr := app.discovery.Sync(ctx, c.Sender().ID)
+			notice := favoritesSyncNotice(fresh)
+			if syncErr != nil {
+				if len(fresh) > 0 {
+					notice = "❌ " + syncErr.Error() + "\n" + notice
+				} else {
+					notice = "❌ " + syncErr.Error()
+				}
 			}
-			return app.presentFavorites(c, "✅ 收藏读取完成，新增歌曲已进入队列。首次接入请先绑定账号。")
+			return app.presentFavorites(c, notice)
 		case "history":
 			text, markup := discoveryPlatformMenu()
 			return answerOnCard(c, text, markup, false)
@@ -557,7 +655,7 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		if err != nil {
 			return c.Send(err.Error())
 		}
-		if _, err = app.discovery.Store.Apply(context.Background(), card.User, card.Chat, *card.Snapshot, true); err != nil {
+		if _, _, err = app.discovery.Store.Apply(context.Background(), card.User, card.Chat, *card.Snapshot, true); err != nil {
 			return c.Send(err.Error())
 		}
 		return c.Edit("✅ 已绑定并建立收藏基线。已有收藏未下载；发送 /favorites 查看同步状态。", &tb.ReplyMarkup{})
@@ -579,11 +677,26 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		if e != nil || page < 0 || page > 100 {
 			return c.Respond(&tb.CallbackResponse{Text: "分组无效", ShowAlert: true})
 		}
-		if err = c.Respond(&tb.CallbackResponse{Text: "已换到下一组"}); err != nil {
+		if err = c.Respond(&tb.CallbackResponse{Text: "已换组"}); err != nil {
 			return err
 		}
-		text, markup := discoveryRecommendationCard(card, page)
-		return editDiscoveryMessage(c, text, markup, true)
+		app.rediscoverMu.Lock()
+		fresh, loadErr := app.discovery.Store.Card(context.Background(), key, c.Sender().ID, c.Chat().ID)
+		if loadErr == nil {
+			fresh.Page = page
+			loadErr = app.discovery.Store.ReplaceCard(context.Background(), fresh)
+			card = fresh
+		}
+		var editErr error
+		if loadErr == nil {
+			text, markup := discoveryRecommendationCard(card, page)
+			editErr = editDiscoveryMessage(c, text, markup, true)
+		}
+		app.rediscoverMu.Unlock()
+		if loadErr != nil {
+			return c.Send("保存操作失败，请重试。")
+		}
+		return editErr
 	}
 	type cardChoice struct {
 		index int
@@ -637,31 +750,143 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 	default:
 		return c.Respond(&tb.CallbackResponse{Text: "未知操作", ShowAlert: true})
 	}
-	if err = c.Respond(&tb.CallbackResponse{Text: "已收到，正在保存…"}); err != nil {
+	ack := "已开始入库"
+	if action == "ignore" {
+		ack = "不再推荐"
+	}
+	if err = c.Respond(&tb.CallbackResponse{Text: ack}); err != nil {
 		return err
 	}
+	app.rediscoverMu.Lock()
+	card, err = app.discovery.Store.Card(context.Background(), key, c.Sender().ID, c.Chat().ID)
+	if err != nil {
+		app.rediscoverMu.Unlock()
+		return c.Send("保存操作失败，请重试。")
+	}
+	watch := false
 	for _, choice := range choices {
-		if choice.track.CardAction != "" {
+		if choice.index < 0 || choice.index >= len(card.Tracks) || card.Tracks[choice.index].CardAction != "" {
 			continue
 		}
-		track := choice.track
+		track := card.Tracks[choice.index]
 		track.CardAction = ""
+		track.IngestID = ""
+		track.IngestNote = ""
 		if action == "ignore" {
 			err = app.discovery.Store.Preference(context.Background(), card.User, track, true)
 			card.Tracks[choice.index].CardAction = "dismissed"
 		} else {
-			err = app.discovery.Store.Enqueue(context.Background(), card.User, card.Chat, track)
-			card.Tracks[choice.index].CardAction = "queued"
+			var id string
+			id, err = app.discovery.Store.Enqueue(context.Background(), card.User, card.Chat, track)
+			card.Tracks[choice.index].IngestID = id
+			card.Tracks[choice.index].IngestNote = ""
+			card.Tracks[choice.index].CardAction = discovery.Queued
+			watch = watch || id != ""
 		}
 		if err != nil {
+			app.rediscoverMu.Unlock()
 			return c.Send("保存操作失败，请重试。")
 		}
 	}
+	card.Page = page
 	if err = app.discovery.Store.ReplaceCard(context.Background(), card); err != nil {
+		app.rediscoverMu.Unlock()
 		return c.Send("保存操作失败，请重试。")
 	}
+	message := c.Message()
 	text, markup := discoveryRecommendationCard(card, page)
-	return editDiscoveryMessage(c, text, markup, true)
+	editErr := editDiscoveryMessage(c, text, markup, true)
+	app.rediscoverMu.Unlock()
+	if watch && message != nil {
+		go app.watchRediscoverCard(card.Token, card.User, card.Chat, message)
+	}
+	return editErr
+}
+
+func (app *BotApp) watchRediscoverCard(token string, user, chat int64, message *tb.Message) {
+	if app == nil || app.bot == nil || message == nil {
+		return
+	}
+	deadline := time.NewTimer(12 * time.Minute)
+	defer deadline.Stop()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		if !app.refreshRediscoverMessage(token, user, chat, message) {
+			return
+		}
+		select {
+		case <-deadline.C:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (app *BotApp) refreshRediscoverMessage(token string, user, chat int64, message *tb.Message) bool {
+	if app == nil || app.discovery == nil || app.discovery.Store == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	app.rediscoverMu.Lock()
+	card, err := app.discovery.Store.Card(ctx, token, user, chat)
+	if err != nil {
+		app.rediscoverMu.Unlock()
+		return false
+	}
+	updated, changed, pending, err := syncRediscoverProgress(ctx, app.discovery.Store, card)
+	if err != nil {
+		app.rediscoverMu.Unlock()
+		return true
+	}
+	if changed {
+		if err = app.discovery.Store.ReplaceCard(ctx, updated); err != nil {
+			app.rediscoverMu.Unlock()
+			return true
+		}
+		if app.bot != nil && message != nil {
+			text, markup := discoveryRecommendationCard(updated, updated.Page)
+			if _, err = app.bot.Edit(message, text, tb.ModeHTML, markup); err != nil && !strings.Contains(err.Error(), "not modified") {
+				utils.WarnWithFormat("[Discovery] 更新遗珠进度失败: %v", err)
+			}
+		}
+	}
+	app.rediscoverMu.Unlock()
+	return pending
+}
+
+func syncRediscoverProgress(ctx context.Context, store *discovery.Store, card discovery.Card) (discovery.Card, bool, bool, error) {
+	if store == nil {
+		return card, false, false, nil
+	}
+	changed := false
+	pending := false
+	for index := range card.Tracks {
+		id := strings.TrimSpace(card.Tracks[index].IngestID)
+		action := card.Tracks[index].CardAction
+		if id == "" || action == "dismissed" || rediscoverSettled(action) {
+			continue
+		}
+		job, err := store.Job(ctx, id)
+		if err != nil {
+			pending = true
+			continue
+		}
+		note := ""
+		if job.State == discovery.Failed {
+			note = strings.Join(strings.Fields(job.Error), " ")
+		}
+		if card.Tracks[index].CardAction != job.State || card.Tracks[index].IngestNote != note {
+			card.Tracks[index].CardAction = job.State
+			card.Tracks[index].IngestNote = note
+			changed = true
+		}
+		if !rediscoverSettled(job.State) {
+			pending = true
+		}
+	}
+	return card, changed, pending, nil
 }
 
 func appendDiscoveryRows(markup *tb.ReplyMarkup, rows ...tb.Row) {

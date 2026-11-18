@@ -28,9 +28,14 @@ type Track struct {
 	// Verified means metadata identifies one music recording, not a video title/uploader.
 	Verified bool `json:"verified"`
 	Approved bool `json:"approved,omitempty"`
-	// CardAction is only for a saved recommendation card: "queued" or "dismissed".
-	// Clear it before enqueueing the track.
+	// CardAction is only for a saved recommendation card.
+	// Empty means undecided. "dismissed" is permanent. Other values mirror job
+	// states such as queued, running, and completed. Clear it before enqueueing.
 	CardAction string `json:"card_action,omitempty"`
+	// IngestID ties a recommendation row to its download job. Clear it before enqueueing.
+	IngestID string `json:"ingest_id,omitempty"`
+	// IngestNote is a short failure reason shown on the recommendation card.
+	IngestNote string `json:"ingest_note,omitempty"`
 }
 
 func Normalize(s string) string {
@@ -112,6 +117,8 @@ type Card struct {
 	Unconfirmed int `json:"unconfirmed,omitempty"`
 	// Requested is the 3, 6, or 9 the user asked for.
 	Requested int `json:"requested,omitempty"`
+	// Page is the group currently shown on the Telegram message.
+	Page int `json:"page,omitempty"`
 }
 
 const (

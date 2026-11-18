@@ -147,7 +147,7 @@ func TestSourceSyncFailurePreservesSnapshotAndPausesExpiredLogin(t *testing.T) {
 	s.Apply(ctx, 1, 1, snapshot("account", a), true)
 	notices := 0
 	svc := Service{Store: s, Enabled: true, Provider: stubProvider{fetchErr: fmt.Errorf("登录失效，请重登")}, Notify: func(int64, string) error { notices++; return nil }}
-	if err := svc.Sync(ctx, 1); err == nil {
+	if _, err := svc.Sync(ctx, 1); err == nil {
 		t.Fatal("source failure hidden")
 	}
 	bindings, _ := s.Bindings(ctx, 1)

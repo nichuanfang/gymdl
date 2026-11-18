@@ -185,10 +185,10 @@ func TestDiscoveryCardShowsThreeAndKeepsTheRestForTheNextPage(t *testing.T) {
 			t.Fatalf("dense button still present: %s", unwanted)
 		}
 	}
-	if !labels["下一组"] || !labels["这组入库"] || !labels["入库"] || !labels["不再推荐"] || labels["跳过"] {
+	if !labels["下一组"] || !labels["这组入库"] || !labels["1 入库"] || !labels["1 不再推荐"] || !labels["2 入库"] || labels["入库"] || labels["跳过"] || labels["试听"] {
 		t.Fatalf("missing page actions: %#v", labels)
 	}
-	if !strings.Contains(text, `<a href="https://music.163.com/song?id=1">第一首</a>`) || !strings.Contains(text, "点歌名试听。") {
+	if !strings.Contains(text, `<a href="https://music.163.com/song?id=1">第一首</a>`) || !strings.Contains(text, "点歌名试听") || !strings.Contains(text, "\n1. ") {
 		t.Fatalf("song name is not the listen link: %s", text)
 	}
 	for label := range labels {
@@ -219,7 +219,7 @@ func TestDiscoveryCardShowsThreeAndKeepsTheRestForTheNextPage(t *testing.T) {
 	acted[0].CardAction = "queued"
 	acted[1].CardAction = "dismissed"
 	actedText, actedMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: acted}, 0)
-	if !strings.Contains(actedText, "已提交入库") || !strings.Contains(actedText, "不再推荐") || !strings.Contains(actedText, "还剩 0 首") {
+	if !strings.Contains(actedText, "排队") || !strings.Contains(actedText, "不再推荐") || !strings.Contains(actedText, "还剩 0 首") {
 		t.Fatalf("decisions were not shown on the card: %s", actedText)
 	}
 	if buttonTexts(actedMarkup)["入库"] || buttonTexts(actedMarkup)["不再推荐"] || buttonTexts(actedMarkup)["这组入库"] {
@@ -278,7 +278,7 @@ func TestFavoritesActionsRewriteTheSameCard(t *testing.T) {
 	if edited := click("pause", "netease").edited; !strings.Contains(edited, "收藏") {
 		t.Fatalf("pause did not refresh the favorites card: %s", edited)
 	}
-	if edited := click("sync", "menu").edited; !strings.Contains(edited, "收藏读取完成") || !strings.Contains(edited, "收藏") {
+	if edited := click("sync", "menu").edited; !strings.Contains(edited, "没有新的收藏") || !strings.Contains(edited, "收藏") {
 		t.Fatalf("sync did not stay on the favorites card: %s", edited)
 	}
 	if edited := click("retry", "menu").edited; !strings.Contains(edited, "失败任务已重新排队") {
@@ -333,7 +333,7 @@ func TestRediscoverDecisionStaysOnTheCard(t *testing.T) {
 	if len(jobs) != 0 {
 		t.Fatal("dismissed track was queued")
 	}
-	if edited := click("download", "1").edited; !strings.Contains(edited, "已提交入库") {
+	if edited := click("download", "1").edited; !strings.Contains(edited, "排队") || !strings.Contains(edited, "2. ") {
 		t.Fatalf("queue did not stay on the card: %s", edited)
 	}
 	click("download", "1")
@@ -361,7 +361,7 @@ func TestFavoritesCardOmitsActionsThatHaveNothingToDo(t *testing.T) {
 	if !labels["绑定 网易云"] || !labels["找回遗珠"] {
 		t.Fatalf("useful actions missing: %#v", labels)
 	}
-	if err = store.Enqueue(context.Background(), 7, 7, discovery.Track{Platform: "netease", ID: "9", Title: "失败的歌", Artist: "甲", URL: "https://music.163.com/song?id=9", Verified: true}); err != nil {
+	if _, err = store.Enqueue(context.Background(), 7, 7, discovery.Track{Platform: "netease", ID: "9", Title: "失败的歌", Artist: "甲", URL: "https://music.163.com/song?id=9", Verified: true}); err != nil {
 		t.Fatal(err)
 	}
 	jobs, err := store.Jobs(context.Background(), 7, false)
@@ -482,5 +482,68 @@ func TestRediscoverSongNameOpensTheListenLink(t *testing.T) {
 				t.Fatalf("plain track grew a link button: %s", raw)
 			}
 		}
+	}
+}
+
+func TestRediscoverProgressFollowsTheDownload(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	track := discovery.Track{Platform: "netease", ID: "1", Title: "发如雪", Artist: "周杰伦", URL: "https://music.163.com/song?id=1", Verified: true, Plays: 4}
+	id, err := store.Enqueue(context.Background(), 1, 1, track)
+	if err != nil || id == "" {
+		t.Fatal(err, id)
+	}
+	track.IngestID = id
+	track.CardAction = discovery.Queued
+	card := discovery.Card{Token: "card", User: 1, Chat: 1, Tracks: []discovery.Track{track}, Page: 0}
+	text, markup := discoveryRecommendationCard(card, 0)
+	if !strings.Contains(text, "遗珠 · 网易云") || !strings.Contains(text, "排队") || !strings.Contains(text, "听过 4 次") || buttonTexts(markup)["1 入库"] {
+		t.Fatalf("queued card = %s %#v", text, buttonTexts(markup))
+	}
+	updated, changed, pending, err := syncRediscoverProgress(context.Background(), store, card)
+	if err != nil || changed || !pending || updated.Tracks[0].CardAction != discovery.Queued {
+		t.Fatalf("queued progress = %#v changed=%t pending=%t err=%v", updated.Tracks, changed, pending, err)
+	}
+	job, err := store.Job(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Finish(context.Background(), job, discovery.Running, "", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	updated, changed, pending, err = syncRediscoverProgress(context.Background(), store, updated)
+	if err != nil || !changed || !pending || updated.Tracks[0].CardAction != discovery.Running {
+		t.Fatalf("running progress = %#v changed=%t pending=%t err=%v", updated.Tracks, changed, pending, err)
+	}
+	runningText, _ := discoveryRecommendationCard(updated, 0)
+	if !strings.Contains(runningText, "下载中") {
+		t.Fatal(runningText)
+	}
+	job, err = store.Job(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Finish(context.Background(), job, discovery.Completed, "", "ok", 0); err != nil {
+		t.Fatal(err)
+	}
+	updated, changed, pending, err = syncRediscoverProgress(context.Background(), store, updated)
+	if err != nil || !changed || pending || updated.Tracks[0].CardAction != discovery.Completed {
+		t.Fatalf("done progress = %#v changed=%t pending=%t err=%v", updated.Tracks, changed, pending, err)
+	}
+	doneText, doneMarkup := discoveryRecommendationCard(updated, 0)
+	if !strings.Contains(doneText, "已入库") || buttonTexts(doneMarkup)["1 入库"] || buttonTexts(doneMarkup)["这组入库"] {
+		t.Fatalf("done card = %s %#v", doneText, buttonTexts(doneMarkup))
+	}
+	job, _ = store.Job(context.Background(), id)
+	if err = store.Finish(context.Background(), job, discovery.Failed, "暂时失败", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	updated.Tracks[0].CardAction = discovery.Running
+	failed, changed, pending, err := syncRediscoverProgress(context.Background(), store, updated)
+	if err != nil || !changed || pending || !strings.Contains(rediscoverDecision(failed.Tracks[0]), "失败") || !strings.Contains(rediscoverDecision(failed.Tracks[0]), "暂时失败") {
+		t.Fatalf("failure = %#v changed=%t pending=%t err=%v", failed.Tracks, changed, pending, err)
 	}
 }
