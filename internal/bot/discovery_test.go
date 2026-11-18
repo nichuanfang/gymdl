@@ -168,6 +168,37 @@ func (c *discoveryCallbackContext) Send(v interface{}, _ ...interface{}) error {
 	return nil
 }
 
+func TestDiscoveryPendingCardShowsOneSong(t *testing.T) {
+	job := discovery.Job{
+		ID: "job-1",
+		Track: discovery.Track{
+			Title: "至少还有你", Artist: "林忆莲", URL: "https://music.163.com/song?id=1",
+		},
+		Error: "对不上唯一版本 <原版>",
+	}
+	text, markup := discoveryPendingCard(job, 0, 3)
+	if strings.Contains(text, "确认 1") || strings.Contains(text, "https://music.163.com/song?id=1") && !strings.Contains(text, `<a href=`) || !strings.Contains(text, "1 / 3") {
+		t.Fatalf("pending card dumped the old list: %s", text)
+	}
+	if !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">至少还有你</a></b>`) || !strings.Contains(text, "林忆莲") || !strings.Contains(text, "对不上唯一版本 &lt;原版&gt;") {
+		t.Fatalf("pending card = %s", text)
+	}
+	if got := buttonRowTexts(markup); len(got) != 3 || got[0][0] != "确认" || got[1][0] != "下一首" || got[2][0] != "跳过" {
+		t.Fatalf("pending rows = %#v", got)
+	}
+	if markup.InlineKeyboard[0][0].Data != "accept|job-1|0" || markup.InlineKeyboard[2][0].Data != "reject|job-1|0" {
+		t.Fatalf("pending callbacks = %s / %s", markup.InlineKeyboard[0][0].Data, markup.InlineKeyboard[2][0].Data)
+	}
+	last, lastMarkup := discoveryPendingCard(job, 2, 3)
+	if !strings.Contains(last, "3 / 3") || buttonTexts(lastMarkup)["下一首"] || !buttonTexts(lastMarkup)["上一首"] {
+		t.Fatalf("last pending card = %s %#v", last, buttonTexts(lastMarkup))
+	}
+	only, onlyMarkup := discoveryPendingCard(job, 0, 1)
+	if strings.Contains(only, " / ") || buttonTexts(onlyMarkup)["下一首"] || !buttonTexts(onlyMarkup)["确认"] || !buttonTexts(onlyMarkup)["跳过"] {
+		t.Fatalf("single pending card = %s %#v", only, buttonTexts(onlyMarkup))
+	}
+}
+
 func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	tracks := []discovery.Track{
 		{Platform: "netease", ID: "1", Title: "第一首", Artist: "甲", Album: "专辑甲", URL: "https://music.163.com/song?id=1"},

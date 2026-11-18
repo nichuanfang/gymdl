@@ -590,18 +590,21 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			return err
 		}
 		return c.Edit("已取消。", &tb.ReplyMarkup{})
-	case "probe", "pause", "resume", "sync", "history", "retry", "status", "accept", "reject", "pending":
+	case "pending":
+		page, e := strconv.Atoi(key)
+		if e != nil || page < 0 || page > 10000 {
+			return c.Respond(&tb.CallbackResponse{Text: "页码无效", ShowAlert: true})
+		}
+		if err := c.Respond(&tb.CallbackResponse{Text: "已换一首"}); err != nil {
+			return err
+		}
+		return app.showDiscoveryPending(c, page)
+	case "probe", "pause", "resume", "sync", "history", "retry", "status", "accept", "reject":
 		if err := c.Respond(&tb.CallbackResponse{Text: "已收到，正在处理…"}); err != nil {
 			return err
 		}
 		ctx := context.Background()
 		switch action {
-		case "pending":
-			page, e := strconv.Atoi(key)
-			if e != nil {
-				return c.Send("页码无效")
-			}
-			return app.showDiscoveryPending(c, page)
 		case "probe":
 			return app.previewFavoriteBinding(c, key)
 		case "pause", "resume":
@@ -638,10 +641,16 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			_ = app.discovery.Reconcile(ctx, c.Sender().ID)
 			return app.presentFavorites(c, "")
 		case "accept", "reject":
+			next := 0
+			if len(args) >= 3 {
+				if n, convErr := strconv.Atoi(args[2]); convErr == nil && n >= 0 && n <= 10000 {
+					next = n
+				}
+			}
 			if err := app.discovery.Store.ResolveJob(ctx, key, c.Sender().ID, action == "accept"); err != nil {
 				return answerOnCard(c, err.Error(), nil, false)
 			}
-			return app.showDiscoveryPending(c, 0)
+			return app.showDiscoveryPending(c, next)
 		}
 	}
 	card, err := app.discovery.Store.Card(context.Background(), key, c.Sender().ID, c.Chat().ID)
@@ -910,29 +919,48 @@ func (app *BotApp) showDiscoveryPending(c tb.Context, page int) error {
 	if page < 0 || page > 10000 {
 		return answerOnCard(c, "页码无效", nil, false)
 	}
-	jobs, err := app.discovery.Store.Confirmations(context.Background(), c.Sender().ID, page*8)
+	job, index, total, err := app.discovery.Store.ConfirmationAt(context.Background(), c.Sender().ID, page)
 	if err != nil {
 		return answerOnCard(c, "无法读取待确认任务", nil, false)
 	}
-	if len(jobs) == 0 {
+	if total == 0 {
 		return answerOnCard(c, "没有待确认任务。", &tb.ReplyMarkup{}, false)
 	}
-	markup := &tb.ReplyMarkup{}
+	text, markup := discoveryPendingCard(job, index, total)
+	return answerOnCard(c, text, markup, true)
+}
+
+func discoveryPendingCard(job discovery.Job, index, total int) (string, *tb.ReplyMarkup) {
 	var text strings.Builder
-	fmt.Fprintf(&text, "🎵 待确认任务 · 第 %d 页\n请先核对原链接；确认后仅处理原链接音频。\n", page+1)
-	for i, j := range jobs[:min(8, len(jobs))] {
-		fmt.Fprintf(&text, "\n%d. %s — %s\n%s\n%s\n", i+1, utils.TruncateString(j.Track.Title, 60), utils.TruncateString(j.Track.Artist, 40), utils.TruncateString(j.Error, 100), j.Track.URL)
-		appendDiscoveryRows(markup, markup.Row(markup.Data(fmt.Sprintf("确认 %d", i+1), discoveryCallbackUnique, "accept", j.ID), markup.Data("跳过", discoveryCallbackUnique, "reject", j.ID)))
+	text.WriteString("待确认\n")
+	if total > 1 {
+		fmt.Fprintf(&text, "%d / %d\n", index+1, total)
 	}
-	row := tb.Row{}
-	if page > 0 {
-		row = append(row, markup.Data("上一页", discoveryCallbackUnique, "pending", strconv.Itoa(page-1)))
+	text.WriteByte('\n')
+	fmt.Fprintf(&text, "<b>%s</b>\n", discoveryListenTitle(job.Track.Title, job.Track.URL))
+	if artist := strings.TrimSpace(job.Track.Artist); artist != "" {
+		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
 	}
-	if len(jobs) > 8 {
-		row = append(row, markup.Data("下一页", discoveryCallbackUnique, "pending", strconv.Itoa(page+1)))
+	if note := strings.TrimSpace(job.Error); note != "" {
+		text.WriteByte('\n')
+		text.WriteString(utils.EscapeHTML(utils.TruncateString(note, 120)))
 	}
-	if len(row) > 0 {
-		appendDiscoveryRows(markup, row)
+	markup := &tb.ReplyMarkup{}
+	appendDiscoveryRows(markup, markup.Row(
+		markup.Data("确认", discoveryCallbackUnique, "accept", job.ID, strconv.Itoa(index)),
+	))
+	nav := tb.Row{}
+	if index > 0 {
+		nav = append(nav, markup.Data("上一首", discoveryCallbackUnique, "pending", strconv.Itoa(index-1)))
 	}
-	return answerOnCard(c, text.String(), markup, false)
+	if index+1 < total {
+		nav = append(nav, markup.Data("下一首", discoveryCallbackUnique, "pending", strconv.Itoa(index+1)))
+	}
+	if len(nav) > 0 {
+		appendDiscoveryRows(markup, nav)
+	}
+	appendDiscoveryRows(markup, markup.Row(
+		markup.Data("跳过", discoveryCallbackUnique, "reject", job.ID, strconv.Itoa(index)),
+	))
+	return strings.TrimRight(text.String(), "\n"), markup
 }

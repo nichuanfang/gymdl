@@ -15,8 +15,8 @@ func TestRenderEscapesReplyAndAddsNoModeFooter(t *testing.T) {
 		}},
 	}
 	text := Render(out, false, true)
-	if !strings.Contains(text, "&lt;歌&gt;") || !strings.Contains(text, "&lt;A&gt;") {
-		t.Fatalf("reply must be HTML escaped: %q", text)
+	if !strings.Contains(text, "&lt;歌&gt;") || strings.Contains(text, "Song") {
+		t.Fatalf("reply must stay escaped and leave the song list to its card: %q", text)
 	}
 	if strings.Contains(text, "<blockquote>") || strings.Contains(text, "/mode") {
 		t.Fatalf("reply must not carry a mode footer: %q", text)
@@ -39,17 +39,20 @@ func TestCollectorDeduplicatesProviderHits(t *testing.T) {
 	}
 }
 
-// TestRenderCandidatesHonoursEngineLimit guards the mismatch where the text
-// showed 10 tracks but the keyboard had every candidate. The engine already
-// caps the list by ai.max_suggestions, so Render must not re-cap it.
+// TestRenderCandidatesHonoursEngineLimit keeps the full engine list available
+// to the one-song card. The answer body itself no longer repeats that list.
 func TestRenderCandidatesHonoursEngineLimit(t *testing.T) {
 	candidates := make([]Candidate, 0, 14)
 	for i := 0; i < 14; i++ {
 		candidates = append(candidates, Candidate{Name: fmt.Sprintf("Song %d", i+1), Platform: "qq", URL: "u"})
 	}
-	text := Render(&TurnOutput{Reply: "ok", Candidates: candidates}, false, false)
+	text := RenderCandidates(candidates, 0)
 	if !strings.Contains(text, "Song 14") {
-		t.Fatal("render cut candidates the engine had already limited")
+		t.Fatal("candidate render cut tracks the engine had already limited")
+	}
+	answer := Render(&TurnOutput{Reply: "ok", Candidates: candidates}, false, false)
+	if strings.Contains(answer, "Song 14") || strings.Contains(answer, "可下载曲目") {
+		t.Fatalf("answer repeated the song list: %q", answer)
 	}
 }
 

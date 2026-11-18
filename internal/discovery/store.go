@@ -479,19 +479,25 @@ func (s *Store) PendingJobs(ctx context.Context, user int64) ([]Job, error) {
 	return jobs, rows.Err()
 }
 
-func (s *Store) Confirmations(ctx context.Context, user int64, offset int) ([]Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+jobColumns+` FROM discovery_jobs WHERE user_id=? AND state='needs_confirmation' ORDER BY updated,id LIMIT 9 OFFSET ?`, user, offset)
+// ConfirmationAt returns one needs_confirmation job in oldest-first order.
+// index is clamped into range. total is zero when nothing is waiting.
+func (s *Store) ConfirmationAt(ctx context.Context, user int64, index int) (Job, int, int, error) {
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM discovery_jobs WHERE user_id=? AND state='needs_confirmation'`, user).Scan(&total); err != nil {
+		return Job{}, 0, 0, err
+	}
+	if total == 0 {
+		return Job{}, 0, 0, nil
+	}
+	if index < 0 {
+		index = 0
+	}
+	if index >= total {
+		index = total - 1
+	}
+	job, err := scanJob(s.db.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM discovery_jobs WHERE user_id=? AND state='needs_confirmation' ORDER BY updated,id LIMIT 1 OFFSET ?`, user, index))
 	if err != nil {
-		return nil, err
+		return Job{}, 0, total, err
 	}
-	defer rows.Close()
-	var jobs []Job
-	for rows.Next() {
-		j, e := scanJob(rows)
-		if e != nil {
-			return nil, e
-		}
-		jobs = append(jobs, j)
-	}
-	return jobs, rows.Err()
+	return job, index, total, nil
 }

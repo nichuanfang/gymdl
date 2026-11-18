@@ -33,6 +33,36 @@ func snapshot(account string, tracks ...Track) Snapshot {
 	return Snapshot{Platform: "netease", Account: account, Tracks: tracks, Complete: true}
 }
 
+func TestConfirmationAtReturnsOneOldestJob(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, _, total, err := s.ConfirmationAt(ctx, 1, 0); err != nil || total != 0 {
+		t.Fatalf("empty confirmations = %d %v", total, err)
+	}
+	if _, err := s.Enqueue(ctx, 1, 1, testTrack("1", "第一首", "甲")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Enqueue(ctx, 1, 1, testTrack("2", "第二首", "乙")); err != nil {
+		t.Fatal(err)
+	}
+	// identity is a hash of title and artist, so match the first song by that hash.
+	if _, err := s.db.ExecContext(ctx, `UPDATE discovery_jobs SET state='needs_confirmation', last_error='对不上唯一版本', updated=CASE WHEN identity=? THEN 1 ELSE 2 END`, Identity(testTrack("1", "第一首", "甲"))); err != nil {
+		t.Fatal(err)
+	}
+	first, index, total, err := s.ConfirmationAt(ctx, 1, 0)
+	if err != nil || total != 2 || index != 0 || first.Track.Title != "第一首" || first.Error != "对不上唯一版本" {
+		t.Fatalf("first = %#v index=%d total=%d err=%v", first.Track, index, total, err)
+	}
+	second, index, total, err := s.ConfirmationAt(ctx, 1, 1)
+	if err != nil || total != 2 || index != 1 || second.Track.Title != "第二首" {
+		t.Fatalf("second = %#v index=%d total=%d err=%v", second.Track, index, total, err)
+	}
+	clamped, index, total, err := s.ConfirmationAt(ctx, 1, 9)
+	if err != nil || total != 2 || index != 1 || clamped.Track.Title != "第二首" {
+		t.Fatalf("clamp = %#v index=%d total=%d err=%v", clamped.Track, index, total, err)
+	}
+}
+
 func TestSnapshotBaselineIncrementalRebindAndIncomplete(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

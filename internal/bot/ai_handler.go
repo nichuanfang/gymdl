@@ -200,43 +200,50 @@ func (app *BotApp) runAITurn(c tb.Context, text string) error {
 		return fail(err)
 	}
 	reply := aichat.Render(out, app.cfg.AI.DefaultMode, app.aiEnabled(c))
-	markup := app.candidateMarkup(out.Candidates)
-	if chunks := aichat.SplitMessage(reply); len(chunks) > 1 {
-		// Telegram rejects messages over 4096 characters. Send the answer as
-		// several messages and keep the buttons on the last one.
-		for index, chunk := range chunks {
-			options := []any{tb.ModeHTML}
-			if index == len(chunks)-1 && markup != nil {
-				options = append(options, markup)
+	cardText, cardMarkup := candidateSongCard(out.Candidates, 0, true)
+	if strings.TrimSpace(reply) == "" && cardMarkup != nil {
+		if _, editErr := c.Bot().Edit(msg, cardText, tb.ModeHTML, cardMarkup); editErr != nil {
+			utils.WarnWithFormat("[AI] 编辑推荐卡片失败，改为新消息发送: %v", editErr)
+			if _, sendErr := c.Bot().Send(c.Chat(), cardText, tb.ModeHTML, cardMarkup); sendErr != nil {
+				utils.WarnWithFormat("[AI] 发送推荐卡片失败: %v", sendErr)
+				_, _ = c.Bot().Edit(msg, "❌ 回复发送失败，请重试。")
+				return nil
 			}
+			_ = c.Bot().Delete(msg)
+		}
+		return nil
+	}
+	if chunks := aichat.SplitMessage(reply); len(chunks) > 1 {
+		// Telegram rejects messages over 4096 characters. The song card is its
+		// own message, so none of these chunks carry the keyboard.
+		for index, chunk := range chunks {
 			if index == 0 {
-				if _, editErr := c.Bot().Edit(msg, chunk, options...); editErr != nil {
-					if _, sendErr := c.Bot().Send(c.Chat(), chunk, options...); sendErr != nil {
+				if _, editErr := c.Bot().Edit(msg, chunk, tb.ModeHTML); editErr != nil {
+					if _, sendErr := c.Bot().Send(c.Chat(), chunk, tb.ModeHTML); sendErr != nil {
 						utils.WarnWithFormat("[AI] 发送分片失败: %v", sendErr)
 					}
 				}
 				continue
 			}
-			if _, sendErr := c.Bot().Send(c.Chat(), chunk, options...); sendErr != nil {
+			if _, sendErr := c.Bot().Send(c.Chat(), chunk, tb.ModeHTML); sendErr != nil {
 				utils.WarnWithFormat("[AI] 发送分片失败: %v", sendErr)
 			}
 		}
-		return nil
-	}
-	options := []any{tb.ModeHTML}
-	if markup != nil {
-		options = append(options, markup)
-	}
-	if _, editErr := c.Bot().Edit(msg, reply, options...); editErr != nil {
+	} else if _, editErr := c.Bot().Edit(msg, reply, tb.ModeHTML); editErr != nil {
 		// Never leave the user staring at "正在理解你的需求…": fall back to a
 		// fresh message and delete the placeholder.
 		utils.WarnWithFormat("[AI] 编辑回复失败，改为新消息发送: %v", editErr)
-		if _, sendErr := c.Bot().Send(c.Chat(), reply, options...); sendErr != nil {
+		if _, sendErr := c.Bot().Send(c.Chat(), reply, tb.ModeHTML); sendErr != nil {
 			utils.WarnWithFormat("[AI] 发送回复失败: %v", sendErr)
 			_, _ = c.Bot().Edit(msg, "❌ 回复发送失败，请重试。")
 			return nil
 		}
 		_ = c.Bot().Delete(msg)
+	}
+	if cardMarkup != nil {
+		if _, sendErr := c.Bot().Send(c.Chat(), cardText, tb.ModeHTML, cardMarkup); sendErr != nil {
+			utils.WarnWithFormat("[AI] 发送推荐卡片失败: %v", sendErr)
+		}
 	}
 	return nil
 }
@@ -261,50 +268,113 @@ func friendlyAIError(cause error) string {
 	return "AI 这次没能完成回答，请稍后再试或换个说法。"
 }
 
-// candidateMarkup turns grounded hits into per-track download and preview
-// buttons. Owned tracks stay visible but cannot be downloaded again.
-func (app *BotApp) candidateMarkup(items []aichat.Candidate) *tb.ReplyMarkup {
+// candidateSongCard is one grounded hit. items are already in recommendation
+// order. allowBatch is false for an older card so its buttons cannot download
+// a newer answer.
+func candidateSongCard(items []aichat.Candidate, index int, allowBatch bool) (string, *tb.ReplyMarkup) {
+	items = visibleAICandidates(items)
 	if len(items) == 0 {
-		return nil
+		return "", nil
+	}
+	if index < 0 || index >= len(items) {
+		index = 0
+	}
+	item := items[index]
+	var text strings.Builder
+	if len(items) > 1 {
+		fmt.Fprintf(&text, "%d / %d\n\n", index+1, len(items))
+	}
+	title := item.Name
+	if strings.TrimSpace(item.Title) != "" {
+		title = item.Title
+	}
+	fmt.Fprintf(&text, "<b>%s</b>\n", discoveryListenTitle(title, item.URL))
+	if artist := strings.TrimSpace(item.Artist); artist != "" {
+		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
+	}
+	flags := make([]string, 0, 3)
+	if platform := strings.TrimSpace(item.Platform); platform != "" {
+		flags = append(flags, aichat.PlatformLabel(platform))
+	}
+	if item.IsVIP {
+		flags = append(flags, "VIP")
+	}
+	if item.Owned {
+		flags = append(flags, "已入库")
+	}
+	if len(flags) > 0 {
+		text.WriteString(utils.EscapeHTML(strings.Join(flags, " · ")))
 	}
 	markup := &tb.ReplyMarkup{}
-	rows := make([]tb.Row, 0, len(items))
-	for index, item := range items {
-		if item.Token == "" || item.URL == "" {
+	var rows []tb.Row
+	if !item.Owned {
+		rows = append(rows, markup.Row(markup.Data("下载", aiCandidateCallbackUnique, "download", item.Token)))
+	}
+	nav := tb.Row{}
+	if item.BatchID != "" && index > 0 {
+		nav = append(nav, markup.Data("上一首", aiCandidateCallbackUnique, "page", item.BatchID, strconv.Itoa(index-1)))
+	}
+	if item.BatchID != "" && index+1 < len(items) {
+		nav = append(nav, markup.Data("下一首", aiCandidateCallbackUnique, "page", item.BatchID, strconv.Itoa(index+1)))
+	}
+	if len(nav) > 0 {
+		rows = append(rows, nav)
+	}
+	downloadable := 0
+	batchID := item.BatchID
+	sameBatch := batchID != ""
+	for _, cand := range items {
+		if cand.BatchID != batchID {
+			sameBatch = false
+		}
+		if !cand.Owned {
+			downloadable++
+		}
+	}
+	if allowBatch && sameBatch && downloadable > 1 {
+		rows = append(rows, markup.Row(markup.Data("剩下的都下载", aiCandidateCallbackUnique, "batch", batchID, "0")))
+	}
+	if allowBatch && sameBatch {
+		rows = append(rows, markup.Row(markup.Data("换一批", aiCandidateCallbackUnique, "more", batchID)))
+	}
+	if len(rows) > 0 {
+		markup.Inline(rows...)
+	}
+	return strings.TrimRight(text.String(), "\n"), markup
+}
+
+func visibleAICandidates(items []aichat.Candidate) []aichat.Candidate {
+	out := make([]aichat.Candidate, 0, len(items))
+	for _, item := range items {
+		if item.Token == "" || strings.TrimSpace(item.URL) == "" || (strings.TrimSpace(item.Name) == "" && strings.TrimSpace(item.Title) == "") {
 			continue
 		}
-		row := markup.Row(
-			markup.Data(aichat.CandidateLabel(index, item), aiCandidateCallbackUnique, "download", item.Token),
-			markup.Data("试听", aiCandidateCallbackUnique, "preview", item.Token),
-		)
-		rows = append(rows, row)
+		out = append(out, item)
 	}
-	if len(rows) == 0 {
+	return out
+}
+
+func candidatesForBatch(items []aichat.Candidate, batchID string) []aichat.Candidate {
+	if batchID == "" {
 		return nil
 	}
-	// Offer a batch action only when there is more than one track: pressing ten
-	// download buttons one by one is the main friction in a recommendation.
-	if len(rows) > 1 {
-		batchID := items[0].BatchID
-		completeBatch := batchID != ""
-		for _, item := range items[1:] {
-			if item.BatchID != batchID {
-				completeBatch = false
-				break
-			}
-		}
-		if completeBatch {
-			rows = append(rows, markup.Row(
-				markup.Data("下载前 3 首", aiCandidateCallbackUnique, "batch", batchID, "3"),
-				markup.Data("全部下载", aiCandidateCallbackUnique, "batch", batchID, "0"),
-			))
+	current := make([]aichat.Candidate, 0, len(items))
+	for _, item := range items {
+		if item.BatchID == batchID {
+			current = append(current, item)
 		}
 	}
-	if items[0].BatchID != "" {
-		rows = append(rows, markup.Row(markup.Data("换一批", aiCandidateCallbackUnique, "more", items[0].BatchID)))
+	return current
+}
+
+// candidateModelOrder restores the order the model wrote. The store lists a
+// batch newest-row first.
+func candidateModelOrder(items []aichat.Candidate) []aichat.Candidate {
+	ordered := append([]aichat.Candidate(nil), items...)
+	for i, j := 0, len(ordered)-1; i < j; i, j = i+1, j-1 {
+		ordered[i], ordered[j] = ordered[j], ordered[i]
 	}
-	markup.Inline(rows...)
-	return markup
+	return ordered
 }
 
 func (app *BotApp) HandleAICandidateCallback(c tb.Context) error {
@@ -317,6 +387,32 @@ func (app *BotApp) HandleAICandidateCallback(c tb.Context) error {
 	}
 	action, token := args[0], args[1]
 	userID, chatID := aiScope(c)
+	if action == "page" {
+		if len(args) != 3 {
+			return app.expireCandidateMarkup(c)
+		}
+		index, convErr := strconv.Atoi(args[2])
+		if convErr != nil || index < 0 || index > 100 {
+			return c.Respond(&tb.CallbackResponse{Text: "页码无效", ShowAlert: true})
+		}
+		items, err := app.aiStore.Candidates(userID, chatID)
+		if err != nil {
+			return app.expireCandidateMarkup(c)
+		}
+		batch := candidatesForBatch(items, token)
+		if len(batch) == 0 {
+			return app.expireCandidateMarkup(c)
+		}
+		latest := len(items) > 0 && items[0].BatchID == token
+		text, markup := candidateSongCard(candidateModelOrder(batch), index, latest)
+		if markup == nil {
+			return app.expireCandidateMarkup(c)
+		}
+		if err = c.Respond(&tb.CallbackResponse{Text: "已换一首"}); err != nil {
+			return err
+		}
+		return c.Edit(text, tb.ModeHTML, markup)
+	}
 	if action == "more" {
 		if len(args) != 2 || token == "" {
 			return app.expireCandidateMarkup(c)
@@ -408,10 +504,7 @@ func (app *BotApp) startAIBatchDownload(c tb.Context, batchID, limitArg string) 
 	}
 	// Candidates come back newest-first; restore the order the model wrote so
 	// "前 3 首" means the first three recommendations.
-	batch := append([]aichat.Candidate(nil), current[:limit]...)
-	for i, j := 0, len(batch)-1; i < j; i, j = i+1, j-1 {
-		batch[i], batch[j] = batch[j], batch[i]
-	}
+	batch := candidateModelOrder(current[:limit])
 	queued := 0
 	for _, item := range batch {
 		if item.Owned {

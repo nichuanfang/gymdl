@@ -7,25 +7,12 @@ import (
 	"unicode/utf8"
 )
 
-// Render produces the Telegram message body. The design keeps the answer as the
-// only visual focus: mode and tool details live in a single quiet footer, and
-// candidate lists collapse to one line per track so a 10-song answer still fits
-// a phone screen without scrolling past the buttons.
+// Render produces the Telegram answer. Song choices are a separate one-track
+// card, so this body stays the model's reply and does not repeat the list.
 func Render(out *TurnOutput, defaultMode, enabled bool) string {
-	var b strings.Builder
 	// The model's reply is untrusted text: escape it so a stray "<" from a song
 	// title cannot break Telegram's HTML parser, while keeping its own newlines.
-	b.WriteString(emphasize(html.EscapeString(strings.TrimSpace(out.Reply))))
-	if len(out.Candidates) > 0 {
-		b.WriteString("\n\n")
-		// No fixed cap here: the engine already limited the list by
-		// ai.max_suggestions, and a second hard-coded limit made the numbered
-		// text disagree with the number of buttons.
-		b.WriteString(RenderCandidates(out.Candidates, 0))
-	}
-	// No per-message mode footer: the mode is already visible from the chat
-	// itself and repeating it on every answer only adds noise.
-	return strings.TrimRight(b.String(), "\n")
+	return strings.TrimRight(emphasize(html.EscapeString(strings.TrimSpace(out.Reply))), "\n")
 }
 
 // RenderCandidates matches the existing ingestion feedback style: one compact
