@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/nichuanfang/gymdl/utils"
 )
 
 func (s *Service) notifyFresh(items []FreshFavorite) {
@@ -25,7 +27,9 @@ func (s *Service) notifyFresh(items []FreshFavorite) {
 		if s.Authorized != nil && !s.Authorized(users[chat], chat) {
 			continue
 		}
-		_ = s.Notify(chat, notices[chat])
+		if err := s.Notify(chat, notices[chat]); err != nil {
+			utils.WarnWithFormat("[Discovery] 新收藏通知发送失败: %v", err)
+		}
 	}
 }
 

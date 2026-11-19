@@ -632,6 +632,58 @@ func favoriteBindMarkup(platform, token string) *tb.ReplyMarkup {
 	return markup
 }
 
+func logFavoriteRead(platform string, count int, elapsed time.Duration, err error) {
+	elapsed = elapsed.Round(time.Millisecond)
+	label := aichat.PlatformLabel(platform)
+	if err != nil {
+		utils.WarnWithFormat("[Discovery] 读取%s收藏失败，耗时 %s: %v", label, elapsed, err)
+		return
+	}
+	utils.InfoWithFormat("[Discovery] 已读取%s收藏 %d 首，耗时 %s", label, count, elapsed)
+}
+
+func logFavoriteBind(platform string, count int, err error) {
+	label := aichat.PlatformLabel(platform)
+	if err != nil {
+		utils.WarnWithFormat("[Discovery] 绑定%s收藏失败: %v", label, err)
+		return
+	}
+	utils.InfoWithFormat("[Discovery] 已绑定%s收藏 %d 首，这批已有歌曲不下载", label, count)
+}
+
+func logFavoritePause(platform string, paused bool, err error) {
+	label := aichat.PlatformLabel(platform)
+	action := "恢复"
+	if paused {
+		action = "暂停"
+	}
+	if err != nil {
+		utils.WarnWithFormat("[Discovery] %s%s收藏同步失败: %v", action, label, err)
+		return
+	}
+	utils.InfoWithFormat("[Discovery] 已%s%s收藏同步", action, label)
+}
+
+func logFavoriteRetry(failed int, err error) {
+	if err != nil {
+		utils.WarnWithFormat("[Discovery] 失败任务重新排队失败: %v", err)
+		return
+	}
+	utils.InfoWithFormat("[Discovery] %d 首失败任务已重新排队", failed)
+}
+
+func logFavoriteResolve(accept bool, err error) {
+	action := "不再处理"
+	if accept {
+		action = "确认入库"
+	}
+	if err != nil {
+		utils.WarnWithFormat("[Discovery] 待确认歌曲%s失败: %v", action, err)
+		return
+	}
+	utils.InfoWithFormat("[Discovery] 待确认歌曲已%s", action)
+}
+
 func (app *BotApp) previewFavoriteBinding(c tb.Context, platform string) error {
 	if platform != "netease" && platform != "qq" && platform != "youtube" {
 		return answerOnCard(c, "不支持这个平台。可选：网易云、QQ 音乐或 YouTube。", nil, false)
@@ -666,16 +718,20 @@ func (app *BotApp) previewFavoriteBinding(c tb.Context, platform string) error {
 		defer app.discoveryCommandMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
+		started := time.Now()
 		snap, fetchErr := app.discovery.Provider.Fetch(ctx, platform)
 		if fetchErr != nil {
+			logFavoriteRead(platform, 0, time.Since(started), fetchErr)
 			_ = editDiscoveryMessage(c, "❌ 读取收藏失败："+discoveryPublicError(fetchErr)+"\n可以检查账号登录状态后重试。", favoriteBindMarkup(platform, ""), false)
 			return
 		}
 		card, saveErr := app.discovery.Store.SaveCard(ctx, discovery.Card{User: user, Chat: chat, Kind: "binding", Snapshot: &snap})
 		if saveErr != nil {
+			utils.WarnWithFormat("[Discovery] 保存%s收藏预览失败: %v", aichat.PlatformLabel(platform), saveErr)
 			_ = editDiscoveryMessage(c, "❌ 无法保存绑定预览，可以重试。", favoriteBindMarkup(platform, ""), false)
 			return
 		}
+		logFavoriteRead(platform, len(snap.Tracks), time.Since(started), nil)
 		_ = editDiscoveryMessage(c, favoriteBindPreview(platform, snap.Account, len(snap.Tracks), enabled), favoriteBindMarkup(platform, card.Token), false)
 	})
 	return nil
@@ -690,16 +746,20 @@ func (app *BotApp) finishFavoritePreview(bot tb.API, message *tb.Message, user, 
 		}
 		_, _ = bot.Edit(message, text, markup)
 	}
+	started := time.Now()
 	snap, err := app.discovery.Provider.Fetch(ctx, platform)
 	if err != nil {
+		logFavoriteRead(platform, 0, time.Since(started), err)
 		fail("❌ 读取收藏失败："+discoveryPublicError(err)+"\n可以检查账号登录状态后重试。", favoriteBindMarkup(platform, ""))
 		return
 	}
 	card, err := app.discovery.Store.SaveCard(ctx, discovery.Card{User: user, Chat: chat, Kind: "binding", Snapshot: &snap})
 	if err != nil {
+		utils.WarnWithFormat("[Discovery] 保存%s收藏预览失败: %v", aichat.PlatformLabel(platform), err)
 		fail("❌ 无法保存绑定预览，可以重试。", favoriteBindMarkup(platform, ""))
 		return
 	}
+	logFavoriteRead(platform, len(snap.Tracks), time.Since(started), nil)
 	fail(favoriteBindPreview(platform, snap.Account, len(snap.Tracks), enabled), favoriteBindMarkup(platform, card.Token))
 }
 
@@ -789,8 +849,10 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			return app.previewFavoriteBinding(c, key)
 		case "pause", "resume":
 			if err := app.discovery.Store.Pause(ctx, c.Sender().ID, key, action == "pause"); err != nil {
+				logFavoritePause(key, action == "pause", err)
 				return app.presentFavorites(c, "❌ 更新暂停状态失败："+discoveryPublicError(err))
 			}
+			logFavoritePause(key, action == "pause", nil)
 			if action == "pause" {
 				return app.presentFavorites(c, "✅ 已暂停该平台的自动同步。")
 			}
@@ -847,11 +909,14 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 				return app.presentFavorites(c, "✅ 没有需要重试的失败任务。")
 			}
 			if err := app.discovery.Store.Retry(ctx, c.Sender().ID); err != nil {
+				logFavoriteRetry(failed, err)
 				return app.presentFavorites(c, "❌ 失败任务未能重新排队："+discoveryPublicError(err))
 			}
+			logFavoriteRetry(failed, nil)
 			return app.presentFavorites(c, fmt.Sprintf("✅ %d 首失败任务已重新排队。", failed))
 		case "status":
 			if err := app.discovery.Reconcile(ctx, c.Sender().ID); err != nil {
+				utils.WarnWithFormat("[Discovery] 刷新入库队列失败 user=%d: %v", c.Sender().ID, err)
 				return app.presentFavorites(c, "⚠️ 刷新队列状态失败："+discoveryPublicError(err))
 			}
 			return app.presentFavorites(c, "✅ 已刷新队列状态。")
@@ -863,8 +928,10 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 				}
 			}
 			if err := app.discovery.Store.ResolveJob(ctx, key, c.Sender().ID, action == "accept"); err != nil {
+				logFavoriteResolve(action == "accept", err)
 				return answerOnCard(c, err.Error(), nil, false)
 			}
+			logFavoriteResolve(action == "accept", nil)
 			return app.showDiscoveryPending(c, next)
 		}
 	}
@@ -885,8 +952,10 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			return app.presentFavorites(c, "❌ 无法确认收藏账号："+err.Error())
 		}
 		if _, _, err = app.discovery.Store.Apply(context.Background(), card.User, card.Chat, *card.Snapshot, true); err != nil {
+			logFavoriteBind(card.Snapshot.Platform, len(card.Snapshot.Tracks), err)
 			return app.presentFavorites(c, "❌ 建立收藏基线失败："+err.Error())
 		}
+		logFavoriteBind(card.Snapshot.Platform, len(card.Snapshot.Tracks), nil)
 		return app.presentFavorites(c, "✅ 已绑定并建立收藏基线；这批已有收藏未下载。")
 	}
 	if card.Kind != "recommend" {

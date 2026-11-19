@@ -3,6 +3,7 @@ package bot
 import (
 	"time"
 
+	"github.com/nichuanfang/gymdl/utils"
 	tb "gopkg.in/telebot.v4"
 )
 
@@ -221,11 +222,19 @@ func validMaintenanceStep(value string) bool {
 }
 
 func (app *BotApp) presentMaintenanceHold(c tb.Context, hold maintenanceHold, next string, placeholder *tb.Message) error {
+	busy := hold.processing || hold.token == "" || !validMaintenanceStep(hold.kind) || !validMaintenanceStep(next)
+	utils.InfoWithFormat("[Telegram] %s还开着，挡住了%s chat=%d busy=%t", maintenanceHoldLabel(hold.kind), maintenanceHoldLabel(next), hold.chatID, busy)
+	var err error
 	if c.Bot() == nil || c.Chat() == nil {
 		text, _ := maintenanceHoldNotice(hold, next)
-		return c.Send(text, maintenanceHoldOptions(hold, next))
+		err = c.Send(text, maintenanceHoldOptions(hold, next))
+	} else {
+		err = sendMaintenanceHold(c.Bot(), c.Chat(), hold, next, placeholder)
 	}
-	return sendMaintenanceHold(c.Bot(), c.Chat(), hold, next, placeholder)
+	if err != nil {
+		utils.WarnWithFormat("[Telegram] 维护占用提示发送失败 chat=%d: %v", hold.chatID, err)
+	}
+	return err
 }
 
 func sendMaintenanceHold(bot tb.API, chat tb.Recipient, hold maintenanceHold, next string, placeholder *tb.Message) error {
@@ -255,9 +264,10 @@ func (app *BotApp) HandleMaintenanceHoldCallback(c tb.Context) error {
 	kind, token, next := args[0], args[1], args[2]
 	hold, ok := app.maintenanceHoldByToken(kind, token)
 	if !ok {
+		utils.InfoWithFormat("[Telegram] %s已经关掉，继续%s chat=%d", maintenanceHoldLabel(kind), maintenanceHoldLabel(next), c.Chat().ID)
 		_ = c.Respond()
 		_ = c.Edit("已经关掉了。", &tb.ReplyMarkup{})
-		return app.continueAfterMaintenanceHold(c, next)
+		return logMaintenanceContinue(next, app.continueAfterMaintenanceHold(c, next))
 	}
 	if hold.userID != c.Sender().ID || hold.chatID != c.Chat().ID {
 		return c.Respond(&tb.CallbackResponse{Text: "只有发起的人可以取消", ShowAlert: true})
@@ -272,9 +282,32 @@ func (app *BotApp) HandleMaintenanceHoldCallback(c tb.Context) error {
 	if hold.message != nil && c.Bot() != nil {
 		_, _ = c.Bot().Edit(hold.message, note, &tb.ReplyMarkup{})
 	}
+	utils.InfoWithFormat("[Telegram] 取消%s并继续%s chat=%d", maintenanceHoldLabel(kind), maintenanceHoldLabel(next), hold.chatID)
 	_ = c.Respond()
 	_ = c.Edit("已取消。", &tb.ReplyMarkup{})
-	return app.continueAfterMaintenanceHold(c, next)
+	return logMaintenanceContinue(next, app.continueAfterMaintenanceHold(c, next))
+}
+
+func logMaintenanceContinue(next string, err error) error {
+	if err != nil {
+		utils.WarnWithFormat("[Telegram] 取消后继续%s失败: %v", maintenanceHoldLabel(next), err)
+	}
+	return err
+}
+
+func maintenanceHoldLabel(kind string) string {
+	switch kind {
+	case "t":
+		return "清空回收站"
+	case "a":
+		return "整理歌单"
+	case "i":
+		return "AI 歌单"
+	case "d":
+		return "歌单描述"
+	default:
+		return "歌单维护"
+	}
 }
 
 func (app *BotApp) releaseMaintenanceHold(hold maintenanceHold) (string, bool) {

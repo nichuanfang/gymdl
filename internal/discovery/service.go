@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nichuanfang/gymdl/internal/audiodupe"
+	"github.com/nichuanfang/gymdl/utils"
 )
 
 type DownloadResult struct {
@@ -72,9 +73,17 @@ func (s *Service) SyncQuietly(ctx context.Context, user int64) ([]FreshFavorite,
 	return s.sync(ctx, user, false)
 }
 
-func (s *Service) sync(ctx context.Context, user int64, notifyErrors bool) ([]FreshFavorite, error) {
+func (s *Service) sync(ctx context.Context, user int64, notifyErrors bool) (fresh []FreshFavorite, err error) {
+	started := time.Now()
+	defer func() {
+		if ctx.Err() != nil {
+			return
+		}
+		logFavoriteSync(user, time.Since(started), fresh, err)
+	}()
 	if !s.Enabled {
-		return nil, fmt.Errorf("自动收藏同步未启用，请先配置 favorites.enable: true；可先预览并绑定账号")
+		err = fmt.Errorf("自动收藏同步未启用，请先配置 favorites.enable: true；可先预览并绑定账号")
+		return nil, err
 	}
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
@@ -82,7 +91,6 @@ func (s *Service) sync(ctx context.Context, user int64, notifyErrors bool) ([]Fr
 	if err != nil {
 		return nil, err
 	}
-	var fresh []FreshFavorite
 	var failures []string
 	for _, b := range bindings {
 		if b.Paused || (s.Authorized != nil && !s.Authorized(b.User, b.Chat)) {
@@ -101,7 +109,9 @@ func (s *Service) sync(ctx context.Context, user int64, notifyErrors bool) ([]Fr
 			pause := strings.Contains(message, "登录失效") || strings.Contains(message, "账号已变化") || strings.Contains(message, "列表不可访问")
 			changed, _ := s.Store.SourceError(ctx, b, message, pause)
 			if changed && notifyErrors && s.Notify != nil {
-				_ = s.Notify(b.Chat, "⚠️ 收藏同步异常\n"+message)
+				if nerr := s.Notify(b.Chat, "⚠️ 收藏同步异常\n"+message); nerr != nil {
+					utils.WarnWithFormat("[Discovery] 收藏异常通知发送失败: %v", nerr)
+				}
 			}
 			failures = append(failures, message)
 			continue
@@ -111,9 +121,27 @@ func (s *Service) sync(ctx context.Context, user int64, notifyErrors bool) ([]Fr
 		}
 	}
 	if len(failures) > 0 {
-		return fresh, errors.New(strings.Join(failures, "\n"))
+		err = errors.New(strings.Join(failures, "\n"))
+		return fresh, err
 	}
 	return fresh, nil
+}
+
+func logFavoriteSync(user int64, elapsed time.Duration, fresh []FreshFavorite, err error) {
+	elapsed = elapsed.Round(time.Millisecond)
+	who := "全部绑定"
+	if user != 0 {
+		who = fmt.Sprintf("user=%d", user)
+	}
+	if err != nil {
+		utils.WarnWithFormat("[Discovery] 收藏同步未完成 %s 耗时 %s 新歌 %d: %s", who, elapsed, len(fresh), clipDiscoveryLog(err.Error()))
+		return
+	}
+	if len(fresh) == 0 && user == 0 {
+		utils.DebugWithFormat("[Discovery] 收藏同步完成 %s 耗时 %s，没有新歌", who, elapsed)
+		return
+	}
+	utils.InfoWithFormat("[Discovery] 收藏同步完成 %s 耗时 %s 新歌 %d", who, elapsed, len(fresh))
 }
 
 // fetchSnapshot keeps a routine NetEase sync to the liked-song id list.
@@ -164,7 +192,9 @@ func (s *Service) fetchSnapshot(ctx context.Context, b Binding) (Snapshot, error
 	sort.Strings(refreshIDs)
 	if batch := s.neteaseRefreshIDs(account, refreshIDs); len(batch) > 0 {
 		refreshed, refreshErr := provider.NeteaseTracks(ctx, batch)
-		if refreshErr == nil {
+		if refreshErr != nil {
+			utils.WarnWithFormat("[Discovery] 网易云收藏资料刷新失败，本轮保留已存歌曲: %s", clipDiscoveryLog(refreshErr.Error()))
+		} else {
 			for _, track := range refreshed {
 				if track.Verified && strings.TrimSpace(track.Title) != "" {
 					byID[track.ID] = track
@@ -580,6 +610,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	// Favorite reads stay off this loop. A slow list fetch must not stall the
 	// download queue, and a long download must not delay the next read.
+	utils.InfoWithFormat("[Discovery] 收藏读取已单独运行，间隔 %s", poll.Round(time.Second))
 	var polls sync.WaitGroup
 	polls.Add(1)
 	go func() {
@@ -605,10 +636,14 @@ func (s *Service) Run(ctx context.Context) error {
 				// A transient persistence failure after claiming must not leave a
 				// permanent running task. Library/recent-download checks protect
 				// recovery after media was already committed.
-				_ = s.Store.Recover(ctx)
+				if recoverErr := s.Store.Recover(ctx); recoverErr != nil {
+					utils.WarnWithFormat("[Discovery] 恢复未完成的入库任务失败: %v", recoverErr)
+				}
 			}
 			if time.Now().After(nextSummary) {
-				_ = s.Digest(ctx)
+				if err := s.Digest(ctx); err != nil {
+					utils.WarnWithFormat("[Discovery] 收藏入库汇总失败: %v", err)
+				}
 				nextSummary = time.Now().Add(summary)
 			}
 		}
@@ -624,11 +659,13 @@ func (s *Service) runFavoritePoll(ctx context.Context, poll time.Duration) {
 	for {
 		select {
 		case <-ctx.Done():
+			utils.InfoWithFormat("[Discovery] 收藏读取已停止")
 			return
 		case <-timer.C:
 			if s.Enabled {
 				fresh, _ := s.Sync(ctx, 0)
 				if ctx.Err() != nil {
+					utils.InfoWithFormat("[Discovery] 收藏读取已停止")
 					return
 				}
 				s.notifyFresh(fresh)
@@ -645,13 +682,17 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 	if err != nil {
 		return err
 	}
+	utils.InfoWithFormat("[Discovery] 开始入库 %s", discoveryTrackLabel(j.Track))
 	defer func() {
-		if recover() != nil {
+		if recovered := recover(); recovered != nil {
+			utils.WarnWithFormat("[Discovery] 入库处理异常 %s: %v", discoveryTrackLabel(j.Track), recovered)
 			resultErr = s.Store.Finish(context.Background(), j, Failed, "下载处理异常，请检查处理器日志后重试", "", 0)
 		}
 	}()
 	finish := func(state, message, result string, next int64) error {
-		return s.Store.Finish(ctx, j, state, message, result, next)
+		err := s.Store.Finish(ctx, j, state, message, result, next)
+		logDiscoveryJob(j, state, message, err)
+		return err
 	}
 	if s.Authorized != nil && !s.Authorized(j.User, j.Chat) {
 		return finish(Failed, "用户授权已变更，任务未执行", "", 0)
@@ -762,8 +803,10 @@ func (s *Service) Reconcile(ctx context.Context, user int64) error {
 		}
 		if owned {
 			if e = s.Store.Finish(ctx, j, Completed, "", j.Result, 0); e != nil {
+				utils.WarnWithFormat("[Discovery] 待上传歌曲没能标成已入库 %s: %v", discoveryTrackLabel(j.Track), e)
 				return e
 			}
+			utils.InfoWithFormat("[Discovery] 待上传歌曲已入库 %s", discoveryTrackLabel(j.Track))
 		}
 	}
 	return nil
@@ -826,6 +869,7 @@ func (s *Service) Digest(ctx context.Context) error {
 		}
 		b.WriteString("发送 /favorites 查看详情、待确认和失败任务。")
 		if err = s.Notify(chat, b.String()); err != nil {
+			utils.WarnWithFormat("[Discovery] 收藏入库汇总发送失败: %v", err)
 			continue
 		}
 		for _, j := range list {
@@ -835,4 +879,44 @@ func (s *Service) Digest(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func discoveryTrackLabel(track Track) string {
+	title := strings.TrimSpace(track.Title)
+	if title == "" {
+		title = strings.TrimSpace(track.ID)
+	}
+	if title == "" {
+		title = "未命名"
+	}
+	label := freshPlatformLabel(track.Platform) + "《" + truncateRunes(title, 40) + "》"
+	if artist := strings.TrimSpace(track.Artist); artist != "" {
+		label += truncateRunes(artist, 24)
+	}
+	return label
+}
+
+func logDiscoveryJob(job Job, state, message string, err error) {
+	label := discoveryTrackLabel(job.Track)
+	if err != nil {
+		utils.WarnWithFormat("[Discovery] 入库状态没能写入 %s → %s: %v", label, state, err)
+		return
+	}
+	note := clipDiscoveryLog(message)
+	switch state {
+	case Failed, NeedsConfirmation:
+		utils.WarnWithFormat("[Discovery] 入库结束 %s → %s：%s", label, StateLabel(state), note)
+	case Queued:
+		utils.WarnWithFormat("[Discovery] 入库稍后重试 %s：%s", label, note)
+	default:
+		if note != "" {
+			utils.InfoWithFormat("[Discovery] 入库结束 %s → %s：%s", label, StateLabel(state), note)
+			return
+		}
+		utils.InfoWithFormat("[Discovery] 入库结束 %s → %s", label, StateLabel(state))
+	}
+}
+
+func clipDiscoveryLog(value string) string {
+	return truncateRunes(strings.Join(strings.Fields(value), " "), 180)
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/nichuanfang/gymdl/internal/aichat"
 	"github.com/nichuanfang/gymdl/internal/discovery"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
+	"github.com/nichuanfang/gymdl/utils"
 )
 
 func (s webStudio) FavoriteStatus(ctx context.Context) (web.FavoritesPage, error) {
@@ -31,17 +32,23 @@ func (s webStudio) PreviewFavorite(ctx context.Context, platform string) (web.Fa
 		return web.FavoritePreview{}, errors.New("正在处理上一条请求")
 	}
 	defer s.app.discoveryCommandMu.Unlock()
+	started := time.Now()
 	snap, err := s.app.discovery.Provider.Fetch(ctx, platform)
 	if err != nil {
+		logFavoriteRead(platform, 0, time.Since(started), err)
 		return web.FavoritePreview{}, err
 	}
 	if snap.Platform != platform || !snap.Complete {
-		return web.FavoritePreview{}, errors.New("收藏快照不完整，未建立预览")
+		err = errors.New("收藏快照不完整，未建立预览")
+		logFavoriteRead(platform, len(snap.Tracks), time.Since(started), err)
+		return web.FavoritePreview{}, err
 	}
 	card, err := s.app.discovery.Store.SaveCard(ctx, discovery.Card{User: user, Chat: user, Kind: "binding", Snapshot: &snap})
 	if err != nil {
+		utils.WarnWithFormat("[Discovery] 保存%s收藏预览失败: %v", aichat.PlatformLabel(platform), err)
 		return web.FavoritePreview{}, errors.New("无法保存绑定预览，可以重试")
 	}
+	logFavoriteRead(platform, len(snap.Tracks), time.Since(started), nil)
 	return web.FavoritePreview{
 		Token: card.Token, Platform: platform, Account: maskedDiscoveryAccount(snap.Account),
 		Count: len(snap.Tracks), Enabled: s.app.discovery.Enabled,
@@ -64,8 +71,10 @@ func (s webStudio) BindFavorite(ctx context.Context, token string) (web.Favorite
 		return web.FavoritesPage{}, errors.New("绑定已失效，请重新读取")
 	}
 	if _, _, err = s.app.discovery.Store.Apply(ctx, user, user, *card.Snapshot, true); err != nil {
+		logFavoriteBind(card.Snapshot.Platform, len(card.Snapshot.Tracks), err)
 		return web.FavoritesPage{}, err
 	}
+	logFavoriteBind(card.Snapshot.Platform, len(card.Snapshot.Tracks), nil)
 	return s.favoritePage(ctx, "已绑定并建立收藏基线。这批已有收藏未下载。")
 }
 
@@ -92,8 +101,10 @@ func (s webStudio) PauseFavorite(ctx context.Context, platform string, paused bo
 		return web.FavoritesPage{}, errors.New("还没有绑定这个平台")
 	}
 	if err = s.app.discovery.Store.Pause(ctx, user, platform, paused); err != nil {
+		logFavoritePause(platform, paused, err)
 		return web.FavoritesPage{}, err
 	}
+	logFavoritePause(platform, paused, nil)
 	notice := "已暂停该平台的自动同步。"
 	if !paused {
 		notice = "已恢复该平台的自动同步。"
@@ -149,8 +160,10 @@ func (s webStudio) RetryFavorites(ctx context.Context) (web.FavoritesPage, error
 		return s.favoritePage(ctx, "没有需要重试的失败任务。")
 	}
 	if err = s.app.discovery.Store.Retry(ctx, user); err != nil {
+		logFavoriteRetry(failed, err)
 		return web.FavoritesPage{}, err
 	}
+	logFavoriteRetry(failed, nil)
 	return s.favoritePage(ctx, fmt.Sprintf("%d 首失败任务已重新排队。", failed))
 }
 
@@ -165,6 +178,7 @@ func (s webStudio) RefreshFavorites(ctx context.Context) (web.FavoritesPage, err
 	notice := "已刷新队列状态。"
 	if s.app.discovery.Library != nil {
 		if err = s.app.discovery.Reconcile(ctx, user); err != nil {
+			utils.WarnWithFormat("[Discovery] 刷新入库队列失败 user=%d: %v", user, err)
 			notice = "刷新队列状态失败：" + discoveryPublicError(err)
 		}
 	}
@@ -180,8 +194,10 @@ func (s webStudio) ResolveFavorite(ctx context.Context, id string, accept bool) 
 		return web.FavoritesPage{}, errors.New("收藏服务尚未就绪")
 	}
 	if err = s.app.discovery.Store.ResolveJob(ctx, id, user, accept); err != nil {
+		logFavoriteResolve(accept, err)
 		return web.FavoritesPage{}, err
 	}
+	logFavoriteResolve(accept, nil)
 	notice := "已标为不再处理。"
 	if accept {
 		notice = "已确认，这首会进入入库队列。"

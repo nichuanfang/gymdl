@@ -172,9 +172,12 @@ func (app *BotApp) HandlePlaylistDescCallback(c tb.Context) error {
 		if session.editingID == "" {
 			return c.Respond(&tb.CallbackResponse{Text: "请先选择一张歌单", ShowAlert: true})
 		}
-		if err := app.playlistCatalog.SetDesc(context.Background(), session.editingID, ""); err != nil {
+		clearedID := session.editingID
+		if err := app.playlistCatalog.SetDesc(context.Background(), clearedID, ""); err != nil {
+			utils.WarnWithFormat("[Playlist] 清空歌单描述失败 id=%s: %v", clearedID, err)
 			return c.Respond(&tb.CallbackResponse{Text: discoveryPublicError(err), ShowAlert: true})
 		}
+		utils.InfoWithFormat("[Playlist] 已清空歌单描述 id=%s", clearedID)
 		session.editingID = ""
 		if err := app.reloadPlaylistDesc(&session); err != nil {
 			app.deletePlaylistDesc(session.token)
@@ -214,9 +217,12 @@ func (app *BotApp) handlePlaylistDescText(c tb.Context) (bool, error) {
 		}
 		return false, nil
 	}
-	if err := app.playlistCatalog.SetDesc(context.Background(), session.editingID, c.Text()); err != nil {
+	savedID := session.editingID
+	if err := app.playlistCatalog.SetDesc(context.Background(), savedID, c.Text()); err != nil {
+		utils.WarnWithFormat("[Playlist] 保存歌单描述失败 id=%s: %v", savedID, err)
 		return true, app.updatePlaylistDescCard(c, session, "❌ 保存失败："+discoveryPublicError(err)+"。请修正后重新发送。", false)
 	}
+	utils.InfoWithFormat("[Playlist] 已保存歌单描述 id=%s", savedID)
 	session.editingID = ""
 	if err := app.reloadPlaylistDesc(&session); err != nil {
 		app.deletePlaylistDesc(session.token)
@@ -295,11 +301,13 @@ func (app *BotApp) syncPlaylistDesc(c tb.Context, session pendingPlaylistDesc) e
 		defer cancel()
 		remotes, err := playlistcatalog.Fetch(ctx, organizer)
 		if err != nil {
+			utils.WarnWithFormat("[Playlist] 同步歌单列表失败: %v", err)
 			app.finishPlaylistDescSync(c, session, "❌ 同步失败："+discoveryPublicError(err)+"\n可稍后重试。", false)
 			return
 		}
 		result, err := app.playlistCatalog.Apply(ctx, remotes, nil, time.Now())
 		if err != nil {
+			utils.WarnWithFormat("[Playlist] 写入歌单列表失败: %v", err)
 			app.finishPlaylistDescSync(c, session, "❌ 同步失败："+discoveryPublicError(err)+"\n可稍后重试。", false)
 			return
 		}
@@ -307,11 +315,13 @@ func (app *BotApp) syncPlaylistDesc(c tb.Context, session pendingPlaylistDesc) e
 		session.page = 0
 		session.syncing = false
 		if err = app.reloadPlaylistDesc(&session); err != nil {
+			utils.WarnWithFormat("[Playlist] 歌单列表已同步，但重新读取失败: %v", err)
 			app.deletePlaylistDesc(session.token)
 			app.finishPlaylistDescSync(c, session, "✅ Navidrome 同步已完成，但重新读取歌单列表失败："+discoveryPublicError(err)+"\n重新发送 /playlist_desc 查看最新状态。", true)
 			return
 		}
 		app.savePlaylistDesc(session)
+		utils.InfoWithFormat("[Playlist] 歌单列表已同步，新增 %d，更新 %d，停用 %d", result.Added, result.Updated, result.Inactive)
 		notice := fmt.Sprintf("✅ 同步完成 · 新增 %d · 更新 %d · 停用 %d", result.Added, result.Updated, result.Inactive)
 		app.finishPlaylistDescSync(c, session, notice, false)
 	}()

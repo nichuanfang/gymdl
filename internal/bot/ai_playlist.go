@@ -958,6 +958,7 @@ func (s *aiPlaylistService) recallSimilar(ctx context.Context, seed playlistSeed
 		if found {
 			vector = values
 		} else {
+			utils.InfoWithFormat("[AI] 像这首歌《%s》没有存向量，改用听感文本", strings.TrimSpace(song.Title))
 			vector, err = s.embedPlaylistText(ctx, musicrag.DocumentText(song, musicrag.Meta{
 				Genre: song.Genre, Mood: song.Mood, Language: song.Language, Description: song.Description,
 			}))
@@ -967,12 +968,14 @@ func (s *aiPlaylistService) recallSimilar(ctx context.Context, seed playlistSeed
 		}
 		semantic = aiPlaylistSemanticQuery{Genre: song.Genre, Mood: song.Mood, Language: song.Language}
 		description = seedPlannerDescription(song.Title, song.Artist, song.Genre, song.Mood, true)
+		utils.InfoWithFormat("[AI] 像这首歌使用曲库里的《%s》%s", strings.TrimSpace(song.Title), strings.TrimSpace(song.Artist))
 	} else {
 		document := musicrag.Meta{Description: "和这首歌听感相近"}
 		meta, found := s.lookupSeedFeatures(ctx, seed.Title, seed.Artist)
 		if found {
 			document = meta
 			semantic = aiPlaylistSemanticQuery{Genre: meta.Genre, Mood: meta.Mood, Language: meta.Language}
+			utils.InfoWithFormat("[AI] 像这首歌《%s》不在曲库索引里，已按查到的听感检索", strings.TrimSpace(seed.Title))
 		}
 		vector, err = s.embedPlaylistText(ctx, musicrag.DocumentText(musicrag.Song{Title: seed.Title, Artist: seed.Artist}, document))
 		if err != nil {
@@ -1011,6 +1014,7 @@ func (s *aiPlaylistService) recallSimilar(ctx context.Context, seed playlistSeed
 	if indexed {
 		identity = aiPlaylistCandidate{ID: song.MusicID, Title: song.Title, Artist: song.Artist}
 	}
+	utils.DebugWithFormat("[AI] 像这首歌检索到 %d 首", len(matches))
 	return matches, semantic, description, identity, nil
 }
 
