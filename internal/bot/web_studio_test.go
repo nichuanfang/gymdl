@@ -177,11 +177,14 @@ func TestWebFavoriteBindDoesNotQueueTheCurrentLibrary(t *testing.T) {
 	if err != nil || preview.Count != 1 || preview.Token == "" || preview.Account != "123…901" || preview.Enabled {
 		t.Fatalf("preview = %#v err=%v", preview, err)
 	}
+	if len(preview.Samples) != 1 || preview.Samples[0].Title != "晴天" || preview.Samples[0].Artist != "周杰伦" {
+		t.Fatalf("samples = %#v", preview.Samples)
+	}
 	page, err := studio.BindFavorite(ctx, preview.Token)
 	if err != nil || !strings.Contains(page.Notice, "未下载") {
 		t.Fatalf("bind page = %#v err=%v", page, err)
 	}
-	if len(page.Platforms) != 3 || !page.Platforms[0].Bound || page.Platforms[0].Account != "123…901" || page.Platforms[0].State != "已绑定 · 自动同步未启用" {
+	if len(page.Platforms) != 3 || !page.Platforms[0].Bound || page.Platforms[0].Account != "123…901" || page.Platforms[0].State != "已绑定 · 自动同步未启用" || page.Platforms[0].LastSync == "" {
 		t.Fatalf("platforms = %#v", page.Platforms)
 	}
 	jobs, err := store.Jobs(ctx, 42, false)
@@ -213,6 +216,22 @@ func (favoriteSnapshotProvider) ResolveOn(context.Context, discovery.Track, stri
 }
 func (favoriteSnapshotProvider) Enrich(context.Context, discovery.Track) (discovery.Track, bool, error) {
 	return discovery.Track{}, false, nil
+}
+
+func TestFavoritePreviewSamplesSkipBlankTitles(t *testing.T) {
+	samples := favoritePreviewSamples([]discovery.Track{
+		{Title: "  ", Artist: "空", ID: "drop"},
+		{Title: "晴天", Artist: " 周杰伦 ", ID: "secret", URL: "https://secret.example/song"},
+		{Title: "七里香", Artist: "周杰伦"},
+		{Title: "夜曲", Artist: "周杰伦"},
+		{Title: "稻香", Artist: "周杰伦"},
+		{Title: "青花瓷", Artist: "周杰伦"},
+		{Title: "告白气球", Artist: "周杰伦"},
+		{Title: "搁浅", Artist: "周杰伦"},
+	})
+	if len(samples) != 6 || samples[0].Title != "晴天" || samples[0].Artist != "周杰伦" || samples[5].Title != "告白气球" {
+		t.Fatalf("samples = %#v", samples)
+	}
 }
 
 func TestWebStudioRequiresOwner(t *testing.T) {

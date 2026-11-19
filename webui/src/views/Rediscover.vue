@@ -1,13 +1,9 @@
 <template>
   <section class="studio-page">
-    <PageHeading eyebrow="DISCOVERY / REDISCOVER" title="找回遗珠">
-      <template #actions>
-        <n-button type="primary" :loading="searching" :disabled="acting" @click="search">找回</n-button>
-      </template>
-    </PageHeading>
+    <PageHeading eyebrow="DISCOVERY / REDISCOVER" title="找回遗珠" />
 
     <n-card size="small" :bordered="false" class="studio-card">
-      <n-space align="center" :size="10" wrap>
+      <div class="control-row">
         <n-select v-model:value="platform" :options="platformOptions" class="platform-select" :disabled="searching" />
         <div class="count-row" role="group" aria-label="数量">
           <button
@@ -20,11 +16,12 @@
             @click="limit = count"
           >{{ count }} 首</button>
         </div>
-      </n-space>
-      <p class="studio-help">按平台从历史和收藏里找曲库还没有的版本。入库只是提交下载队列。提交后，这里会跟着显示排队、下载和失败。</p>
+        <n-button type="primary" :loading="searching" :disabled="acting" @click="search">找回</n-button>
+      </div>
+      <p class="studio-help">从听过和收藏过的歌里，找出曲库还没有的版本。先在这里看，试听后再入库。入库只是排队，这页会跟着显示进度。</p>
     </n-card>
 
-    <n-alert v-if="notice" type="info" :show-icon="false">{{ notice }}</n-alert>
+    <n-alert v-if="notice && tracks.length" type="info" :show-icon="false">{{ notice }}</n-alert>
     <n-alert v-if="error" type="error" :show-icon="false">{{ error }}</n-alert>
 
     <div v-if="tracks.length" class="result-head">
@@ -34,22 +31,25 @@
       </n-button>
     </div>
 
+    <div v-if="!searched && !searching" class="empty-well">选好平台和数量后点找回。歌曲会列在这里，可以试听，再决定单首或整组入库。</div>
+    <div v-else-if="searching" class="result-list" aria-hidden="true">
+      <div v-for="n in limit" :key="n" class="track-card skeleton"><span class="skel" /><span class="skel short" /></div>
+    </div>
+
     <article v-for="track in tracks" :key="trackKey(track)" class="track-card">
       <div class="track-copy">
-        <a v-if="track.url" class="track-title" :href="track.url" target="_blank" rel="noopener noreferrer">{{ track.title }}</a>
-        <span v-else class="track-title">{{ track.title }}</span>
-        <p>{{ track.artist }}<template v-if="track.album"> · {{ track.album }}</template></p>
+        <span class="track-title">{{ track.title }}</span>
+        <p>{{ track.artist || '未知歌手' }}<template v-if="track.album"> · {{ track.album }}</template><template v-if="track.duration"> · {{ formatDuration(track.duration) }}</template></p>
         <p v-if="track.plays || track.last_played" class="track-meta">
-          <template v-if="track.plays">播放 {{ track.plays }} 次</template>
+          <template v-if="track.plays">听过 {{ track.plays }} 次</template>
           <template v-if="track.plays && track.last_played"> · </template>
-          <template v-if="track.last_played">{{ track.last_played }}</template>
+          <template v-if="track.last_played">最近 {{ track.last_played }}</template>
         </p>
         <p v-if="noteOf(track)" class="track-note">{{ noteOf(track) }}</p>
       </div>
       <div class="track-actions">
-        <n-tag v-if="stateOf(track)" :bordered="false" :type="tagType(track)">
-          {{ stateLabel(track) }}
-        </n-tag>
+        <n-button v-if="track.url" size="small" quaternary @click="openListen(track.url)">试听</n-button>
+        <n-tag v-if="stateOf(track)" :bordered="false" :type="tagType(track)">{{ stateLabel(track) }}</n-tag>
         <template v-else>
           <n-button size="small" type="primary" secondary :loading="busy[trackKey(track)] === 'enqueue'" :disabled="acting" @click="enqueueOne(track)">入库</n-button>
           <n-button size="small" quaternary :loading="busy[trackKey(track)] === 'dismiss'" :disabled="acting" @click="dismissOne(track)">不再推荐</n-button>
@@ -57,13 +57,13 @@
       </div>
     </article>
 
-    <n-empty v-if="searched && !searching && !tracks.length && !error" description="这批没有可入库的新歌" />
+    <div v-if="searched && !searching && !tracks.length && !error" class="empty-well">{{ notice || '这批没有可入库的新歌。可以换个平台或数量。' }}</div>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
-import { NAlert, NButton, NCard, NEmpty, NSelect, NSpace, NTag, useDialog, useMessage } from 'naive-ui'
+import { NAlert, NButton, NCard, NSelect, NTag, useDialog, useMessage } from 'naive-ui'
 import PageHeading from '../components/PageHeading.vue'
 import { dismissDiscoveryTracks, enqueueDiscoveryTracks, listDiscoveryJobs, rediscoverTracks, type DiscoveryJob, type DiscoveryTrack } from '../api'
 
@@ -109,6 +109,19 @@ const stateNames: Record<RowState, string> = {
 const activeStates = new Set<RowState>(['queued', 'running', 'pending_upload'])
 let pollTimer = 0
 
+function formatDuration(sec: number) {
+  const minutes = Math.floor(sec / 60)
+  return `${minutes}:${String(sec % 60).padStart(2, '0')}`
+}
+function openListen(rawURL: string) {
+  try {
+    const url = new URL(rawURL)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error()
+    window.open(url.href, '_blank', 'noopener,noreferrer')
+  } catch {
+    message.error('试听链接无效')
+  }
+}
 function trackKey(track: DiscoveryTrack) {
   return `${track.platform}:${track.id}`
 }
@@ -182,13 +195,14 @@ async function search() {
   searching.value = true
   error.value = ''
   notice.value = ''
+  tracks.value = []
+  states.value = {}
+  notes.value = {}
+  stopPoll()
   try {
     const response = await rediscoverTracks(platform.value, limit.value)
     if (response.code !== 200 || !response.data) throw new Error(response.message || '找回失败')
     tracks.value = response.data.tracks || []
-    states.value = {}
-    notes.value = {}
-    stopPoll()
     notice.value = response.data.notice || ''
     searched.value = true
   } catch (err) {
@@ -285,7 +299,11 @@ onUnmounted(stopPoll)
 .studio-page { max-width: 980px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
 .studio-card, .track-card { background: rgba(16, 22, 26, .42); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
 .studio-help { margin: 12px 0 0; color: #7d8c86; font-size: 12px; line-height: 1.6; }
+.control-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .platform-select { width: 160px; }
+.empty-well { padding: 22px 16px; border: 1px dashed rgba(125,150,141,.24); border-radius: 16px; color: #8ea39b; line-height: 1.6; }
+.skel { display: block; height: 12px; margin-bottom: 8px; border-radius: 999px; background: rgba(255,255,255,.06); }
+.skel.short { width: 55%; margin-bottom: 0; }
 .count-row { display: flex; gap: 6px; }
 .count-chip {
   min-height: 30px; padding: 4px 12px; border: 1px solid rgba(171, 190, 184, .16); border-radius: 999px;

@@ -52,7 +52,24 @@ func (s webStudio) PreviewFavorite(ctx context.Context, platform string) (web.Fa
 	return web.FavoritePreview{
 		Token: card.Token, Platform: platform, Account: maskedDiscoveryAccount(snap.Account),
 		Count: len(snap.Tracks), Enabled: s.app.discovery.Enabled,
+		Samples: favoritePreviewSamples(snap.Tracks),
 	}, nil
+}
+
+func favoritePreviewSamples(tracks []discovery.Track) []web.FavoriteSample {
+	const limit = 6
+	out := make([]web.FavoriteSample, 0, limit)
+	for _, track := range tracks {
+		title := strings.TrimSpace(track.Title)
+		if title == "" {
+			continue
+		}
+		out = append(out, web.FavoriteSample{Title: title, Artist: strings.TrimSpace(track.Artist)})
+		if len(out) == limit {
+			break
+		}
+	}
+	return out
 }
 
 func (s webStudio) BindFavorite(ctx context.Context, token string) (web.FavoritesPage, error) {
@@ -275,6 +292,9 @@ func (s webStudio) favoritePage(ctx context.Context, notice string) (web.Favorit
 			item.Bound = true
 			item.Paused = binding.Paused
 			item.Account = maskedDiscoveryAccount(binding.Account)
+			if binding.LastSync > 0 {
+				item.LastSync = time.Unix(binding.LastSync, 0).Format("01-02 15:04")
+			}
 			item.Error = clipStudioText(favoritePlatformError(platform, binding.Error), 80)
 			item.State = favoritePlatformState(s.app.discovery.Enabled, binding.Paused)
 		}

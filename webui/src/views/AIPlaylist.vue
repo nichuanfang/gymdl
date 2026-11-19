@@ -10,6 +10,7 @@
     <n-alert v-if="error" type="error" :show-icon="false">{{ error }}</n-alert>
 
     <n-card size="small" :bordered="false" class="studio-card">
+      <p class="field-label">写到哪</p>
       <div class="mode-row" role="group" aria-label="歌单目标">
         <button type="button" class="mode-chip" :class="{ active: mode === 'existing' }" @click="mode = 'existing'">已有歌单</button>
         <button type="button" class="mode-chip" :class="{ active: mode === 'new' }" @click="mode = 'new'">新建歌单</button>
@@ -22,6 +23,7 @@
         class="field"
       />
       <n-input v-else v-model:value="newName" placeholder="新歌单名称，会自动加上 [AI]" class="field" />
+      <p class="field-label">氛围</p>
       <div class="preset-row">
         <button
           v-for="preset in presets"
@@ -32,20 +34,23 @@
           @click="togglePreset(preset.id)"
         >{{ preset.label }}</button>
       </div>
-      <n-input v-model:value="seedText" placeholder="按某首歌找相似，例如：晴天 - 周杰伦" class="field" />
+      <label class="field-label" for="ai-seed">种子歌曲</label>
+      <n-input id="ai-seed" v-model:value="seedText" placeholder="可选。例如：晴天 - 周杰伦" class="field" />
+      <label class="field-label" for="ai-theme">主题</label>
       <n-input
+        id="ai-theme"
         v-model:value="requestText"
         type="textarea"
         :autosize="{ minRows: 2, maxRows: 5 }"
-        placeholder="补充想听的主题。只选上面的氛围，或只填一首种子歌也可以。"
+        placeholder="可选。只选氛围，或只填一首种子歌，也可以生成。"
       />
       <div class="form-actions">
         <n-button type="primary" :loading="previewing" :disabled="confirming" @click="preview">生成预览</n-button>
+        <span class="studio-help action-note">先看一批歌。确认之后才会写入歌单。</span>
       </div>
-      <p class="studio-help">预览只展示前 10 首。确认后才会按服务端保存的整张列表写入，页面不会再把曲目传回去。</p>
     </n-card>
 
-    <n-card v-if="previewPage" size="small" :bordered="false" class="studio-card">
+    <n-card v-if="previewPage" size="small" :bordered="false" class="studio-card preview-card">
       <header class="preview-head">
         <div>
           <h3>{{ previewPage.name }}</h3>
@@ -56,9 +61,12 @@
       <p v-if="previewPage.intro" class="intro">{{ previewPage.intro }}</p>
       <ol class="preview-list">
         <li v-for="(song, index) in previewPage.preview" :key="`${song.title}-${index}`">
-          <strong>{{ song.title || '未命名' }}</strong>
-          <span>{{ song.artist || '未知歌手' }}</span>
-          <em v-if="song.reason">{{ song.reason }}</em>
+          <span class="song-index">{{ index + 1 }}</span>
+          <div>
+            <strong>{{ song.title || '未命名' }}</strong>
+            <span>{{ song.artist || '未知歌手' }}</span>
+            <em v-if="song.reason">{{ song.reason }}</em>
+          </div>
         </li>
       </ol>
       <p class="studio-help">{{ previewScope }}</p>
@@ -235,7 +243,9 @@ onActivated(() => {
 .studio-page { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
 .studio-card { background: rgba(16, 22, 26, .42); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
 .mode-row, .preset-row, .form-actions, .preview-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.preset-row, .field, .form-actions { margin-top: 12px; }
+.field-label { display: block; margin: 14px 0 0; color: #8ea39b; font-size: 12px; }
+.preset-row, .field, .form-actions { margin-top: 8px; }
+.action-note { margin: 0; }
 .mode-chip {
   min-height: 30px; padding: 4px 12px; border: 1px solid rgba(171, 190, 184, .16); border-radius: 999px;
   color: #8c9a94; background: rgba(16, 22, 26, .4); cursor: pointer;
@@ -246,7 +256,9 @@ onActivated(() => {
 .preview-head { justify-content: space-between; }
 .preview-head h3 { margin: 0; font-size: 18px; }
 .preview-head p, .intro { margin: 4px 0 0; }
-.preview-list { margin: 12px 0 0; padding-left: 18px; }
-.preview-list li { margin-top: 8px; }
+.preview-list { margin: 14px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.preview-list li { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid rgba(125,150,141,.12); }
+.song-index { width: 1.4em; color: #638078; font-variant-numeric: tabular-nums; font-size: 12px; line-height: 1.6; }
+.preview-list strong { display: block; color: #edf7f3; }
 .preview-list span, .preview-list em { display: block; color: #8ea39b; font-size: 12px; font-style: normal; }
 </style>

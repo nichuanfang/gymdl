@@ -2,97 +2,32 @@
   <section class="search-page">
     <PageHeading eyebrow="MUSIC / DISCOVERY" title="搜索" />
 
-    <n-space vertical :size="8" :wrap-item="false">
+    <div class="search-stack">
       <div class="search-toolbar">
         <n-input-group class="keyword-group">
           <n-input
             v-model:value="keyword"
-            placeholder="输入歌曲 / 歌手 / 视频关键词"
+            placeholder="歌名、歌手，或一小段关键词"
             size="large"
-            @focus="selectKeyword"
             @keyup.enter="startSearch"
           />
-          <n-button type="primary" size="large" :loading="loadingAction === 'search' || loadingAction === 'filter'" :disabled="searching" @click="startSearch">搜索</n-button>
+          <n-button type="primary" size="large" :loading="loadingAction === 'search'" :disabled="searching" @click="startSearch">搜索</n-button>
         </n-input-group>
-        <n-checkbox-group v-model:value="selectedPlatforms" class="platform-selectors">
-          <n-checkbox value="netease" label="网易云" :disabled="searching" />
-          <n-checkbox value="qq" label="QQ 音乐" :disabled="searching || !qqEnabled" />
-          <n-checkbox value="youtube" label="YouTube" :disabled="searching" />
-          <n-checkbox value="bilibili" label="B 站" :disabled="searching" />
-        </n-checkbox-group>
-        <div class="platform-actions">
-          <n-button quaternary size="small" :disabled="searching" @click="togglePlatforms">{{ allPlatformsSelected ? '反选' : '全选' }}</n-button>
+        <div class="platform-row" role="group" aria-label="平台">
+          <button
+            v-for="platform in platformOrder"
+            :key="platform"
+            type="button"
+            class="platform-chip"
+            :class="{ active: selectedPlatforms.includes(platform) }"
+            :disabled="searching || (platform === 'qq' && !qqEnabled)"
+            @click="togglePlatform(platform)"
+          >{{ platformLabel(platform) }}</button>
         </div>
       </div>
-
-      <div v-if="searchPlatforms.length && (searching || activeErrors.length)" class="search-progress" aria-live="polite">
-        <span class="progress-label">平台状态</span>
-        <n-tag
-          v-for="platform in searchPlatforms"
-          :key="platform"
-          size="small"
-          :type="progressTagType(platformProgress[platform]?.status)"
-        >
-          {{ platformLabel(platform) }} · {{ progressLabel(platformProgress[platform]) }}
-        </n-tag>
-      </div>
-
-      <n-alert v-if="activeErrors.length" type="warning" :show-icon="false">
-        部分平台搜索失败：{{ activeErrors.join('；') }}。已返回其他平台结果。
-      </n-alert>
-      <n-alert v-if="truncated" type="warning" :show-icon="false">
-        部分平台已达到候选扫描上限，筛选结果可能不完整。
-      </n-alert>
-
-      <div v-if="searched && lastSearchedKeyword && !searchDefinitionDirty" class="result-toolbar">
-        <div class="filter-controls">
-          <n-input v-model:value="resultQuery" clearable size="small" placeholder="筛选歌曲 / 歌手 / 专辑" class="filter-query" />
-          <n-select v-model:value="resultPlatform" size="small" :options="resultPlatformOptions" class="filter-platform" />
-          <n-select v-model:value="vipFilter" size="small" :options="vipOptions" class="filter-vip" />
-        </div>
-      </div>
-      <n-data-table
-        v-if="searching || results.length > 0"
-        :columns="columns"
-        :data="results"
-        size="small"
-        :bordered="false"
-        :row-key="rowKey"
-        :scroll-x="980"
-      />
-
-      <div v-if="searched" class="pagination-bar">
-        <span class="pagination-summary">本页 {{ results.length }} 条</span>
-        <div class="pagination-controls">
-          <n-select
-            v-model:value="batchSize"
-            size="small"
-            :options="batchOptions"
-            class="batch-select"
-            :disabled="searching"
-            :loading="loadingAction === 'size'"
-            @update:value="changePageSize"
-          />
-          <n-button
-            secondary
-            :disabled="currentPage <= 1 || searching || searchRequestDirty"
-            :loading="loadingAction === 'previous'"
-            @click="goToPage(currentPage - 1)"
-          >上一页</n-button>
-          <n-tag :bordered="false" type="info">{{ currentPage }}</n-tag>
-          <n-button
-            secondary
-            :disabled="!hasMore || searching || searchRequestDirty || currentPage * batchSize > 2000"
-            :loading="loadingAction === 'next'"
-            @click="goToPage(currentPage + 1)"
-          >下一页</n-button>
-        </div>
-      </div>
-
-      <n-empty v-if="!searching && searched && results.length === 0" description="没有找到相关结果" style="margin-top: 32px" />
 
       <div v-if="searchHistory.length" class="history-strip">
-        <span class="history-label">最近搜索</span>
+        <span class="history-label">最近</span>
         <div class="history-items">
           <button
             v-for="item in searchHistory"
@@ -105,17 +40,81 @@
         </div>
         <n-button quaternary size="tiny" class="history-clear" @click="clearHistory">清空</n-button>
       </div>
-    </n-space>
+
+      <div v-if="searchPlatforms.length && (searching || activeErrors.length)" class="search-progress" aria-live="polite">
+        <span
+          v-for="platform in searchPlatforms"
+          :key="platform"
+          class="progress-chip"
+          :data-status="platformProgress[platform]?.status || 'searching'"
+        >{{ platformLabel(platform) }} · {{ progressLabel(platformProgress[platform]) }}</span>
+      </div>
+
+      <n-alert v-if="activeErrors.length" type="warning" :show-icon="false">
+        部分平台没有返回：{{ activeErrors.join('；') }}。其余结果仍然可用。
+      </n-alert>
+      <n-alert v-if="truncated" type="warning" :show-icon="false">
+        有的平台扫到了上限，这一页可能不是全部。
+      </n-alert>
+
+      <div v-if="searched && lastSearchedKeyword && !searchDefinitionDirty" class="result-toolbar">
+        <n-input v-model:value="resultQuery" clearable size="small" placeholder="在结果里再筛歌名、歌手或专辑" class="filter-query" />
+        <n-select v-model:value="resultPlatform" size="small" :options="resultPlatformOptions" class="filter-platform" />
+        <n-select v-model:value="vipFilter" size="small" :options="vipOptions" class="filter-vip" />
+      </div>
+
+      <div v-if="searching && results.length === 0" class="result-list" aria-hidden="true">
+        <div v-for="n in 4" :key="n" class="result-row skeleton">
+          <span class="skel skel-title" />
+          <span class="skel skel-meta" />
+        </div>
+      </div>
+
+      <div v-else-if="results.length" class="result-list" :class="{ dimmed: searching }">
+        <article v-for="row in results" :key="rowKey(row)" class="result-row">
+          <div class="result-copy">
+            <div class="result-title">
+              <span>{{ row.name }}</span>
+              <em v-if="row.is_vip">VIP</em>
+            </div>
+            <p>{{ row.artists || '未知歌手' }}<template v-if="row.album"> · {{ row.album }}</template> · {{ formatDuration(row.duration_sec) }}</p>
+          </div>
+          <span class="source-pill">{{ platformLabel(row.platform) }}</span>
+          <div class="result-actions">
+            <n-button size="small" type="primary" secondary :loading="!!downloading[row.url]" :disabled="!!downloading[row.url]" @click="handleDownload(row)">下载</n-button>
+            <n-button size="small" quaternary @click="openSource(row)">试听</n-button>
+            <n-button size="small" quaternary @click="copyURL(row)">复制</n-button>
+          </div>
+        </article>
+      </div>
+
+      <div v-if="searched && !searching && results.length === 0" class="empty-well">
+        没有找到「{{ lastSearchedKeyword }}」。换个说法，或少选一个平台再试。
+      </div>
+
+      <div v-if="searched" class="pagination-bar">
+        <span class="pagination-summary">第 {{ currentPage }} 页 · 本页 {{ results.length }} 首</span>
+        <div class="pagination-controls">
+          <n-select
+            v-model:value="batchSize"
+            size="small"
+            :options="batchOptions"
+            class="batch-select"
+            :disabled="searching"
+            :loading="loadingAction === 'size'"
+            @update:value="changePageSize"
+          />
+          <n-button secondary :disabled="currentPage <= 1 || searching || searchRequestDirty" :loading="loadingAction === 'previous'" @click="goToPage(currentPage - 1)">上一页</n-button>
+          <n-button secondary :disabled="!hasMore || searching || searchRequestDirty || currentPage * batchSize > 2000" :loading="loadingAction === 'next'" @click="goToPage(currentPage + 1)">下一页</n-button>
+        </div>
+      </div>
+    </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, h, nextTick } from 'vue'
-import {
-  NInputGroup, NInput, NButton, NSpace, NTag, NDataTable, NAlert,
-  NEmpty, NCheckbox, NCheckboxGroup, NTooltip, NSelect, useMessage,
-} from 'naive-ui'
-import type { DataTableColumns } from 'naive-ui'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { NInputGroup, NInput, NButton, NAlert, NSelect, useMessage } from 'naive-ui'
 import { get } from '../api/http'
 import { streamSearch } from '../api/search'
 import type { SearchCompleteEvent, SearchPlatformEvent } from '../api/search'
@@ -127,10 +126,11 @@ import type { SearchResultItem } from '../types/search'
 defineOptions({ name: 'Search' })
 
 type SearchRow = SearchResultItem
+type LiveProgress = { status: SearchPlatformEvent['status']; count: number; error?: string }
 
 const HISTORY_KEY = 'gymdl_search_history'
-const PLATFORM_ORDER = ['netease', 'qq', 'youtube', 'bilibili']
-const filterDebounceMs = 300
+const platformOrder = ['netease', 'qq', 'youtube', 'bilibili']
+const filterDebounceMs = 400
 const message = useMessage()
 const { submitWithDuplicateConfirmation } = useTaskSubmission()
 const keyword = ref('')
@@ -141,8 +141,9 @@ const searched = ref(false)
 const results = ref<SearchRow[]>([])
 const errors = ref<Record<string, string>>({})
 const searchPlatforms = ref<string[]>([])
-const platformProgress = ref<Record<string, SearchPlatformEvent>>({})
+const platformProgress = ref<Record<string, LiveProgress>>({})
 let activeSearchController: AbortController | null = null
+let liveFrame = 0
 const hasMore = ref(false)
 const truncated = ref(false)
 const currentPage = ref(1)
@@ -159,7 +160,7 @@ const lastSearchedVipFilter = ref('all')
 const batchSize = ref(10)
 const batchOptions = [10, 20, 50, 100].map((value) => ({ label: `每页 ${value} 首`, value }))
 const availableResultPlatforms = computed(() =>
-  PLATFORM_ORDER.filter((platform) => lastSearchedPlatforms.value.includes(platform)),
+  platformOrder.filter((platform) => lastSearchedPlatforms.value.includes(platform)),
 )
 const resultPlatformOptions = computed(() => [
   { label: '全部平台', value: 'all' },
@@ -174,7 +175,7 @@ const selectedPlatforms = ref<string[]>(['netease', 'qq', 'youtube', 'bilibili']
 const downloading = ref<Record<string, boolean>>({})
 let suppressFilterWatch = false
 let pendingRefilter = false
-const chosenPlatforms = computed(() => PLATFORM_ORDER.filter((platform) => selectedPlatforms.value.includes(platform) && (platform !== 'qq' || qqEnabled.value)))
+const chosenPlatforms = computed(() => platformOrder.filter((platform) => selectedPlatforms.value.includes(platform) && (platform !== 'qq' || qqEnabled.value)))
 const searchDefinitionDirty = computed(() =>
   keyword.value.trim() !== lastSearchedKeyword.value || chosenPlatforms.value.join(',') !== lastSearchedPlatforms.value.join(','),
 )
@@ -185,19 +186,19 @@ const searchRequestDirty = computed(() =>
   vipFilter.value !== lastSearchedVipFilter.value,
 )
 const activeErrors = computed(() => Object.entries(errors.value).map(([platform, error]) => `${platformLabel(platform)}：${error}`))
-function progressLabel(progress?: SearchPlatformEvent): string {
-  if (!progress || progress.status === 'searching') return '搜索中'
-  if (progress.status === 'partial') return `已返回 ${progress.items?.length || 0} 首，继续搜索`
-  if (progress.status === 'complete') return `完成 ${progress.items?.length || 0} 首`
-  return '搜索失败'
-}
-function progressTagType(status?: SearchPlatformEvent['status']): 'default' | 'info' | 'success' | 'warning' | 'error' {
-  if (status === 'complete') return 'success'
-  if (status === 'error') return 'error'
-  if (status === 'partial') return 'info'
-  return 'default'
-}
 let filterDebounceTimer: ReturnType<typeof setTimeout> | undefined
+
+function progressLabel(progress?: LiveProgress): string {
+  if (!progress || progress.status === 'searching') return '搜索中'
+  if (progress.status === 'error') return '失败'
+  if (progress.status === 'partial') return `已返回 ${progress.count} 首`
+  return `${progress.count} 首`
+}
+function cancelLiveFrame() {
+  if (!liveFrame) return
+  cancelAnimationFrame(liveFrame)
+  liveFrame = 0
+}
 function clearFilterDebounce() {
   if (filterDebounceTimer !== undefined) {
     clearTimeout(filterDebounceTimer)
@@ -230,31 +231,26 @@ watch([resultPlatform, vipFilter], () => {
   }
   applyResultFilters()
 })
-const allPlatformsSelected = computed(() => {
-  const enabled = PLATFORM_ORDER.filter((platform) => platform !== 'qq' || qqEnabled.value)
-  return enabled.length > 0 && enabled.every((platform) => selectedPlatforms.value.includes(platform))
-})
 
 function rowKey(row: SearchResultItem) { return `${row.platform}:${row.song_id}` }
 function platformLabel(platform: string): string {
   return ({ netease: '网易云', qq: 'QQ 音乐', youtube: 'YouTube', bilibili: 'B 站' } as Record<string, string>)[platform] || platform
 }
 function formatDuration(sec: number): string {
-  if (!sec) return '-'
+  if (!sec) return '时长未知'
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`
 }
-function togglePlatforms() {
-  selectedPlatforms.value = allPlatformsSelected.value ? [] : PLATFORM_ORDER.filter((platform) => platform !== 'qq' || qqEnabled.value)
-}
-function selectKeyword(event: FocusEvent) {
-  const input = event.target
-  if (input instanceof HTMLInputElement) input.select()
+function togglePlatform(platform: string) {
+  if (searching.value || (platform === 'qq' && !qqEnabled.value)) return
+  selectedPlatforms.value = selectedPlatforms.value.includes(platform)
+    ? selectedPlatforms.value.filter((item) => item !== platform)
+    : [...selectedPlatforms.value, platform]
 }
 function loadHistory() {
   try { searchHistory.value = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]') } catch { /* ignore */ }
 }
 function saveHistory(query: string) {
-  const next = [query, ...searchHistory.value.filter((item) => item !== query)].slice(0, 10)
+  const next = [query, ...searchHistory.value.filter((item) => item !== query)].slice(0, 8)
   searchHistory.value = next
   try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)) } catch { /* ignore */ }
 }
@@ -307,7 +303,7 @@ async function changePageSize(size: number) {
 }
 
 async function loadPage(page: number, query: string, platforms: string[], action: 'search' | 'filter' | 'previous' | 'next' | 'size'): Promise<boolean> {
-  const previousState = action === 'search' || action === 'filter' ? null : {
+  const previousState = action === 'search' ? null : {
     results: [...results.value],
     currentPage: currentPage.value,
     hasMore: hasMore.value,
@@ -316,16 +312,17 @@ async function loadPage(page: number, query: string, platforms: string[], action
     progress: { ...platformProgress.value },
   }
   activeSearchController?.abort()
+  cancelLiveFrame()
   const controller = new AbortController()
   activeSearchController = controller
   searching.value = true
   loadingAction.value = action
   const progressPlatforms = resultPlatform.value === 'all' ? platforms : [resultPlatform.value]
   searchPlatforms.value = [...progressPlatforms]
-  platformProgress.value = Object.fromEntries(progressPlatforms.map((platform) => [platform, { platform: platform as SearchResultItem['platform'], status: 'searching', items: [] }]))
+  platformProgress.value = Object.fromEntries(progressPlatforms.map((platform) => [platform, { status: 'searching' as const, count: 0 }]))
   errors.value = {}
   truncated.value = false
-  if (action === 'search' || action === 'filter') {
+  if (action === 'search') {
     results.value = []
     hasMore.value = false
     currentPage.value = 1
@@ -349,6 +346,14 @@ async function loadPage(page: number, query: string, platforms: string[], action
     }
     results.value = merged.slice(offset, offset + batchSize.value)
   }
+  const scheduleLive = () => {
+    if (liveFrame || receivedComplete) return
+    liveFrame = requestAnimationFrame(() => {
+      liveFrame = 0
+      if (receivedComplete || controller.signal.aborted || activeSearchController !== controller) return
+      publishLive()
+    })
+  }
   try {
     await streamSearch(
       {
@@ -361,17 +366,21 @@ async function loadPage(page: number, query: string, platforms: string[], action
         filterVip: filters.vip,
       },
       (event) => {
-        const previous = platformProgress.value[event.platform]
-        const items = event.status === 'partial'
-          ? [...(previous?.items || []), ...(event.items || [])]
-          : (event.items || [])
+        if (controller.signal.aborted || activeSearchController !== controller) return
+        const previous = liveBuckets[event.platform] || []
+        const items = event.status === 'partial' ? [...previous, ...(event.items || [])] : (event.items || [])
         liveBuckets[event.platform] = items
-        platformProgress.value = { ...platformProgress.value, [event.platform]: { ...event, items } }
+        platformProgress.value = {
+          ...platformProgress.value,
+          [event.platform]: { status: event.status, count: items.length, error: event.error },
+        }
         if (event.error) errors.value = { ...errors.value, [event.platform]: event.error }
-        if (!receivedComplete) publishLive()
+        scheduleLive()
       },
       (complete: SearchCompleteEvent) => {
+        if (controller.signal.aborted || activeSearchController !== controller) return
         receivedComplete = true
+        cancelLiveFrame()
         results.value = complete.items || []
         hasMore.value = !!complete.has_more
         truncated.value = !!complete.truncated
@@ -383,7 +392,7 @@ async function loadPage(page: number, query: string, platforms: string[], action
         lastSearchedFilterPlatform.value = filters.platform
         lastSearchedVipFilter.value = filters.vip
         searched.value = true
-        if (page === 1) saveHistory(query)
+        if (page === 1 && action === 'search') saveHistory(query)
       },
       controller.signal,
     )
@@ -424,7 +433,7 @@ async function handleDownload(row: SearchRow) {
       if (response.data?.id) watchTaskCompletion(response.data.id)
     } else if (response.code !== 499) message.error(response.message || '提交失败')
   } catch (error) {
-    message.error(error instanceof Error ? `提交失败：${error.message}` : '提交失败')
+    message.error(error instanceof Error ? error.message : '提交失败')
   } finally {
     const next = { ...downloading.value }
     delete next[row.url]
@@ -442,42 +451,12 @@ async function copyURL(row: SearchRow) {
   try {
     await navigator.clipboard.writeText(row.url)
     message.success('已复制链接')
-  } catch { message.error('复制失败，请从歌曲信息中手动复制链接') }
+  } catch { message.error('复制失败') }
 }
-
-const columns: DataTableColumns<SearchRow> = [
-  {
-    title: '歌曲', key: 'name', minWidth: 240, ellipsis: { tooltip: true },
-    render: (row) => h(NTooltip, { trigger: 'hover', placement: 'top' }, {
-      trigger: () => h('span', { class: 'song-title' }, [
-        row.name,
-        row.is_vip ? h(NTag, { size: 'tiny', type: 'warning', class: 'vip-tag' }, { default: () => 'VIP' }) : null,
-      ]),
-      default: () => row.url,
-    }),
-  },
-  { title: '歌手 / UP 主', key: 'artists', width: 230, ellipsis: { tooltip: true } },
-  { title: '专辑', key: 'album', width: 210, ellipsis: { tooltip: true }, render: (row) => row.album || '-' },
-  { title: '时长', key: 'duration', width: 76, render: (row) => formatDuration(row.duration_sec) },
-  {
-    title: '平台', key: 'platform', width: 100,
-    render: (row) => h(NTag, { size: 'small' }, { default: () => platformLabel(row.platform) }),
-  },
-  {
-    title: '操作', key: 'actions', width: 168, fixed: 'right',
-    render: (row) => h(NSpace, { size: 2, wrap: false }, {
-      default: () => [
-        h(NButton, { size: 'tiny', type: 'primary', quaternary: true, loading: !!downloading.value[row.url], disabled: !!downloading.value[row.url], onClick: () => handleDownload(row) }, { default: () => '下载' }),
-        h(NButton, { size: 'tiny', quaternary: true, title: '在来源平台打开试听', onClick: () => openSource(row) }, { default: () => '试听' }),
-        h(NButton, { size: 'tiny', quaternary: true, onClick: () => copyURL(row) }, { default: () => '复制' }),
-      ],
-    }),
-  },
-]
 
 const platformConfigPromise = get('/system/config')
   .then((res) => {
-    const config = res.data as any
+    const config = res.data as { config?: { qq_music_api?: { enable?: boolean } } }
     qqEnabled.value = !!config?.config?.qq_music_api?.enable
     if (!qqEnabled.value) selectedPlatforms.value = selectedPlatforms.value.filter((platform) => platform !== 'qq')
   })
@@ -490,102 +469,69 @@ onMounted(() => {
 })
 onUnmounted(() => {
   clearFilterDebounce()
+  cancelLiveFrame()
   activeSearchController?.abort()
 })
 </script>
 
 <style scoped>
-.search-page { max-width: 1440px; margin: 0 auto; }
-.search-page :deep(.n-space) { width: 100%; }
-
+.search-page { max-width: 1080px; margin: 0 auto; }
+.search-stack { display: flex; flex-direction: column; gap: 12px; }
 .search-toolbar {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  gap: 14px;
-  min-height: 60px;
-  box-sizing: border-box;
-  padding: 7px 10px;
-  border: 1px solid rgba(186,206,198,.16);
-  border-radius: 16px;
-  background: rgba(16, 22, 26, .46);
-  backdrop-filter: blur(18px) saturate(1.4);
-  -webkit-backdrop-filter: blur(18px) saturate(1.4);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
-  transition: border-color .22s var(--ease, ease), box-shadow .22s var(--ease, ease);
+  display: flex; align-items: center; gap: 14px; min-height: 64px; box-sizing: border-box;
+  padding: 8px 10px; border: 1px solid rgba(186,206,198,.16); border-radius: 18px;
+  background: rgba(16, 22, 26, .5); box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
 }
-.search-toolbar:focus-within { border-color: rgba(99,226,183,.38); box-shadow: 0 0 0 3px rgba(99,226,183,.1), inset 0 1px 0 rgba(255,255,255,.05); }
-.keyword-group { width: min(100%, 460px); flex: 0 1 460px; }
-.platform-selectors { display: flex; align-items: center; gap: 12px; white-space: nowrap; }
-.platform-actions { display: flex; align-items: center; padding-left: 8px; border-left: 1px solid rgba(145,160,154,.16); }
-
-.search-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-height: 30px; padding: 2px 2px; }
-.progress-label { margin-right: 2px; color: #7f8c86; font-size: 10px; letter-spacing: .06em; }
-.result-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 42px;
-  box-sizing: border-box;
-  padding: 5px 8px;
-  border: 1px solid rgba(186,206,198,.12);
-  border-radius: 14px;
-  background: rgba(16, 22, 26, .38);
-  backdrop-filter: blur(14px) saturate(1.3);
-  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+.search-toolbar:focus-within { border-color: rgba(99,226,183,.4); box-shadow: 0 0 0 3px rgba(99,226,183,.1), inset 0 1px 0 rgba(255,255,255,.05); }
+.keyword-group { width: min(100%, 520px); flex: 1 1 360px; }
+.platform-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.platform-chip, .history-tag {
+  min-height: 30px; padding: 4px 12px; border: 1px solid rgba(171,190,184,.18); border-radius: 999px;
+  color: #c5d0cb; background: transparent; font: inherit; font-size: 12px; cursor: pointer;
 }
-.filter-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.filter-query { width: 240px; }
+.platform-chip.active { color: #06140f; border-color: #63e2b7; background: #63e2b7; }
+.platform-chip:disabled, .history-tag:disabled { opacity: .45; cursor: not-allowed; }
+.history-strip { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.history-label { flex: 0 0 auto; color: #7f8c86; font-size: 12px; }
+.history-items { display: flex; gap: 6px; min-width: 0; overflow-x: auto; }
+.history-tag { flex: 0 0 auto; background: rgba(16,22,26,.35); }
+.history-tag:hover:not(:disabled) { border-color: rgba(99,226,183,.48); color: #8de8c8; }
+.search-progress { display: flex; flex-wrap: wrap; gap: 6px; }
+.progress-chip { padding: 3px 8px; border-radius: 999px; color: #9aaba4; background: rgba(255,255,255,.04); font-size: 12px; }
+.progress-chip[data-status="complete"] { color: #8de8c8; }
+.progress-chip[data-status="error"] { color: #e7b3a2; }
+.result-toolbar { display: flex; gap: 8px; align-items: center; }
+.filter-query { width: min(100%, 280px); }
 .filter-platform { width: 132px; }
 .filter-vip { width: 118px; }
-
-.pagination-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  min-height: 42px;
-  padding: 4px 2px;
-  border-top: 1px solid rgba(145,160,154,.14);
+.result-list { display: flex; flex-direction: column; gap: 8px; }
+.result-list.dimmed { opacity: .62; }
+.result-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center;
+  padding: 12px 14px; border: 1px solid rgba(125,150,141,.16); border-radius: 16px;
+  background: rgba(16, 22, 26, .42);
 }
-.pagination-summary { color: #c1cbc6; font-size: 11px; font-variant-numeric: tabular-nums; }
-.search-page :deep(.n-data-table-td) { padding: 8px 10px; }
-.search-page :deep(.n-data-table-th) { padding: 10px; }
-.summary-muted { color: #74817c; }
-.pagination-controls { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; }
-
-.history-strip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 34px;
-  padding-top: 4px;
-  border-top: 1px solid rgba(145,160,154,.1);
+.result-title { display: flex; align-items: center; gap: 8px; color: #edf7f3; font-weight: 620; }
+.result-title em { padding: 1px 6px; border-radius: 999px; color: #3a2a12; background: #e3c07a; font-size: 10px; font-style: normal; font-weight: 700; }
+.result-copy p { margin: 4px 0 0; color: #8ea39b; font-size: 13px; }
+.source-pill { color: #9aaba4; font-size: 12px; white-space: nowrap; }
+.result-actions { display: flex; gap: 6px; }
+.skeleton { display: block; }
+.skel { display: block; height: 12px; border-radius: 999px; background: rgba(255,255,255,.06); }
+.skel-title { width: 42%; margin-bottom: 8px; }
+.skel-meta { width: 68%; }
+.empty-well { padding: 28px 16px; border: 1px dashed rgba(125,150,141,.24); border-radius: 16px; color: #8ea39b; text-align: center; }
+.pagination-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.pagination-summary { color: #8ea39b; font-size: 12px; font-variant-numeric: tabular-nums; }
+.pagination-controls { display: flex; align-items: center; gap: 8px; }
+.batch-select { width: 124px; }
+@media (max-width: 800px) {
+  .search-toolbar, .result-row, .result-toolbar, .pagination-bar { align-items: stretch; flex-direction: column; }
+  .search-toolbar { display: flex; }
+  .result-row { grid-template-columns: 1fr; }
+  .filter-query, .filter-platform, .filter-vip, .keyword-group { width: 100%; }
 }
-.history-label { flex: 0 0 auto; color: #87938e; font-size: 11px; }
-.history-items { display: flex; flex: 1 1 auto; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
-.history-tag { flex: 0 0 auto; padding: 4px 10px; border: 1px solid rgba(171,190,184,.18); border-radius: 999px; color: #c1cbc6; background: rgba(16,22,26,.35); font: inherit; font-size: 11px; line-height: 1.4; cursor: pointer; transition: border-color .2s var(--ease, ease), color .2s var(--ease, ease), background .2s var(--ease, ease); }
-.history-tag:hover:not(:disabled) { border-color: rgba(99,226,183,.48); color: #8de8c8; background: rgba(99,226,183,.08); }
-.history-tag:disabled { opacity: .5; cursor: not-allowed; }
-.history-tag:focus-visible { outline: 2px solid #63e2b7; outline-offset: 2px; }
-.song-title { cursor: help; font-weight: 500; }
-.vip-tag { margin-left: 6px; }
-
-@media (max-width: 1100px) {
-  .search-toolbar { gap: 10px; flex-wrap: wrap; }
-  .keyword-group { flex: 1 1 100%; width: 100%; max-width: 560px; }
-}
-@media (max-width: 760px) {
-  .keyword-group { max-width: none; }
-  .platform-selectors { width: 100%; flex-wrap: wrap; gap: 8px 12px; }
-  .platform-actions { margin-left: auto; }
-  .result-toolbar { align-items: stretch; flex-direction: column; }
-  .filter-controls { width: 100%; flex-wrap: wrap; }
-  .filter-query, .filter-platform, .filter-vip { width: 100%; }
-  .pagination-bar { align-items: center; flex-wrap: wrap; }
-  .pagination-controls { width: 100%; justify-content: space-between; }
-  .history-strip { gap: 6px; }
-  .history-clear { padding-inline: 4px; }
+@media (prefers-reduced-motion: reduce) {
+  .result-list.dimmed { opacity: 1; }
 }
 </style>

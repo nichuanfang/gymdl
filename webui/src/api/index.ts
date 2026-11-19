@@ -116,6 +116,7 @@ export interface FavoritePlatform {
   label: string
   bound: boolean
   account?: string
+  last_sync?: string
   paused: boolean
   error?: string
   state: string
@@ -148,12 +149,18 @@ export interface FavoritesPage {
   pending: FavoriteJob[]
 }
 
+export interface FavoriteSample {
+  title: string
+  artist: string
+}
+
 export interface FavoritePreview {
   token: string
   platform: string
   account: string
   count: number
   enabled: boolean
+  samples?: FavoriteSample[]
 }
 
 export const getFavorites = () => get<FavoritesPage>('/discovery/favorites')

@@ -40,6 +40,7 @@ type FavoritePlatform struct {
 	Label    string `json:"label"`
 	Bound    bool   `json:"bound"`
 	Account  string `json:"account,omitempty"`
+	LastSync string `json:"last_sync,omitempty"`
 	Paused   bool   `json:"paused"`
 	Error    string `json:"error,omitempty"`
 	State    string `json:"state"`
@@ -62,12 +63,18 @@ type FavoriteJob struct {
 	Error    string `json:"error,omitempty"`
 }
 
+type FavoriteSample struct {
+	Title  string `json:"title"`
+	Artist string `json:"artist"`
+}
+
 type FavoritePreview struct {
-	Token    string `json:"token"`
-	Platform string `json:"platform"`
-	Account  string `json:"account"`
-	Count    int    `json:"count"`
-	Enabled  bool   `json:"enabled"`
+	Token    string           `json:"token"`
+	Platform string           `json:"platform"`
+	Account  string           `json:"account"`
+	Count    int              `json:"count"`
+	Enabled  bool             `json:"enabled"`
+	Samples  []FavoriteSample `json:"samples,omitempty"`
 }
 
 type DiscoveryJobView struct {

@@ -445,17 +445,10 @@ func discoveryNotice(platform string, requested int, batch DiscoveryBatch) strin
 			return "在" + name + "里，这批历史和收藏暂时没有可确认的缺失歌曲。可以换个平台或稍后再试。"
 		}
 	}
-	var text strings.Builder
-	if batch.SkippedOwned > 0 {
-		fmt.Fprintf(&text, "已避开曲库里的 %d 首。", batch.SkippedOwned)
-	}
 	if batch.Unconfirmed > 0 && requested > 0 && count < requested {
-		if text.Len() > 0 {
-			text.WriteString(" ")
-		}
-		fmt.Fprintf(&text, "有 %d 首对不上唯一版本，所以没有找满 %d 首。", batch.Unconfirmed, requested)
+		return fmt.Sprintf("有 %d 首对不上唯一版本，所以没有找满 %d 首。", batch.Unconfirmed, requested)
 	}
-	return text.String()
+	return ""
 }
 
 func discoveryPlatformName(platform string) string {

@@ -15,6 +15,17 @@ import (
 	"github.com/nichuanfang/gymdl/internal/playlistcatalog"
 )
 
+func TestDiscoveryNoticeSkipsTheOwnedCountWhenSongsRemain(t *testing.T) {
+	notice := discoveryNotice("netease", 3, DiscoveryBatch{Tracks: []DiscoveryTrack{{Title: "晴天"}}, SkippedOwned: 4, Unconfirmed: 2})
+	if strings.Contains(notice, "已避开") || !strings.Contains(notice, "有 2 首对不上唯一版本，所以没有找满 3 首。") {
+		t.Fatalf("notice = %q", notice)
+	}
+	empty := discoveryNotice("qq", 3, DiscoveryBatch{SkippedOwned: 2})
+	if !strings.Contains(empty, "曲库已经有了") {
+		t.Fatalf("empty notice = %q", empty)
+	}
+}
+
 func TestPlaylistDescriptionsHideFunctionalPlaylists(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	path := filepath.Join(t.TempDir(), "gymdl.sqlite3")
