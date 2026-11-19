@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/internal/aichat"
+	"github.com/nichuanfang/gymdl/internal/discovery"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
 	"github.com/nichuanfang/gymdl/internal/gin/task"
 	"github.com/nichuanfang/gymdl/internal/musicdedupe"
@@ -350,8 +352,270 @@ func (app *BotApp) aiTools() []aichat.Tool {
 				return fmt.Sprintf(`{"available":true,"count":%d,"items":%q}`, len(lines), lines), nil
 			},
 		},
+		{
+			Name:        "favorite_status",
+			Description: "查看当前用户的收藏同步：各平台是否绑定、脱敏账号、上次同步、上一轮原因，以及入库队列数量。只读，不会触发同步、暂停或重试。",
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+			Run: func(ctx context.Context, _ map[string]any) (string, error) {
+				return app.favoriteStatusTool(ctx), nil
+			},
+		},
+		{
+			Name:        "rediscover_preview",
+			Description: "预览曲库里缺少的听过或收藏歌曲。平台只能是 netease、qq、youtube，数量只能是 3、6 或 9。只返回歌名和艺人，不会入库，也不会记成已展示。",
+			Parameters: map[string]any{
+				"type":     "object",
+				"required": []string{"platform"},
+				"properties": map[string]any{
+					"platform": map[string]any{"type": "string", "description": "netease、qq 或 youtube"},
+					"limit":    map[string]any{"type": "integer", "description": "3、6 或 9，省略时为 3"},
+				},
+			},
+			Run: func(ctx context.Context, args map[string]any) (string, error) {
+				return app.rediscoverPreviewTool(ctx, args), nil
+			},
+		},
+		{
+			Name:        "playlist_catalog",
+			Description: "查看已同步歌单的名称，以及说明是否已写、说明摘录。最多 20 条。只读，不能改说明，也不能列出歌单曲目。",
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+			Run: func(ctx context.Context, _ map[string]any) (string, error) {
+				return app.playlistCatalogTool(ctx), nil
+			},
+		},
 	}
 	return tools
+}
+
+func (app *BotApp) favoriteStatusTool(ctx context.Context) string {
+	scope, ok := aichat.TurnScopeFrom(ctx)
+	if !ok {
+		return toolJSON(map[string]any{"available": false, "reason": "无法确认当前用户"})
+	}
+	if app == nil || app.discovery == nil || app.discovery.Store == nil {
+		return toolJSON(map[string]any{"available": false, "reason": "收藏同步不可用"})
+	}
+	bindings, err := app.discovery.Store.Bindings(ctx, scope.UserID)
+	if err != nil {
+		return toolJSON(map[string]any{"available": false, "reason": "读取收藏状态失败"})
+	}
+	jobs, err := app.discovery.Store.Jobs(ctx, scope.UserID, false)
+	if err != nil {
+		return toolJSON(map[string]any{"available": false, "reason": "读取入库队列失败"})
+	}
+	byPlatform := map[string]discovery.Binding{}
+	for _, binding := range bindings {
+		if binding.User != scope.UserID {
+			continue
+		}
+		byPlatform[binding.Platform] = binding
+	}
+	rows := make([]favoriteStatusBinding, 0, 3)
+	for _, platform := range []string{"netease", "qq", "youtube"} {
+		row := favoriteStatusBinding{Platform: aichat.PlatformLabel(platform), State: "未绑定"}
+		binding, bound := byPlatform[platform]
+		if bound {
+			row.State = favoriteCardState(app.discovery.Enabled, binding.Paused)
+			if account := maskedDiscoveryAccount(binding.Account); account != "" {
+				row.Account = account
+			}
+			if binding.LastSync > 0 {
+				row.LastSync = time.Unix(binding.LastSync, 0).Format("01-02 15:04")
+			}
+			if reason := favoritePlatformError(platform, binding.Error); reason != "" {
+				row.LastError = utils.TruncateString(reason, 80)
+			}
+		}
+		rows = append(rows, row)
+	}
+	counts := map[string]int{}
+	for _, job := range jobs {
+		if job.User != scope.UserID {
+			continue
+		}
+		counts[job.State]++
+	}
+	queue := make([]favoriteStatusCount, 0, 5)
+	for _, state := range []string{discovery.Queued, discovery.Running, discovery.PendingUpload, discovery.NeedsConfirmation, discovery.Failed} {
+		if counts[state] == 0 {
+			continue
+		}
+		label := discovery.StateLabel(state)
+		if state == discovery.PendingUpload {
+			label = "待上传"
+		}
+		queue = append(queue, favoriteStatusCount{State: state, Label: label, Count: counts[state]})
+	}
+	payload := favoriteStatusPayload{Available: true, AutoSync: app.discovery.Enabled, Bindings: rows, Queue: queue}
+	if len(queue) == 0 {
+		payload.QueueNote = "暂无待处理任务"
+	}
+	return toolJSON(payload)
+}
+
+func (app *BotApp) rediscoverPreviewTool(ctx context.Context, args map[string]any) string {
+	scope, ok := aichat.TurnScopeFrom(ctx)
+	if !ok {
+		return toolJSON(map[string]any{"available": false, "reason": "无法确认当前用户"})
+	}
+	platform, platformOK := rediscoverPlatformArg(args["platform"])
+	if !platformOK {
+		return toolJSON(map[string]any{"available": false, "reason": "平台只能是 netease、qq 或 youtube"})
+	}
+	limit, limitOK := rediscoverLimitArg(args)
+	if !limitOK {
+		return toolJSON(map[string]any{"available": false, "reason": "数量只能是 3、6 或 9"})
+	}
+	if app == nil || app.discovery == nil {
+		return toolJSON(map[string]any{"available": false, "reason": "遗珠预览不可用"})
+	}
+	batch, err := app.discovery.Rediscover(ctx, scope.UserID, platform, limit)
+	if err != nil {
+		return toolJSON(map[string]any{"available": false, "reason": utils.TruncateString(err.Error(), 120)})
+	}
+	songs := make([]rediscoverPreviewSong, 0, len(batch.Tracks))
+	for _, track := range batch.Tracks {
+		title := strings.TrimSpace(track.Title)
+		artist := strings.TrimSpace(track.Artist)
+		if title == "" && artist == "" {
+			continue
+		}
+		songs = append(songs, rediscoverPreviewSong{Title: title, Artist: artist})
+	}
+	payload := rediscoverPreviewPayload{
+		Available: true,
+		Platform:  aichat.PlatformLabel(platform),
+		Requested: limit,
+		Count:     len(songs),
+		Tracks:    songs,
+	}
+	payload.Note = strings.TrimSpace(rediscoverShortfallLine(discovery.Card{
+		Unconfirmed: batch.Unconfirmed,
+		Requested:   limit,
+		Tracks:      batch.Tracks,
+	}))
+	if payload.Note == "" && len(songs) == 0 {
+		payload.Note = rediscoverEmptyCopy(platform, batch)
+	}
+	return toolJSON(payload)
+}
+
+func (app *BotApp) playlistCatalogTool(ctx context.Context) string {
+	if app == nil || app.playlistCatalog == nil {
+		return toolJSON(map[string]any{"available": false, "reason": "歌单目录不可用"})
+	}
+	synced, err := app.playlistCatalog.Synced(ctx)
+	if err != nil {
+		return toolJSON(map[string]any{"available": false, "reason": "读取歌单目录失败"})
+	}
+	if !synced {
+		return toolJSON(playlistCatalogPayload{Available: true, Synced: false, Reason: "歌单目录还没同步"})
+	}
+	rows, err := app.playlistCatalog.Active(ctx)
+	if err != nil {
+		return toolJSON(map[string]any{"available": false, "reason": "读取歌单目录失败"})
+	}
+	const maxPlaylists = 20
+	truncated := len(rows) > maxPlaylists
+	if truncated {
+		rows = rows[:maxPlaylists]
+	}
+	items := make([]playlistCatalogEntry, 0, len(rows))
+	for _, row := range rows {
+		item := playlistCatalogEntry{Name: row.Name, HasDescription: strings.TrimSpace(row.Desc) != ""}
+		if item.HasDescription {
+			item.Excerpt = utils.TruncateString(strings.TrimSpace(row.Desc), 80)
+		}
+		items = append(items, item)
+	}
+	payload := playlistCatalogPayload{Available: true, Synced: true, Count: len(items), Truncated: truncated, Playlists: items}
+	if truncated {
+		payload.Note = "只返回了前 20 张，不是全部。"
+	}
+	return toolJSON(payload)
+}
+
+type favoriteStatusPayload struct {
+	Available bool                    `json:"available"`
+	AutoSync  bool                    `json:"auto_sync"`
+	Bindings  []favoriteStatusBinding `json:"bindings"`
+	Queue     []favoriteStatusCount   `json:"queue,omitempty"`
+	QueueNote string                  `json:"queue_note,omitempty"`
+}
+
+type favoriteStatusBinding struct {
+	Platform  string `json:"platform"`
+	State     string `json:"state"`
+	Account   string `json:"account,omitempty"`
+	LastSync  string `json:"last_sync,omitempty"`
+	LastError string `json:"last_error,omitempty"`
+}
+
+type favoriteStatusCount struct {
+	State string `json:"state"`
+	Label string `json:"label"`
+	Count int    `json:"count"`
+}
+
+type rediscoverPreviewPayload struct {
+	Available bool                    `json:"available"`
+	Platform  string                  `json:"platform,omitempty"`
+	Requested int                     `json:"requested,omitempty"`
+	Count     int                     `json:"count"`
+	Tracks    []rediscoverPreviewSong `json:"tracks"`
+	Note      string                  `json:"note,omitempty"`
+}
+
+type rediscoverPreviewSong struct {
+	Title  string `json:"title"`
+	Artist string `json:"artist"`
+}
+
+type playlistCatalogPayload struct {
+	Available bool                   `json:"available"`
+	Synced    bool                   `json:"synced"`
+	Reason    string                 `json:"reason,omitempty"`
+	Count     int                    `json:"count,omitempty"`
+	Truncated bool                   `json:"truncated,omitempty"`
+	Note      string                 `json:"note,omitempty"`
+	Playlists []playlistCatalogEntry `json:"playlists,omitempty"`
+}
+
+type playlistCatalogEntry struct {
+	Name           string `json:"name"`
+	HasDescription bool   `json:"has_description"`
+	Excerpt        string `json:"excerpt,omitempty"`
+}
+
+func rediscoverPlatformArg(value any) (string, bool) {
+	platform, _ := value.(string)
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "netease", "qq", "youtube":
+		return strings.ToLower(strings.TrimSpace(platform)), true
+	default:
+		return "", false
+	}
+}
+
+func rediscoverLimitArg(args map[string]any) (int, bool) {
+	if args == nil || args["limit"] == nil {
+		return 3, true
+	}
+	limit := intArg(args["limit"], 0)
+	switch limit {
+	case 3, 6, 9:
+		return limit, true
+	default:
+		return 0, false
+	}
+}
+
+func toolJSON(payload any) string {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return `{"available":false,"reason":"结果无法编码"}`
+	}
+	return string(data)
 }
 
 // truncateToolResult bounds what a tool returns to the model. The marker tells

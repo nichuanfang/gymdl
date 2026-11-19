@@ -129,7 +129,7 @@ cd webui && npm run dev
 
 `ai.default_mode` 控制新聊天默认进入哪种模式。`ai.skills_dirs` 下每个子目录放一个 `SKILL.md` 即成为可调用技能；`ai.mcp_servers` 只有 `allowed_tools` 中列出的工具会暴露给模型。收听画像需要配置只读的 `ai.history_dsn`，不可用时自动跳过。
 
-默认挂载 8 个音乐技能：`music-recommendation`（按场景/情绪推荐并回查真实单曲）、`music-discovery-by-artist`（按艺人/单曲找相似）、`music-library-query`（查是否已入库、曲库内容）、`music-download-failure`（判断失败环节）、`music-download-plan`（批量下载顺序与风险）、`music-playlist-curation`（主题歌单整理）、`music-lyrics-search`（查歌词/按歌词找歌）、`music-metadata-normalize`（标签规范化）。`ai.enabled_skills` 为空时不会挂载任何技能；部署、运维类技能不要放进这个白名单。
+默认挂载 11 个音乐技能：`music-recommendation`（按场景/情绪推荐并回查真实单曲）、`music-discovery-by-artist`（按艺人/单曲找相似）、`music-library-query`（查是否已入库、曲库内容）、`music-download-failure`（判断失败环节）、`music-download-plan`（批量下载顺序与风险）、`music-playlist-curation`（主题歌单整理）、`music-lyrics-search`（查歌词/按歌词找歌）、`music-metadata-normalize`（标签规范化）、`music-favorite-status`（查看收藏同步和入库队列）、`music-rediscover`（找曲库缺少的听过或收藏歌曲）、`music-playlist-lookup`（查看歌单名称和说明）。`ai.enabled_skills` 为空时不会挂载任何技能；部署、运维类技能不要放进这个白名单。收藏同步、遗珠和歌单说明只读，下载仍要点按钮。
 
 ### 找回遗珠与 CarPlay 收藏入库
 
@@ -310,6 +310,9 @@ ai:
     - 'music-lyrics-search'
     - 'music-metadata-normalize'
     - 'music-download-plan'
+    - 'music-favorite-status'
+    - 'music-rediscover'
+    - 'music-playlist-lookup'
   mcp_servers: # MCP服务列表，只暴露 allowed_tools 中的工具
     - name: ''
       url: ''

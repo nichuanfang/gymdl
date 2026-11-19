@@ -117,6 +117,7 @@ func (e *Engine) Respond(ctx context.Context, in TurnInput) (*TurnOutput, error)
 		ctx, cancel = context.WithTimeout(ctx, deadline)
 		defer cancel()
 	}
+	ctx = WithTurnScope(ctx, in.UserID, in.ChatID)
 	history, err := e.store.History(in.UserID, in.ChatID, historyMessageLimit)
 	if err != nil {
 		return nil, err
@@ -316,6 +317,7 @@ func (e *Engine) systemPrompt(profile *Profile) string {
 	b.WriteString("\n- 删除、改配置这类操作只给建议或等待用户确认，不声称已经执行。")
 	b.WriteString("\n- 不编造歌名、歌词、专辑、发行年份或平台可下载性。")
 	b.WriteString("\n- 只要涉及“有没有/能不能下载/推荐可播的曲目”，答案里的每首歌都必须来自本轮 search_music 的结果；工具报错、没找到、或你还没搜时，直接说明“暂时查不到”，不要凭记忆列出歌名或链接。")
+	b.WriteString("\n- 问收藏同步、遗珠或歌单说明时，必须先用 favorite_status、rediscover_preview、playlist_catalog 取事实，不要凭记忆回答。这些工具只读，不能说已经同步、已经入库或已经改了说明。")
 	b.WriteString("\n- 用户明确排除的语言、场景、艺人不要再次推荐。")
 	if e.skills != nil {
 		if skills := e.skills.List(); len(skills) > 0 {

@@ -21,7 +21,9 @@ var codeTokens = []string{
 	"music-recommendation", "music-discovery-by-artist", "music-library-query",
 	"music-download-failure", "music-download-plan", "music-playlist-curation",
 	"music-lyrics-search", "music-metadata-normalize",
+	"music-favorite-status", "music-rediscover", "music-playlist-lookup",
 	"search_music", "library_stats", "library_search", "library_lookup", "list_active_downloads", "load_skill",
+	"favorite_status", "rediscover_preview", "playlist_catalog",
 }
 
 func init() {

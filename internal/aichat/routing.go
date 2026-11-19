@@ -16,6 +16,9 @@ var skillTriggers = map[string][]string{
 	"music-playlist-curation":   {"分类", "整理歌单", "分个类", "归类", "按主题", "整理成"},
 	"music-lyrics-search":       {"歌词", "这句词", "唱的什么", "什么歌里"},
 	"music-metadata-normalize":  {"标签", "流派", "艺人名", "专辑名", "元数据"},
+	"music-favorite-status":     {"收藏同步", "上一轮", "入库队列", "同步状态"},
+	"music-rediscover":          {"遗珠", "曲库缺", "听过但没有"},
+	"music-playlist-lookup":     {"歌单说明", "歌单描述", "有哪些歌单"},
 }
 
 // RouteSkills returns the skills whose trigger words appear in the user's

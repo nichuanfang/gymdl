@@ -141,6 +141,9 @@ ai:
     - "music-lyrics-search"
     - "music-metadata-normalize"
     - "music-download-plan"
+    - "music-favorite-status"
+    - "music-rediscover"
+    - "music-playlist-lookup"
   mcp_servers:  # MCP服务列表，只暴露 allowed_tools 中的工具
     - name: ""
       url: ""

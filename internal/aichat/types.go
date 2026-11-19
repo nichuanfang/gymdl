@@ -74,6 +74,28 @@ type collectorKey struct{}
 
 type progressKey struct{}
 
+type turnScopeKey struct{}
+
+// TurnScope identifies the Telegram user whose chat is running the tool.
+type TurnScope struct {
+	UserID int64
+	ChatID int64
+}
+
+// WithTurnScope attaches the current chat so read-only tools do not query every user.
+func WithTurnScope(ctx context.Context, userID, chatID int64) context.Context {
+	if userID == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, turnScopeKey{}, TurnScope{UserID: userID, ChatID: chatID})
+}
+
+// TurnScopeFrom returns the chat attached by WithTurnScope.
+func TurnScopeFrom(ctx context.Context) (TurnScope, bool) {
+	scope, ok := ctx.Value(turnScopeKey{}).(TurnScope)
+	return scope, ok && scope.UserID != 0
+}
+
 // ProgressFunc receives short, user-safe stage descriptions while a turn runs.
 // It must be fast and non-blocking; the bot usually edits the placeholder
 // message.

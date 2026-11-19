@@ -335,6 +335,9 @@ func defaultMusicSkills() []string {
 		"music-lyrics-search",
 		"music-metadata-normalize",
 		"music-download-plan",
+		"music-favorite-status",
+		"music-rediscover",
+		"music-playlist-lookup",
 	}
 }
 
