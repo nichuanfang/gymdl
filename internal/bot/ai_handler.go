@@ -281,9 +281,16 @@ func candidateSongCard(items []aichat.Candidate, index int, allowBatch bool) (st
 	}
 	item := items[index]
 	var text strings.Builder
-	if len(items) > 1 {
-		fmt.Fprintf(&text, "%d / %d\n\n", index+1, len(items))
+	heading := "推荐"
+	if platform := strings.TrimSpace(item.Platform); platform != "" {
+		heading += " · " + aichat.PlatformLabel(platform)
 	}
+	fmt.Fprintf(&text, "🎵 <b>%s</b>\n", utils.EscapeHTML(heading))
+	text.WriteString("──────────────────\n")
+	if len(items) > 1 {
+		fmt.Fprintf(&text, "%d / %d\n", index+1, len(items))
+	}
+	text.WriteByte('\n')
 	title := item.Name
 	if strings.TrimSpace(item.Title) != "" {
 		title = item.Title
@@ -292,10 +299,7 @@ func candidateSongCard(items []aichat.Candidate, index int, allowBatch bool) (st
 	if artist := strings.TrimSpace(item.Artist); artist != "" {
 		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
 	}
-	flags := make([]string, 0, 3)
-	if platform := strings.TrimSpace(item.Platform); platform != "" {
-		flags = append(flags, aichat.PlatformLabel(platform))
-	}
+	var flags []string
 	if item.IsVIP {
 		flags = append(flags, "VIP")
 	}

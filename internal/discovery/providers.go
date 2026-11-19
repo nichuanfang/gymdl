@@ -73,11 +73,25 @@ func fromSearch(i web.SearchResultItem) Track {
 	return Track{Platform: i.Platform, ID: id, URL: sourceURL, Title: i.Name, Artist: i.Artists, Album: i.Album, Duration: i.DurationSec, Verified: i.Name != "" && i.Artists != ""}
 }
 
-// neteaseRequestError is a transport failure. API codes such as login expiry
-// are separate errors and are not retried.
+// neteaseRequestError is a transport failure. HTTP 400 is not retried.
+// A non-200 API body uses neteaseAPIError and is retried like a dropped connection.
 type neteaseRequestError struct {
 	status int
 	cause  error
+}
+
+// neteaseAPIError is a readable HTTP response that is not a usable snapshot.
+// One 301 or a short body is not treated as a dead login.
+type neteaseAPIError struct {
+	code    int
+	invalid bool
+}
+
+func (e neteaseAPIError) Error() string {
+	if e.invalid || e.code == 0 {
+		return "网易云收藏暂时读不到，本轮跳过"
+	}
+	return fmt.Sprintf("网易云收藏暂时读不到（%d），本轮跳过", e.code)
 }
 
 func (e neteaseRequestError) Error() string {
@@ -100,6 +114,10 @@ func neteaseTimeout(err error) bool {
 }
 
 func retryableNetease(err error) bool {
+	var api neteaseAPIError
+	if errors.As(err, &api) {
+		return true
+	}
 	var httpErr neteaseRequestError
 	if !errors.As(err, &httpErr) {
 		return false
@@ -113,25 +131,37 @@ func retryableNetease(err error) bool {
 	return httpErr.status == 403 || httpErr.status == 408 || httpErr.status == 429 || httpErr.status >= 500
 }
 
+func waitCtx(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func (p *Providers) ncm(ctx context.Context, endpoint string, input any, out any) error {
 	if p.Config == nil || p.Config.CookieCloud == nil {
 		return fmt.Errorf("请配置 CookieCloud")
 	}
 	cc := p.Config.CookieCloud
-	musicU := utils.GetCookieValue(filepath.Join(cc.CookieFilePath, cc.CookieFile), ".music.163.com", "MUSIC_U")
-	if musicU == "" {
-		return fmt.Errorf("网易云登录失效，请同步 CookieCloud")
-	}
+	cookiePath := filepath.Join(cc.CookieFilePath, cc.CookieFile)
 	var last error
 	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			timer := time.NewTimer(time.Duration(attempt) * 400 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return ctx.Err()
-			case <-timer.C:
-			}
+		if err := waitCtx(ctx, time.Duration(attempt)*400*time.Millisecond); err != nil {
+			return err
+		}
+		// CookieCloud replaces the file by rename. Read it on every attempt so
+		// a missed open is not reported as a dead login.
+		musicU := utils.GetCookieValue(cookiePath, ".music.163.com", "MUSIC_U")
+		if musicU == "" {
+			last = fmt.Errorf("网易云收藏暂时读不到登录态，本轮跳过")
+			continue
 		}
 		err := p.ncmOnce(ctx, endpoint, input, musicU, out)
 		if err == nil || ctx.Err() != nil || !retryableNetease(err) {
@@ -155,9 +185,13 @@ func (p *Providers) ncmOnce(ctx context.Context, endpoint string, input any, mus
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Referer", "https://music.163.com/")
 	req.Header.Set("User-Agent", "NeteaseMusic/8.9.70")
-	req.AddCookie(&http.Cookie{Name: "MUSIC_U", Value: musicU})
+	// Music163Api-Go always sends these with the session. A valid MUSIC_U
+	// without buildver can be answered as an anonymous 301.
 	req.AddCookie(&http.Cookie{Name: "os", Value: "android"})
 	req.AddCookie(&http.Cookie{Name: "appver", Value: "8.9.70"})
+	req.AddCookie(&http.Cookie{Name: "buildver", Value: strconv.FormatInt(time.Now().Unix(), 10)})
+	req.AddCookie(&http.Cookie{Name: "resolution", Value: "1920x1080"})
+	req.AddCookie(&http.Cookie{Name: "MUSIC_U", Value: musicU})
 	resp, err := p.client().Do(req)
 	if err != nil {
 		return neteaseRequestError{cause: err}
@@ -172,16 +206,13 @@ func (p *Providers) ncmOnce(ctx context.Context, endpoint string, input any, mus
 	}
 	var code struct{ Code int }
 	if json.Unmarshal(data, &code) != nil {
-		return fmt.Errorf("网易云返回数据无效")
-	}
-	if code.Code == 301 || code.Code == 401 {
-		return fmt.Errorf("网易云登录失效，请同步 CookieCloud")
+		return neteaseAPIError{invalid: true}
 	}
 	if code.Code != 200 {
-		return fmt.Errorf("网易云收藏接口暂不可用（%d）", code.Code)
+		return neteaseAPIError{code: code.Code}
 	}
 	if json.Unmarshal(data, out) != nil {
-		return fmt.Errorf("网易云收藏数据格式无效")
+		return neteaseAPIError{invalid: true}
 	}
 	return nil
 }
@@ -203,50 +234,99 @@ func (p *Providers) netease(ctx context.Context) (Snapshot, error) {
 // download song details.
 func (p *Providers) NeteaseLikedIDs(ctx context.Context) (string, []string, error) {
 	var login ncmtypes.LoginStatusData
-	if err := p.ncm(ctx, "/api/w/nuser/account/get", map[string]any{}, &login); err != nil {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err = waitCtx(ctx, time.Duration(attempt)*400*time.Millisecond); err != nil {
+			return "", nil, err
+		}
+		err = p.ncm(ctx, "/api/w/nuser/account/get", map[string]any{}, &login)
+		if err != nil {
+			return "", nil, err
+		}
+		if login.Account.Id > 0 {
+			break
+		}
+		err = fmt.Errorf("网易云收藏暂时读不到账号，本轮跳过")
+	}
+	if err != nil {
 		return "", nil, err
 	}
 	uid := login.Account.Id
-	if uid <= 0 {
-		return "", nil, fmt.Errorf("网易云登录失效，请同步 CookieCloud")
-	}
 	var likedID int
 	for offset := 0; offset < 10000; offset += 100 {
 		var playlists ncmtypes.UserPlaylistData
-		if err := p.ncm(ctx, "/api/user/playlist", map[string]any{"uid": uid, "offset": offset, "limit": 100}, &playlists); err != nil {
-			return "", nil, err
-		}
-		for _, list := range playlists.Playlist {
-			if list.SpecialType == 5 && list.UserId == uid {
-				likedID = list.Id
+		var pageErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			if pageErr = waitCtx(ctx, time.Duration(attempt)*400*time.Millisecond); pageErr != nil {
+				return "", nil, pageErr
+			}
+			pageErr = p.ncm(ctx, "/api/user/playlist", map[string]any{"uid": uid, "offset": offset, "limit": 100}, &playlists)
+			if pageErr != nil {
+				return "", nil, pageErr
+			}
+			found := 0
+			for _, list := range playlists.Playlist {
+				if list.SpecialType == 5 && list.UserId == uid {
+					found = list.Id
+					break
+				}
+			}
+			if found > 0 {
+				likedID = found
+				pageErr = nil
 				break
 			}
+			if !playlists.More || len(playlists.Playlist) > 0 {
+				pageErr = nil
+				break
+			}
+			pageErr = fmt.Errorf("网易云歌单分页不完整")
+		}
+		if pageErr != nil {
+			return "", nil, pageErr
 		}
 		if likedID > 0 || !playlists.More {
 			break
-		}
-		if len(playlists.Playlist) == 0 {
-			return "", nil, fmt.Errorf("网易云歌单分页不完整")
 		}
 	}
 	if likedID <= 0 {
 		return "", nil, fmt.Errorf("未找到当前网易云账号的我喜欢的音乐")
 	}
 	var detail ncmtypes.PlaylistDetailData
-	if err := p.ncm(ctx, "/api/v6/playlist/detail", map[string]any{"id": likedID, "n": 100000, "s": 0}, &detail); err != nil {
-		return "", nil, err
+	for attempt := 0; attempt < 3; attempt++ {
+		if err = waitCtx(ctx, time.Duration(attempt)*400*time.Millisecond); err != nil {
+			return "", nil, err
+		}
+		err = p.ncm(ctx, "/api/v6/playlist/detail", map[string]any{"id": likedID, "n": 100000, "s": 0}, &detail)
+		if err != nil {
+			return "", nil, err
+		}
+		if neteaseIDsComplete(detail) {
+			err = nil
+			break
+		}
+		err = fmt.Errorf("网易云收藏 ID 数量不完整，未建立基线")
 	}
-	if len(detail.Playlist.TrackIds) != detail.Playlist.TrackCount {
-		return "", nil, fmt.Errorf("网易云收藏 ID 数量不完整，未建立基线")
+	if err != nil {
+		return "", nil, err
 	}
 	ids := make([]string, 0, len(detail.Playlist.TrackIds))
 	for _, id := range detail.Playlist.TrackIds {
-		if id.Id <= 0 {
-			return "", nil, fmt.Errorf("网易云收藏 ID 数量不完整，未建立基线")
-		}
 		ids = append(ids, strconv.Itoa(id.Id))
 	}
 	return strconv.Itoa(uid), ids, nil
+}
+
+func neteaseIDsComplete(detail ncmtypes.PlaylistDetailData) bool {
+	if len(detail.Playlist.TrackIds) != detail.Playlist.TrackCount {
+		return false
+	}
+	for _, id := range detail.Playlist.TrackIds {
+		if id.Id <= 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // NeteaseTracks loads details for the given song ids, in that order.
@@ -319,14 +399,30 @@ func (b *limitedOutput) Write(p []byte) (int, error) {
 
 // Use a private cookie copy: yt-dlp writes its cookie jar on exit and must not
 // replace CookieCloud's file, especially while other downloads are running.
+// A dropped read is tried twice. The stored baseline is left unchanged.
 func (p *Providers) yt(ctx context.Context, target any, args ...string) error {
-	if p.Config.CookieCloud == nil {
+	var last error
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := waitCtx(ctx, time.Duration(attempt)*700*time.Millisecond); err != nil {
+			return err
+		}
+		err := p.ytOnce(ctx, target, args...)
+		if err == nil || ctx.Err() != nil || !retryableYoutube(err) {
+			return err
+		}
+		last = err
+	}
+	return last
+}
+
+func (p *Providers) ytOnce(ctx context.Context, target any, args ...string) error {
+	if p.Config == nil || p.Config.CookieCloud == nil {
 		return fmt.Errorf("请配置 CookieCloud")
 	}
 	cc := p.Config.CookieCloud
 	raw, err := os.ReadFile(filepath.Join(cc.CookieFilePath, cc.CookieFile))
 	if err != nil {
-		return fmt.Errorf("YouTube Cookie 文件不可用")
+		return youtubeReadFailure{msg: "YouTube Cookie 文件暂时不可读，本轮跳过", retry: true}
 	}
 	f, err := os.CreateTemp("", "gymdl-youtube-cookies-*")
 	if err != nil {
@@ -349,13 +445,16 @@ func (p *Providers) yt(ctx context.Context, target any, args ...string) error {
 	var diagnostic limitedOutput
 	cmd.Stderr = &diagnostic
 	if err = cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return youtubeReadFailure{msg: "YouTube 读取超时，本轮跳过", retry: true}
+		}
 		if ctx.Err() != nil {
-			return fmt.Errorf("YouTube 读取超时或已取消，未更新基线: %w", ctx.Err())
+			return fmt.Errorf("YouTube 读取已取消，未更新基线: %w", ctx.Err())
 		}
 		return youtubeReadError(err, string(diagnostic.data))
 	}
 	if json.Unmarshal(out.data, target) != nil {
-		return fmt.Errorf("YouTube 返回数据无效")
+		return youtubeReadFailure{msg: "YouTube 返回数据无效，本轮跳过", retry: true}
 	}
 	return nil
 }
@@ -368,8 +467,25 @@ func (p *Providers) youtube(ctx context.Context) (Snapshot, error) {
 		Count      *int   `json:"playlist_count"`
 		Entries    []ytEntry
 	}
-	if err := p.yt(ctx, &list, "--flat-playlist", "--yes-playlist", ":ytfav"); err != nil {
-		return Snapshot{}, err
+	var countErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := waitCtx(ctx, time.Duration(attempt)*700*time.Millisecond); err != nil {
+			return Snapshot{}, err
+		}
+		list.ID, list.ChannelID, list.UploaderID = "", "", ""
+		list.Count, list.Entries = nil, nil
+		if err := p.yt(ctx, &list, "--flat-playlist", "--yes-playlist", ":ytfav"); err != nil {
+			return Snapshot{}, err
+		}
+		if list.Count != nil && len(list.Entries) != *list.Count {
+			countErr = fmt.Errorf("YouTube 收藏分页数量不完整，本轮跳过")
+			continue
+		}
+		countErr = nil
+		break
+	}
+	if countErr != nil {
+		return Snapshot{}, countErr
 	}
 	account := list.ChannelID
 	if account == "" {
@@ -508,62 +624,90 @@ func (p *Providers) matchOnPlatform(ctx context.Context, t Track, platform strin
 // identifies the authenticated account context across rotating cookies. Store
 // only its hash; never use a cookie value as an account identity.
 func (p *Providers) youtubeAccount(ctx context.Context) (string, error) {
-	if p.Config.CookieCloud == nil {
+	if p.Config == nil || p.Config.CookieCloud == nil {
 		return "", fmt.Errorf("YouTube 登录配置缺失")
 	}
 	cc := p.Config.CookieCloud
-	raw, err := os.ReadFile(filepath.Join(cc.CookieFilePath, cc.CookieFile))
-	if err != nil {
-		return "", fmt.Errorf("YouTube Cookie 不可用")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.youtube.com/", nil)
-	if err != nil {
-		return "", err
-	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		fields := strings.Split(strings.TrimPrefix(strings.TrimSpace(line), "#HttpOnly_"), "\t")
-		if len(fields) < 7 {
+	cookiePath := filepath.Join(cc.CookieFilePath, cc.CookieFile)
+	loggedIn := regexp.MustCompile(`"LOGGED_IN"\s*:\s*true`)
+	datasync := regexp.MustCompile(`"DATASYNC_ID"\s*:\s*"([^"\\]+)"`)
+	var last error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := waitCtx(ctx, time.Duration(attempt)*400*time.Millisecond); err != nil {
+			return "", err
+		}
+		raw, err := os.ReadFile(cookiePath)
+		if err != nil {
+			last = fmt.Errorf("YouTube 收藏暂时读不到账号，本轮跳过")
 			continue
 		}
-		domain := strings.TrimPrefix(fields[0], ".")
-		if domain != "youtube.com" && domain != "www.youtube.com" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.youtube.com/", nil)
+		if err != nil {
+			return "", err
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			fields := strings.Split(strings.TrimPrefix(strings.TrimSpace(line), "#HttpOnly_"), "\t")
+			if len(fields) < 7 {
+				continue
+			}
+			domain := strings.TrimPrefix(fields[0], ".")
+			if domain != "youtube.com" && domain != "www.youtube.com" {
+				continue
+			}
+			expiry, _ := strconv.ParseInt(fields[4], 10, 64)
+			if expiry > 0 && expiry < time.Now().Unix() {
+				continue
+			}
+			req.AddCookie(&http.Cookie{Name: fields[5], Value: fields[6]})
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+		resp, err := p.client().Do(req)
+		if err != nil {
+			last = fmt.Errorf("YouTube 收藏暂时读不到账号，本轮跳过")
 			continue
 		}
-		expiry, _ := strconv.ParseInt(fields[4], 10, 64)
-		if expiry > 0 && expiry < time.Now().Unix() {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		resp.Body.Close()
+		if readErr != nil || resp.StatusCode != 200 {
+			last = fmt.Errorf("YouTube 收藏暂时读不到账号，本轮跳过")
 			continue
 		}
-		req.AddCookie(&http.Cookie{Name: fields[5], Value: fields[6]})
+		id := datasync.FindSubmatch(body)
+		if !loggedIn.Match(body) || len(id) != 2 || len(id[1]) == 0 {
+			last = fmt.Errorf("YouTube 收藏暂时读不到账号，本轮跳过")
+			continue
+		}
+		hash := sha256.Sum256(id[1])
+		return "account-" + hex.EncodeToString(hash[:]), nil
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := p.client().Do(req)
-	if err != nil {
-		return "", fmt.Errorf("YouTube 账号核对失败，未建立基线")
+	if last == nil {
+		last = fmt.Errorf("YouTube 收藏暂时读不到账号，本轮跳过")
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil || resp.StatusCode != 200 {
-		return "", fmt.Errorf("YouTube 账号核对失败")
-	}
-	logged := regexp.MustCompile(`"LOGGED_IN"\s*:\s*true`).Match(body)
-	id := regexp.MustCompile(`"DATASYNC_ID"\s*:\s*"([^"\\]+)"`).FindSubmatch(body)
-	if !logged || len(id) != 2 || len(id[1]) == 0 {
-		return "", fmt.Errorf("YouTube 未返回稳定登录账号，请刷新 CookieCloud 后重新绑定")
-	}
-	hash := sha256.Sum256(id[1])
-	return "account-" + hex.EncodeToString(hash[:]), nil
+	return "", last
+}
+
+type youtubeReadFailure struct {
+	msg   string
+	retry bool
+}
+
+func (e youtubeReadFailure) Error() string { return e.msg }
+
+func retryableYoutube(err error) bool {
+	var fail youtubeReadFailure
+	return errors.As(err, &fail) && fail.retry
 }
 
 func youtubeReadError(err error, diagnostic string) error {
 	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrPermission) {
-		return fmt.Errorf("YouTube 收藏读取需要可执行的 yt-dlp；当前运行环境缺少该工具或 PATH 配置有误")
+		return youtubeReadFailure{msg: "YouTube 收藏读取需要可执行的 yt-dlp；当前运行环境缺少该工具或 PATH 配置有误"}
 	}
 	message := strings.ToLower(diagnostic)
 	if strings.Contains(message, "playlist does not exist") {
-		return fmt.Errorf("YouTube 喜欢列表不可访问；请在浏览器确认正确账号后刷新 CookieCloud，未建立基线")
+		return youtubeReadFailure{msg: "YouTube 喜欢列表暂时读不到，未更新基线"}
 	}
 	if strings.Contains(message, "cookies are no longer valid") || strings.Contains(message, "login required") || strings.Contains(message, "sign in") {
-		return fmt.Errorf("YouTube 登录失效，请刷新 CookieCloud")
+		return youtubeReadFailure{msg: "YouTube 收藏暂时读不到，本轮跳过", retry: true}
 	}
-	return fmt.Errorf("YouTube 收藏或元数据读取失败，请检查网络、登录和 CookieCloud")
+	return youtubeReadFailure{msg: "YouTube 收藏或元数据读取失败，请检查网络、登录和 CookieCloud", retry: true}
 }

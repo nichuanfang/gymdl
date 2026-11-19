@@ -76,38 +76,56 @@ func orderFreshPlatforms(platforms []string) []string {
 
 func renderFreshFavorites(platforms []string, by map[string][]Track) string {
 	var heads []string
-	var lines []string
+	var sections []string
+	shown := 0
+	extra := 0
 	for _, platform := range platforms {
 		tracks := by[platform]
-		heads = append(heads, fmt.Sprintf("%s %d 首", freshPlatformLabel(platform), len(tracks)))
+		label := freshPlatformLabel(platform)
+		heads = append(heads, fmt.Sprintf("%s %d 首", label, len(tracks)))
+		lines := []string{"<b>" + utils.EscapeHTML(label) + "</b>"}
 		for _, track := range tracks {
-			title := strings.TrimSpace(track.Title)
-			if title == "" {
-				title = "未命名"
+			if shown >= 8 {
+				extra++
+				continue
 			}
-			line := "· " + truncateRunes(title, 28)
+			shown++
+			line := "· " + freshListenTitle(track.Title, track.URL)
 			if artist := strings.TrimSpace(track.Artist); artist != "" {
-				line += " — " + truncateRunes(artist, 18)
+				line += " — " + utils.EscapeHTML(truncateRunes(artist, 18))
 			}
 			lines = append(lines, line)
 		}
+		if len(lines) > 1 {
+			sections = append(sections, strings.Join(lines, "\n"))
+		}
 	}
 	var text strings.Builder
-	text.WriteString("收藏有新歌\n")
+	text.WriteString("🎵 <b>收藏有新歌</b>\n")
+	text.WriteString("──────────────────\n")
 	text.WriteString(strings.Join(heads, " · "))
-	text.WriteString("\n\n")
-	shown := lines
-	extra := 0
-	if len(lines) > 8 {
-		shown = lines[:8]
-		extra = len(lines) - 8
+	if len(sections) > 0 {
+		text.WriteString("\n\n")
+		text.WriteString(strings.Join(sections, "\n\n"))
 	}
-	text.WriteString(strings.Join(shown, "\n"))
 	if extra > 0 {
-		fmt.Fprintf(&text, "\n还有 %d 首", extra)
+		fmt.Fprintf(&text, "\n\n还有 %d 首", extra)
 	}
 	text.WriteString("\n\n已排队入库。")
 	return text.String()
+}
+
+func freshListenTitle(title, rawURL string) string {
+	shown := utils.EscapeHTML(truncateRunes(strings.TrimSpace(title), 32))
+	if shown == "" {
+		shown = "未命名"
+	}
+	rawURL = strings.TrimSpace(rawURL)
+	if !strings.HasPrefix(rawURL, "https://") && !strings.HasPrefix(rawURL, "http://") {
+		return shown
+	}
+	href := strings.ReplaceAll(utils.EscapeHTML(rawURL), `"`, "&quot;")
+	return `<a href="` + href + `">` + shown + `</a>`
 }
 
 func freshPlatformLabel(platform string) string {

@@ -47,7 +47,7 @@ func TestPlaylistDescButtonsFitTelegram(t *testing.T) {
 		},
 	}
 	text, markup := formatPlaylistDesc(session, "")
-	if !strings.Contains(text, "还有 1 张没写描述，排在前面。") || !strings.Contains(text, "点下面的名称修改。") || strings.Contains(text, "未写") {
+	if !strings.Contains(text, "🎵 <b>歌单描述</b>\n──────────────────\n") || !strings.Contains(text, "还有 1 张没写描述，排在前面。") || strings.Contains(text, "点下面的名称") || strings.Contains(text, "未写") {
 		t.Fatalf("list copy = %q", text)
 	}
 	if !buttonTexts(markup)["中文"] || !buttonTexts(markup)["英文"] || !buttonTexts(markup)["↻ 同步歌单"] || !buttonTexts(markup)["✕ 取消"] {
@@ -88,7 +88,7 @@ func TestPlaylistDescActionsStayOffThePlaylistRows(t *testing.T) {
 		playlists: playlists,
 	}
 	text, markup := formatPlaylistDesc(session, "")
-	if !strings.Contains(text, "还有 17 张没写描述，排在前面。") || strings.Contains(text, "未写") {
+	if !strings.Contains(text, "还有 17 张没写描述，排在前面。") || strings.Contains(text, "点下面的名称") || strings.Contains(text, "未写") {
 		t.Fatalf("list copy = %q", text)
 	}
 	texts := buttonTexts(markup)
@@ -168,7 +168,7 @@ func TestPlaylistDescFirstPageSharesTheSinglePagerWithActions(t *testing.T) {
 		synced:    true,
 		playlists: playlists,
 	}, "")
-	if !strings.Contains(text, "还有 1 张没写描述，排在前面。") || strings.Contains(text, "未写") {
+	if !strings.Contains(text, "还有 1 张没写描述，排在前面。") || strings.Contains(text, "点下面的名称") || strings.Contains(text, "未写") {
 		t.Fatalf("list copy = %q", text)
 	}
 	var sawToolbar bool

@@ -242,6 +242,17 @@ func TestFreshFavoriteNoticeKeepsAShortList(t *testing.T) {
 	if !strings.Contains(text, "网易云 1 首 · QQ 音乐 9 首") || !strings.Contains(text, "还有 2 首") || strings.Count(text, "\n· ") > 8 {
 		t.Fatal(text)
 	}
+	if !strings.Contains(text, "<b>收藏有新歌</b>") || !strings.Contains(text, "已排队入库") {
+		t.Fatal(text)
+	}
+}
+
+func TestFreshFavoriteNoticeLinksAndEscapesTheTitle(t *testing.T) {
+	track := testTrack("1", "A & B <C>", "甲&乙")
+	text := formatFreshFavoriteNotices([]FreshFavorite{{Chat: 1, Platform: "netease", Track: track}})[1]
+	if !strings.Contains(text, `<a href="https://music.163.com/song?id=1">A &amp; B &lt;C&gt;</a>`) || !strings.Contains(text, "甲&amp;乙") || strings.Contains(text, "A & B") {
+		t.Fatal(text)
+	}
 }
 
 func TestQueueSurvivesRestartPauseAndExplicitRetry(t *testing.T) {

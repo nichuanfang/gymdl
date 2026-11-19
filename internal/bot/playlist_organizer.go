@@ -1529,7 +1529,7 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "整理会话已过期", ShowAlert: true})
 		}
 		_ = c.Respond()
-		return c.Edit(formatPlaylistAssignment(updated), playlistAssignmentMarkup(updated))
+		return c.Edit(formatPlaylistAssignment(updated), tb.ModeHTML, playlistAssignmentMarkup(updated))
 
 	case "redo":
 		updated, ok := app.beginPlaylistAssignmentReorganize(token)
@@ -1800,53 +1800,50 @@ func formatPlaylistNameList(names []string) string {
 
 func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 	var text strings.Builder
+	text.WriteString("🎵 <b>整理歌单</b>\n")
+	text.WriteString("──────────────────\n")
 	if assignment.song.ID == "" {
-		text.WriteString("整理歌单\n")
 		if assignment.statusNote != "" {
-			text.WriteString("\n")
-			text.WriteString(assignment.statusNote)
+			text.WriteString(utils.EscapeHTML(assignment.statusNote))
 		} else {
-			text.WriteString("\n⌛ 正在读取下一首待归档歌曲…")
+			text.WriteString("⌛ 正在读取下一首待归档歌曲…")
 		}
 		return text.String()
 	}
-	text.WriteString("整理歌单\n")
 	if progress := playlistAssignmentProgress(assignment); progress != "" {
 		text.WriteString(progress)
 		text.WriteString("\n")
 	}
 	if assignment.aiSuggestionLoading {
+		text.WriteString("\n")
 		if assignment.aiSuggestionManual {
-			text.WriteString("\n正在重新整理…")
+			text.WriteString("正在重新整理…")
 		} else {
-			text.WriteString("\n正在生成建议…")
+			text.WriteString("正在生成建议…")
 		}
 		return text.String()
 	}
 	text.WriteString("\n")
-	text.WriteString(displaySongValue(assignment.song.Title))
-	text.WriteString("\n")
-	text.WriteString(displaySongValue(assignment.song.Artist))
+	fmt.Fprintf(&text, "<b>%s</b>\n", utils.EscapeHTML(displaySongValue(assignment.song.Title)))
+	fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(displaySongValue(assignment.song.Artist)))
 	album := strings.TrimSpace(assignment.song.Album)
-	if album != "" && assignment.song.Year > 0 {
-		fmt.Fprintf(&text, "\n%s · %d", displaySongValue(album), assignment.song.Year)
-	} else if album != "" {
-		fmt.Fprintf(&text, "\n%s", displaySongValue(album))
-	} else if assignment.song.Year > 0 {
-		fmt.Fprintf(&text, "\n%d", assignment.song.Year)
+	switch {
+	case album != "" && assignment.song.Year > 0:
+		fmt.Fprintf(&text, "《%s》 · %d", utils.EscapeHTML(displaySongValue(album)), assignment.song.Year)
+	case album != "":
+		fmt.Fprintf(&text, "《%s》", utils.EscapeHTML(displaySongValue(album)))
+	case assignment.song.Year > 0:
+		fmt.Fprintf(&text, "%d", assignment.song.Year)
 	}
 	if assignment.selectionComplete {
-		fmt.Fprintf(&text, "\n\n放入 %s", formatPlaylistNameList(assignment.selectedPlaylists))
+		fmt.Fprintf(&text, "\n\n放入 %s", utils.EscapeHTML(formatPlaylistNameList(assignment.selectedPlaylists)))
 		if note := strings.TrimSpace(assignment.statusNote); note != "" {
 			text.WriteString("\n\n")
-			text.WriteString(note)
+			text.WriteString(utils.EscapeHTML(note))
 		}
-	} else if suggestion := app.playlistAssignmentSuggestion(assignment); suggestion != "" {
-		text.WriteString("\n\n建议\n")
-		text.WriteString(suggestion)
 	} else if note := strings.TrimSpace(assignment.statusNote); note != "" {
 		text.WriteString("\n\n")
-		text.WriteString(note)
+		text.WriteString(utils.EscapeHTML(note))
 	}
 	if assignment.hiddenPlaylistCount > 0 {
 		fmt.Fprintf(&text, "\n⚠️ %d 个歌单未显示。", assignment.hiddenPlaylistCount)
@@ -1918,10 +1915,24 @@ func truncatePlaylistLabel(value string, limit int) string {
 }
 
 func (app *BotApp) editPlaylistAssignmentMessage(message *tb.Message, text string, markup *tb.ReplyMarkup) error {
+	return app.editPlaylistAssignmentText(message, text, markup, "")
+}
+
+func (app *BotApp) editPlaylistAssignmentCard(message *tb.Message, assignment pendingPlaylistAssignment) error {
+	return app.editPlaylistAssignmentText(message, formatPlaylistAssignment(assignment), playlistAssignmentMarkup(assignment), tb.ModeHTML)
+}
+
+func (app *BotApp) editPlaylistAssignmentText(message *tb.Message, text string, markup *tb.ReplyMarkup, mode tb.ParseMode) error {
 	if message == nil || app.bot == nil {
 		return nil
 	}
-	if _, err := app.bot.Edit(message, text, markup); err != nil {
+	var err error
+	if mode == "" {
+		_, err = app.bot.Edit(message, text, markup)
+	} else {
+		_, err = app.bot.Edit(message, text, mode, markup)
+	}
+	if err != nil {
 		if strings.Contains(err.Error(), "not modified") {
 			return nil
 		}
@@ -1933,7 +1944,7 @@ func (app *BotApp) editPlaylistAssignmentMessage(message *tb.Message, text strin
 
 // presentPlaylistAssignment 画回整理卡片。编辑失败时放开会话，避免停在没有按钮的等待消息上。
 func (app *BotApp) presentPlaylistAssignment(assignment pendingPlaylistAssignment) {
-	if err := app.editPlaylistAssignmentMessage(assignment.message, formatPlaylistAssignment(assignment), playlistAssignmentMarkup(assignment)); err == nil {
+	if err := app.editPlaylistAssignmentCard(assignment.message, assignment); err == nil {
 		return
 	}
 	app.takePlaylistAssignment(assignment.token)

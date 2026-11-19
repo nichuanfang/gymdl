@@ -30,6 +30,12 @@ func TestNeteaseRequestRetriesTransientFailure(t *testing.T) {
 	calls := 0
 	p := neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
 		calls++
+		cookie := r.Header.Get("Cookie")
+		for _, part := range []string{"MUSIC_U=ok", "os=android", "appver=8.9.70", "buildver=", "resolution=1920x1080"} {
+			if !strings.Contains(cookie, part) {
+				t.Errorf("cookie header missing %s: %q", part, cookie)
+			}
+		}
 		if calls == 1 {
 			return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader("busy")), Request: r}, nil
 		}
@@ -59,10 +65,23 @@ func TestNeteaseRequestKeepsTheFailureReason(t *testing.T) {
 	calls = 0
 	p = neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
 		calls++
+		if calls < 3 {
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"code":301}`)), Request: r}, nil
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"code":200}`)), Request: r}, nil
+	})
+	err = p.ncm(context.Background(), "/api/w/nuser/account/get", map[string]any{}, &out)
+	if err != nil || calls != 3 || out.Code != 200 {
+		t.Fatal(calls, err)
+	}
+
+	calls = 0
+	p = neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+		calls++
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"code":301}`)), Request: r}, nil
 	})
 	err = p.ncm(context.Background(), "/api/w/nuser/account/get", map[string]any{}, &out)
-	if err == nil || !strings.Contains(err.Error(), "登录失效") || calls != 1 {
+	if err == nil || strings.Contains(err.Error(), "登录失效") || !strings.Contains(err.Error(), "301") || calls != 3 {
 		t.Fatal(calls, err)
 	}
 
@@ -82,6 +101,52 @@ type timeoutErr struct{}
 func (timeoutErr) Error() string   { return "i/o timeout" }
 func (timeoutErr) Timeout() bool   { return true }
 func (timeoutErr) Temporary() bool { return true }
+
+func TestNeteaseMissingLoginSkipsWithoutBlamingExpiry(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "cookies.txt"), []byte("# Netscape HTTP Cookie File\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	p := &Providers{
+		Config: &config.Config{CookieCloud: &config.CookieCloudConfig{CookieFilePath: dir, CookieFile: "cookies.txt"}},
+		Client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"code":200}`)), Request: r}, nil
+		})},
+	}
+	var out struct{ Code int }
+	err := p.ncm(context.Background(), "/api/w/nuser/account/get", map[string]any{}, &out)
+	if err == nil || calls != 0 || strings.Contains(err.Error(), "登录失效") || !strings.Contains(err.Error(), "暂时读不到") {
+		t.Fatal(calls, err)
+	}
+}
+
+func TestNeteaseEmptyAccountIsRetried(t *testing.T) {
+	accountCalls := 0
+	p := neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+		body := `{"code":200}`
+		switch {
+		case strings.Contains(r.URL.Path, "account/get"):
+			accountCalls++
+			if accountCalls >= 2 {
+				body = `{"code":200,"account":{"id":9}}`
+			}
+		case strings.Contains(r.URL.Path, "user/playlist"):
+			body = `{"code":200,"more":false,"playlist":[{"id":50,"specialType":5,"userId":9}]}`
+		case strings.Contains(r.URL.Path, "playlist/detail"):
+			body = `{"code":200,"playlist":{"trackCount":0,"trackIds":[]}}`
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+			return nil, errors.New("unexpected")
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	account, ids, err := p.NeteaseLikedIDs(context.Background())
+	if err != nil || account != "9" || len(ids) != 0 || accountCalls != 2 {
+		t.Fatalf("account=%s ids=%v calls=%d err=%v", account, ids, accountCalls, err)
+	}
+}
 
 func TestSyncReusesStoredNeteaseSongs(t *testing.T) {
 	store := testStore(t)

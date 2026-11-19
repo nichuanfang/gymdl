@@ -843,14 +843,16 @@ func TestPlaylistAssignmentMessageIsCompactAndDoesNotRepeatButtonInstructions(t 
 	}
 	message := formatPlaylistAssignment(assignment)
 	for _, expected := range []string{
-		"整理歌单\n第 3 首 · 还剩 12 · 已归档 2 · 跳过 0\n\n雨下一整晚",
+		"🎵 <b>整理歌单</b>\n──────────────────\n第 3 首 · 还剩 12 · 已归档 2 · 跳过 0\n\n<b>雨下一整晚</b>",
 		"周杰伦",
-		"跨时代 · 2010",
-		"建议\n中文、弦乐",
+		"《跨时代》 · 2010",
 	} {
 		if !strings.Contains(message, expected) {
 			t.Errorf("message %q does not contain %q", message, expected)
 		}
+	}
+	if strings.Contains(message, "建议") {
+		t.Fatalf("suggestion line returned to the song card: %s", message)
 	}
 	if strings.Contains(message, "打开歌单选择页面") || strings.Contains(message, "同歌手歌单：") {
 		t.Fatalf("message repeats the button action: %q", message)

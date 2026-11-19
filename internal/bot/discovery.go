@@ -57,7 +57,10 @@ func (app *BotApp) initDiscovery() {
 			return discovery.Download(ctx, app.cfg, app.musicDedupe, t)
 		},
 		OnError: func(err error) { utils.WarnWithFormat("[Discovery] 队列处理失败，将恢复任务: %v", err) },
-		Notify:  func(chat int64, text string) error { _, err := app.bot.Send(tb.ChatID(chat), text); return err },
+		Notify: func(chat int64, text string) error {
+			_, err := app.bot.Send(tb.ChatID(chat), text, tb.ModeHTML)
+			return err
+		},
 	}
 }
 
@@ -214,7 +217,8 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	}
 	track := card.Tracks[page]
 	var text strings.Builder
-	fmt.Fprintf(&text, "%s\n", rediscoverHeading(card.Tracks))
+	fmt.Fprintf(&text, "🎵 <b>%s</b>\n", utils.EscapeHTML(rediscoverHeading(card.Tracks)))
+	text.WriteString("──────────────────\n")
 	if len(card.Tracks) > 1 {
 		fmt.Fprintf(&text, "%d / %d\n", page+1, len(card.Tracks))
 	}
@@ -231,12 +235,6 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 		fmt.Fprintf(&text, "%s\n", fact)
 	}
 	var notes []string
-	if page == 0 && strings.TrimSpace(track.URL) != "" {
-		notes = append(notes, "点歌名可打开平台页面。")
-	}
-	if card.SkippedOwned > 0 {
-		notes = append(notes, fmt.Sprintf("已避开曲库里的 %d 首", card.SkippedOwned))
-	}
 	if line := rediscoverShortfallLine(card); line != "" {
 		notes = append(notes, strings.TrimRight(line, "\n"))
 	}
@@ -452,9 +450,9 @@ func (app *BotApp) presentFavorites(c tb.Context, notice string) error {
 		return answerOnCard(c, err.Error(), nil, false)
 	}
 	if notice != "" {
-		text = notice + "\n\n" + text
+		text = utils.EscapeHTML(notice) + "\n\n" + text
 	}
-	return answerOnCard(c, text, markup, false)
+	return answerOnCard(c, text, markup, true)
 }
 
 func answerOnCard(c tb.Context, text string, markup *tb.ReplyMarkup, html bool) error {
@@ -498,11 +496,10 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 		counts[job.State]++
 	}
 	var text strings.Builder
-	text.WriteString("收藏同步\n")
-	if app.discovery.Enabled {
-		fmt.Fprintf(&text, "\n自动检查：每 %d 分钟\n发现新收藏时会私聊通知", max(1, int(app.discovery.PollInterval/time.Minute)))
-	} else {
-		text.WriteString("\n自动同步未启用\n绑定账号后，新增收藏也不会自动入库")
+	text.WriteString("🎵 <b>收藏同步</b>\n")
+	text.WriteString("──────────────────")
+	if !app.discovery.Enabled {
+		text.WriteString("\n自动同步未启用。绑定账号后，新增收藏也不会自动入库")
 	}
 	byPlatform := map[string]discovery.Binding{}
 	for _, binding := range bindings {
@@ -513,33 +510,28 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 		binding, ok := byPlatform[platform]
 		name := aichat.PlatformLabel(platform)
 		if !ok {
-			fmt.Fprintf(&text, "\n\n%s\n未绑定", name)
+			fmt.Fprintf(&text, "\n\n<b>%s</b> · 未绑定", utils.EscapeHTML(name))
 			appendDiscoveryRows(markup, markup.Row(markup.Data("绑定 "+name, discoveryCallbackUnique, "probe", platform)))
 			continue
 		}
-		state := "自动同步已开启"
-		switch {
-		case !app.discovery.Enabled && binding.Paused:
-			state = "已暂停 · 自动同步未启用"
-		case !app.discovery.Enabled:
-			state = "已绑定 · 自动同步未启用"
-		case binding.Paused:
-			state = "自动同步已暂停"
-		}
-		fmt.Fprintf(&text, "\n\n%s\n%s", name, state)
+		fmt.Fprintf(&text, "\n\n<b>%s</b> · %s", utils.EscapeHTML(name), utils.EscapeHTML(favoriteCardState(app.discovery.Enabled, binding.Paused)))
 		if account := maskedDiscoveryAccount(binding.Account); account != "" {
-			fmt.Fprintf(&text, "\n%s", account)
+			fmt.Fprintf(&text, "\n账号：%s", utils.EscapeHTML(account))
 		}
-		if binding.Error != "" {
-			fmt.Fprintf(&text, "\n%s", utils.TruncateString(binding.Error, 60))
+		if binding.LastSync > 0 {
+			fmt.Fprintf(&text, "\n上次同步：%s", time.Unix(binding.LastSync, 0).Format("01-02 15:04"))
 		}
-		action, button := "pause", "暂停"
+		if reason := favoritePlatformError(platform, binding.Error); reason != "" {
+			fmt.Fprintf(&text, "\n上一轮：%s", utils.EscapeHTML(utils.TruncateString(reason, 80)))
+		}
+		action, verb := "pause", "暂停"
 		if binding.Paused {
-			action, button = "resume", "恢复"
+			action, verb = "resume", "恢复"
 		}
+		compact := strings.ReplaceAll(name, " ", "")
 		appendDiscoveryRows(markup, markup.Row(
-			markup.Data("重新绑定", discoveryCallbackUnique, "probe", platform),
-			markup.Data(button, discoveryCallbackUnique, action, platform),
+			markup.Data("重绑"+compact, discoveryCallbackUnique, "probe", platform),
+			markup.Data(verb+compact, discoveryCallbackUnique, action, platform),
 		))
 	}
 	var queue []string
@@ -553,9 +545,9 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 		}
 	}
 	if len(queue) > 0 {
-		fmt.Fprintf(&text, "\n\n入库队列：%s", strings.Join(queue, " · "))
+		fmt.Fprintf(&text, "\n\n入库：%s", utils.EscapeHTML(strings.Join(queue, " · ")))
 	} else {
-		text.WriteString("\n\n入库队列：暂无待处理任务")
+		text.WriteString("\n\n入库：暂无待处理任务")
 	}
 	actions := tb.Row{markup.Data("找回遗珠", discoveryCallbackUnique, "history", "menu")}
 	if app.discovery.Enabled {
@@ -589,7 +581,37 @@ func favoritesSyncNotice(fresh []discovery.FreshFavorite) string {
 	if len(fresh) == 0 {
 		return "✅ 本次没有新的收藏。"
 	}
-	return fmt.Sprintf("✅ 发现 %d 首新收藏，已提交入库队列。", len(fresh))
+	return fmt.Sprintf("✅ 发现 %d 首新收藏，已排队入库。", len(fresh))
+}
+
+func favoriteCardState(enabled, paused bool) string {
+	switch {
+	case paused:
+		return "已暂停"
+	case !enabled:
+		return "已绑定"
+	default:
+		return "已开启"
+	}
+}
+
+func favoriteErrorText(message string) string {
+	message = strings.Join(strings.Fields(strings.TrimSpace(message)), " ")
+	for _, platform := range []string{"netease", "qq", "youtube"} {
+		label := aichat.PlatformLabel(platform)
+		message = strings.ReplaceAll(message, platform+"：", label+"：")
+		message = strings.ReplaceAll(message, platform+":", label+"：")
+	}
+	return message
+}
+
+func favoritePlatformError(platform, message string) string {
+	message = favoriteErrorText(message)
+	prefix := aichat.PlatformLabel(platform) + "："
+	if strings.HasPrefix(message, prefix) {
+		message = strings.TrimSpace(strings.TrimPrefix(message, prefix))
+	}
+	return message
 }
 
 func maskedDiscoveryAccount(s string) string {
@@ -853,15 +875,16 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 				return app.presentFavorites(c, "❌ 更新暂停状态失败："+discoveryPublicError(err))
 			}
 			logFavoritePause(key, action == "pause", nil)
+			name := aichat.PlatformLabel(key)
 			if action == "pause" {
-				return app.presentFavorites(c, "✅ 已暂停该平台的自动同步。")
+				return app.presentFavorites(c, "✅ 已暂停"+name+"的自动同步。")
 			}
-			return app.presentFavorites(c, "✅ 已恢复该平台的自动同步。")
+			return app.presentFavorites(c, "✅ 已恢复"+name+"的自动同步。")
 		case "sync":
 			if !app.discoveryCommandMu.TryLock() {
 				return app.presentFavorites(c, "⏳ 已有请求正在处理，请稍后查看状态。")
 			}
-			if err := editDiscoveryMessage(c, "⌛ 正在同步收藏…\n完成后会回到这张卡片。", nil, false); err != nil {
+			if err := editDiscoveryMessage(c, "⌛ <b>正在同步收藏…</b>\n完成后会回到这张卡片。", nil, true); err != nil {
 				app.discoveryCommandMu.Unlock()
 				return err
 			}
@@ -873,20 +896,20 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 				fresh, syncErr := app.discovery.SyncQuietly(syncCtx, user)
 				notice := favoritesSyncNotice(fresh)
 				if syncErr != nil {
-					notice = "❌ " + discoveryPublicError(syncErr)
+					notice = "❌ 这一轮没有同步完成，收藏基线未改。"
 					if len(fresh) > 0 {
 						notice += "\n" + favoritesSyncNotice(fresh)
 					}
 				}
 				text, markup, renderErr := app.renderFavorites(context.Background(), user)
 				if renderErr != nil {
-					_ = editDiscoveryMessage(c, notice+"\n\n无法刷新收藏卡片。", discoveryFavoritesShortcut(), false)
+					_ = editDiscoveryMessage(c, utils.EscapeHTML(notice)+"\n\n无法刷新收藏卡片。", discoveryFavoritesShortcut(), true)
 					return
 				}
 				if notice != "" {
-					text = notice + "\n\n" + text
+					text = utils.EscapeHTML(notice) + "\n\n" + text
 				}
-				_ = editDiscoveryMessage(c, text, markup, false)
+				_ = editDiscoveryMessage(c, text, markup, true)
 			})
 			return nil
 		case "history":

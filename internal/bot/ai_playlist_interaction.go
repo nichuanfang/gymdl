@@ -1546,19 +1546,23 @@ func formatAIPlaylistSession(session pendingAIPlaylistSession) string {
 		return text.String()
 	}
 	if session.target.ID == "" && !session.creating {
-		text.WriteString("生成歌单")
-		if len(session.playlists) > 0 {
-			text.WriteString("\n\n选择一张 [AI] 歌单，或新建。\n确认前不会修改 Navidrome。")
-			if len(session.resumePlaylists) > 0 {
-				text.WriteString("\n\n也可以继续上次未完成的写入。")
-			}
-		} else {
-			text.WriteString("\n\n还没有 [AI] 歌单。\n可以直接新建。")
+		text.WriteString("🎵 生成歌单")
+		var lines []string
+		if len(session.playlists) == 0 {
+			lines = append(lines, "还没有 [AI] 歌单。", "可以直接新建。")
+		} else if len(session.resumePlaylists) > 0 {
+			lines = append(lines, "也可以继续上次未完成的写入。")
 		}
 		if len(session.createIntents) > 0 {
-			text.WriteString("\n\n也可以继续上次确认过的新建。")
+			lines = append(lines, "也可以继续上次确认过的新建。")
 		}
-		writeAIPlaylistNotice(&text, session)
+		if notice := strings.TrimSpace(session.notice); notice != "" && !(session.awaitingSeed && notice == aiPlaylistSeedNotice()) {
+			lines = append(lines, notice)
+		}
+		if len(lines) > 0 {
+			text.WriteString("\n──────────────────\n")
+			text.WriteString(strings.Join(lines, "\n"))
+		}
 		return text.String()
 	}
 	if session.confirmingDelete && aiPlaylistCanDelete(session) {

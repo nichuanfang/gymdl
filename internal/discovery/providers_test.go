@@ -94,7 +94,7 @@ func TestYouTubeFavoriteCompletenessAndAccountFallback(t *testing.T) {
 			} else if err == nil {
 				t.Fatal("unsafe snapshot accepted", mode)
 			}
-			if mode == "inaccessible" && !strings.Contains(err.Error(), "未建立基线") {
+			if mode == "inaccessible" && !strings.Contains(err.Error(), "未更新基线") {
 				t.Fatal("unhelpful access error", err)
 			}
 		})
@@ -140,27 +140,117 @@ func TestYouTubeOnlyTrustsMusicMetadata(t *testing.T) {
 	}
 }
 
-func TestSourceSyncFailurePreservesSnapshotAndPausesExpiredLogin(t *testing.T) {
+func TestSourceSyncFailureKeepsBaselineWithoutPauseOrNotice(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	a := testTrack("1", "Song", "Artist")
 	s.Apply(ctx, 1, 1, snapshot("account", a), true)
 	notices := 0
-	svc := Service{Store: s, Enabled: true, Provider: stubProvider{fetchErr: fmt.Errorf("登录失效，请重登")}, Notify: func(int64, string) error { notices++; return nil }}
+	calls := 0
+	svc := Service{
+		Store: s, Enabled: true,
+		Provider: gatingProvider{fetch: func(context.Context, string) (Snapshot, error) {
+			calls++
+			return Snapshot{}, fmt.Errorf("登录失效，请重登")
+		}},
+		Notify: func(int64, string) error { notices++; return nil },
+	}
 	if _, err := svc.Sync(ctx, 1); err == nil {
 		t.Fatal("source failure hidden")
 	}
 	bindings, _ := s.Bindings(ctx, 1)
-	if !bindings[0].Paused || bindings[0].Error == "" {
-		t.Fatal("expired source not paused")
+	if bindings[0].Paused || bindings[0].Error == "" || !strings.Contains(bindings[0].Error, "登录失效") {
+		t.Fatalf("failure paused or dropped: %+v", bindings[0])
 	}
 	favorites, _ := s.Favorites(ctx, 1)
 	if len(favorites) != 1 {
 		t.Fatal("failed source cleared baseline")
 	}
-	svc.Sync(ctx, 1)
-	if notices != 1 {
-		t.Fatal("repeated login alerts")
+	if _, err := svc.Sync(ctx, 1); err == nil || notices != 0 || calls != 2 {
+		t.Fatalf("notices=%d calls=%d err=%v", notices, calls, err)
+	}
+	bindings, _ = s.Bindings(ctx, 1)
+	if bindings[0].Paused {
+		t.Fatal("repeated failure paused the source")
+	}
+}
+
+func TestAccountChangeKeepsBaselineWithoutPause(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, _, err := s.Apply(ctx, 1, 1, snapshot("account", testTrack("1", "Song", "Artist")), true); err != nil {
+		t.Fatal(err)
+	}
+	notices := 0
+	svc := Service{
+		Store: s, Enabled: true,
+		Provider: gatingProvider{fetch: func(context.Context, string) (Snapshot, error) {
+			return snapshot("other-account", testTrack("2", "Other", "Artist")), nil
+		}},
+		Notify: func(int64, string) error { notices++; return nil },
+	}
+	if _, err := svc.Sync(ctx, 1); err == nil || !strings.Contains(err.Error(), "账号已变化") {
+		t.Fatal(err)
+	}
+	bindings, _ := s.Bindings(ctx, 1)
+	favorites, _ := s.Favorites(ctx, 1)
+	if bindings[0].Paused || notices != 0 || bindings[0].Account != "account" || len(favorites) != 1 || favorites[0].ID != "1" {
+		t.Fatalf("paused=%t notices=%d account=%s favorites=%d", bindings[0].Paused, notices, bindings[0].Account, len(favorites))
+	}
+}
+
+func TestPausedLoginRetriesWhenCookieWorksAgain(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, _, err := s.Apply(ctx, 1, 1, snapshot("account", testTrack("1", "Song", "Artist")), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SourceError(ctx, Binding{User: 1, Platform: "netease"}, "netease：网易云登录失效，没有可用的登录态", true); err != nil {
+		t.Fatal(err)
+	}
+	notices := []string{}
+	svc := Service{
+		Store: s, Enabled: true,
+		Provider: gatingProvider{fetch: func(context.Context, string) (Snapshot, error) {
+			return snapshot("account", testTrack("1", "Song", "Artist")), nil
+		}},
+		Notify: func(_ int64, text string) error {
+			notices = append(notices, text)
+			return nil
+		},
+	}
+	if _, err := svc.Sync(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	bindings, _ := s.Bindings(ctx, 1)
+	if bindings[0].Paused || bindings[0].Error != "" || len(notices) != 0 {
+		t.Fatalf("binding=%+v notices=%v", bindings[0], notices)
+	}
+}
+
+func TestManualPauseIsNotRetried(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, _, err := s.Apply(ctx, 1, 1, snapshot("account", testTrack("1", "Song", "Artist")), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Pause(ctx, 1, "netease", true); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	svc := Service{
+		Store: s, Enabled: true,
+		Provider: gatingProvider{fetch: func(context.Context, string) (Snapshot, error) {
+			calls++
+			return snapshot("account", testTrack("1", "Song", "Artist")), nil
+		}},
+	}
+	if _, err := svc.Sync(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	bindings, _ := s.Bindings(ctx, 1)
+	if calls != 0 || !bindings[0].Paused {
+		t.Fatalf("calls=%d paused=%t", calls, bindings[0].Paused)
 	}
 }
 
@@ -170,7 +260,11 @@ func TestYoutubeDependencyFailureDoesNotBlameCookie(t *testing.T) {
 		t.Fatal("dependency failure misreported as login failure", err)
 	}
 	err = youtubeReadError(errors.New("exit 1"), "Cookies are no longer valid")
-	if !strings.Contains(err.Error(), "登录失效") {
-		t.Fatal("expired cookie not distinguished", err)
+	if strings.Contains(err.Error(), "登录失效") || !retryableYoutube(err) {
+		t.Fatal("cookie read treated as a dead login", err)
+	}
+	err = youtubeReadError(errors.New("exit 1"), "playlist does not exist")
+	if retryableYoutube(err) || strings.Contains(err.Error(), "登录失效") {
+		t.Fatal("missing playlist retried as a login failure", err)
 	}
 }

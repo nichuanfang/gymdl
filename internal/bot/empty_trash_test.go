@@ -439,15 +439,16 @@ func TestEmptyTrashPreviewUsesHouseStyleAndNamesAllEffects(t *testing.T) {
 	for _, expected := range []string{
 		"⚠️ 清空回收站",
 		"──────────────────",
-		"🗑 待删除：12 首歌曲",
-		"歌曲文件",
-		"MusicRAG 状态",
-		"Pinecone 向量",
-		"确认是否继续？",
+		"待删除：12 首",
+		"歌曲文件、MusicRAG 状态、Pinecone 向量",
+		"5 分钟内有效。",
 	} {
 		if !strings.Contains(preview, expected) {
 			t.Errorf("preview %q does not contain %q", preview, expected)
 		}
+	}
+	if strings.Contains(preview, "请确认是否继续") || strings.Contains(preview, "确认后会") {
+		t.Fatalf("preview still explains the buttons: %s", preview)
 	}
 }
 

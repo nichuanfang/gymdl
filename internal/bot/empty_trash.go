@@ -468,7 +468,7 @@ func (app *BotApp) prepareEmptyTrashPreview(userID, chatID int64, message *tb.Me
 }
 
 func formatEmptyTrashPreview(plan emptyTrashPlan) string {
-	return fmt.Sprintf("⚠️ 清空回收站\n──────────────────\n🗑 待删除：%d 首歌曲\n确认后会删除对应歌曲文件，并清理 MusicRAG 状态与 Pinecone 向量。\n\n请确认是否继续？此请求将在 %d 分钟后过期。", plan.snapshot.TrackCount, int(emptyTrashConfirmationTTL.Minutes()))
+	return fmt.Sprintf("⚠️ 清空回收站\n──────────────────\n待删除：%d 首\n歌曲文件、MusicRAG 状态、Pinecone 向量\n%d 分钟内有效。", plan.snapshot.TrackCount, int(emptyTrashConfirmationTTL.Minutes()))
 }
 
 func emptyTrashConfirmationMarkup(token string) *tb.ReplyMarkup {

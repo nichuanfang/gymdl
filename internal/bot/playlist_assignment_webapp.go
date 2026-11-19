@@ -170,7 +170,7 @@ func (app *BotApp) HandlePlaylistAssignmentWebAppSelection(selectionToken string
 	if err = app.commitPlaylistAssignment(updated.token); err != nil {
 		refreshed, ok := app.getPlaylistAssignment(updated.token)
 		if ok {
-			_ = app.editPlaylistAssignmentMessage(refreshed.message, formatPlaylistAssignment(refreshed), playlistAssignmentMarkup(refreshed))
+			_ = app.editPlaylistAssignmentCard(refreshed.message, refreshed)
 		}
 		return err
 	}

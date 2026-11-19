@@ -104,7 +104,7 @@ func (app *BotApp) PlaylistDescCommand(c tb.Context) error {
 		return c.Send("读取歌单列表失败：" + discoveryPublicError(err))
 	}
 	text, markup := formatPlaylistDesc(session, "")
-	message, err := c.Bot().Send(c.Chat(), text, markup)
+	message, err := c.Bot().Send(c.Chat(), text, tb.ModeHTML, markup)
 	if err != nil {
 		return err
 	}
@@ -144,7 +144,7 @@ func (app *BotApp) HandlePlaylistDescCallback(c tb.Context) error {
 			return err
 		}
 		text, markup := formatPlaylistDesc(session, "")
-		return c.Edit(text, markup)
+		return c.Edit(text, tb.ModeHTML, markup)
 	case "open":
 		if len(args) != 3 {
 			return c.Respond(&tb.CallbackResponse{Text: "请重新选择歌单", ShowAlert: true})
@@ -159,7 +159,7 @@ func (app *BotApp) HandlePlaylistDescCallback(c tb.Context) error {
 			return err
 		}
 		text, markup := formatPlaylistDesc(session, "")
-		return c.Edit(text, markup)
+		return c.Edit(text, tb.ModeHTML, markup)
 	case "back":
 		session.editingID = ""
 		app.savePlaylistDesc(session)
@@ -167,7 +167,7 @@ func (app *BotApp) HandlePlaylistDescCallback(c tb.Context) error {
 			return err
 		}
 		text, markup := formatPlaylistDesc(session, "")
-		return c.Edit(text, markup)
+		return c.Edit(text, tb.ModeHTML, markup)
 	case "clear":
 		if session.editingID == "" {
 			return c.Respond(&tb.CallbackResponse{Text: "请先选择一张歌单", ShowAlert: true})
@@ -184,14 +184,14 @@ func (app *BotApp) HandlePlaylistDescCallback(c tb.Context) error {
 			if respondErr := c.Respond(&tb.CallbackResponse{Text: "描述已清空，但列表刷新失败"}); respondErr != nil {
 				return respondErr
 			}
-			return editPlaylistDescCard(c, "✅ 描述已清空，但列表刷新失败。重新发送 /playlist_desc 查看最新状态。", nil)
+			return editPlaylistDescCard(c, "✅ 描述已清空，但列表刷新失败。重新发送 /playlist_desc 查看最新状态。", nil, false)
 		}
 		app.savePlaylistDesc(session)
 		if err := c.Respond(&tb.CallbackResponse{Text: "已清空"}); err != nil {
 			return err
 		}
 		text, markup := formatPlaylistDesc(session, "✅ 描述已清空；整理歌单时不再参考这条说明。")
-		return c.Edit(text, markup)
+		return c.Edit(text, tb.ModeHTML, markup)
 	case "sync":
 		return app.syncPlaylistDesc(c, session)
 	default:
@@ -239,7 +239,13 @@ func (app *BotApp) updatePlaylistDescCard(c tb.Context, session pendingPlaylistD
 	}
 	bot := c.Bot()
 	if session.message != nil && bot != nil {
-		if _, err := bot.Edit(session.message, text, markup); err == nil || telegramMessageUnchanged(err) {
+		var err error
+		if closed {
+			_, err = bot.Edit(session.message, text, markup)
+		} else {
+			_, err = bot.Edit(session.message, text, tb.ModeHTML, markup)
+		}
+		if err == nil || telegramMessageUnchanged(err) {
 			if !closed {
 				app.savePlaylistDesc(session)
 			}
@@ -247,12 +253,21 @@ func (app *BotApp) updatePlaylistDescCard(c tb.Context, session pendingPlaylistD
 		}
 	}
 	if bot == nil {
-		return c.Send(text, markup)
+		if closed {
+			return c.Send(text, markup)
+		}
+		return c.Send(text, tb.ModeHTML, markup)
 	}
 	if c.Chat() == nil {
 		return fmt.Errorf("无法更新歌单描述消息，请重新发送 /playlist_desc")
 	}
-	message, err := bot.Send(c.Chat(), text, markup)
+	var message *tb.Message
+	var err error
+	if closed {
+		message, err = bot.Send(c.Chat(), text, markup)
+	} else {
+		message, err = bot.Send(c.Chat(), text, tb.ModeHTML, markup)
+	}
 	if err != nil {
 		return err
 	}
@@ -281,7 +296,7 @@ func (app *BotApp) syncPlaylistDesc(c tb.Context, session pendingPlaylistDesc) e
 		app.discoveryCommandMu.Unlock()
 		return c.Send("找不到原来的消息，请重新发送 /playlist_desc。")
 	}
-	if err := editPlaylistDescCard(c, "⌛ 正在从 Navidrome 同步歌单列表…\n完成后会回到这张卡片。", nil); err != nil {
+	if err := editPlaylistDescCard(c, "⌛ 正在从 Navidrome 同步歌单列表…\n完成后会回到这张卡片。", nil, false); err != nil {
 		app.discoveryCommandMu.Unlock()
 		return err
 	}
@@ -330,23 +345,33 @@ func (app *BotApp) syncPlaylistDesc(c tb.Context, session pendingPlaylistDesc) e
 
 func (app *BotApp) finishPlaylistDescSync(c tb.Context, session pendingPlaylistDesc, notice string, closed bool) {
 	text, markup := formatPlaylistDesc(session, notice)
+	html := true
 	if closed {
 		text = notice
 		markup = nil
+		html = false
 	}
-	if err := editPlaylistDescCard(c, text, markup); err != nil {
+	if err := editPlaylistDescCard(c, text, markup, html); err != nil {
 		utils.WarnWithFormat("[Playlist] 更新歌单描述失败: %v", err)
 	}
 }
 
-func editPlaylistDescCard(c tb.Context, text string, markup *tb.ReplyMarkup) error {
+func editPlaylistDescCard(c tb.Context, text string, markup *tb.ReplyMarkup, html bool) error {
 	if markup == nil {
 		markup = &tb.ReplyMarkup{}
 	}
+	var err error
 	if c.Message() == nil {
-		return c.Send(text, markup)
+		if html {
+			err = c.Send(text, tb.ModeHTML, markup)
+		} else {
+			err = c.Send(text, markup)
+		}
+	} else if html {
+		err = c.Edit(text, tb.ModeHTML, markup)
+	} else {
+		err = c.Edit(text, markup)
 	}
-	err := c.Edit(text, markup)
 	if telegramMessageUnchanged(err) {
 		return nil
 	}
@@ -383,23 +408,24 @@ func (app *BotApp) reloadPlaylistDesc(session *pendingPlaylistDesc) error {
 func formatPlaylistDesc(session pendingPlaylistDesc, notice string) (string, *tb.ReplyMarkup) {
 	markup := &tb.ReplyMarkup{}
 	var text strings.Builder
-	text.WriteString("歌单描述")
+	text.WriteString("🎵 <b>歌单描述</b>\n")
+	text.WriteString("──────────────────")
 	if notice != "" {
-		text.WriteString("\n\n")
-		text.WriteString(notice)
+		text.WriteString("\n")
+		text.WriteString(utils.EscapeHTML(notice))
 	}
 	if !session.synced {
-		text.WriteString("\n\n歌单列表尚未同步。\n同步后会显示可编辑歌单。")
+		text.WriteString("\n歌单列表尚未同步。\n同步后会显示可编辑歌单。")
 		markup.Inline(playlistDescActionRows(markup, session, false)...)
 		return text.String(), markup
 	}
 	if session.editingID != "" {
 		current := playlistByID(session.playlists, session.editingID)
-		fmt.Fprintf(&text, "\n\n%s", utils.TruncateString(current.Name, 40))
+		fmt.Fprintf(&text, "\n\n<b>%s</b>", utils.EscapeHTML(utils.TruncateString(current.Name, 40)))
 		if strings.TrimSpace(current.Desc) == "" {
 			text.WriteString("\n\n还没有描述")
 		} else {
-			fmt.Fprintf(&text, "\n\n%s", utils.TruncateString(current.Desc, 180))
+			fmt.Fprintf(&text, "\n\n%s", utils.EscapeHTML(utils.TruncateString(current.Desc, 180)))
 		}
 		fmt.Fprintf(&text, "\n\n当前 %d / 200 字\n发送新描述即可保存", len([]rune(current.Desc)))
 		markup.Inline(
@@ -409,15 +435,14 @@ func formatPlaylistDesc(session pendingPlaylistDesc, notice string) (string, *tb
 		return text.String(), markup
 	}
 	if len(session.playlists) == 0 {
-		text.WriteString("\n\n当前没有可编辑的歌单。")
+		text.WriteString("\n当前没有可编辑的歌单。")
 		markup.Inline(playlistDescActionRows(markup, session, false)...)
 		return text.String(), markup
 	}
-	fmt.Fprintf(&text, "\n\n第 %d / %d 页 · 共 %d 张", session.page+1, playlistDescPages(len(session.playlists)), len(session.playlists))
+	fmt.Fprintf(&text, "\n第 %d / %d 页 · 共 %d 张", session.page+1, playlistDescPages(len(session.playlists)), len(session.playlists))
 	if missing := playlistDescMissingCount(session.playlists); missing > 0 {
 		fmt.Fprintf(&text, "\n还有 %d 张没写描述，排在前面。", missing)
 	}
-	text.WriteString("\n点下面的名称修改。")
 	start := session.page * playlistDescPageSize
 	if start > len(session.playlists) {
 		start = 0

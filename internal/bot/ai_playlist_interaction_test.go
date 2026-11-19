@@ -402,8 +402,8 @@ func TestAIPlaylistMessageUsesPlainTextHouseStyle(t *testing.T) {
 func TestAIPlaylistCanSelectPopulatedTargetAndClearlyConfirmReplacement(t *testing.T) {
 	playlist := aiPlaylist{ID: "playlist", Name: "[AI] 夜间", Description: "舒缓的夜间音乐", SongCount: 28}
 	menu := pendingAIPlaylistSession{token: "token", playlists: []aiPlaylist{playlist}}
-	if message := formatAIPlaylistSession(menu); !strings.Contains(message, "确认前不会修改 Navidrome") {
-		t.Fatalf("menu should explain the write behavior: %q", message)
+	if message := formatAIPlaylistSession(menu); message != "🎵 生成歌单" || strings.Contains(message, "确认前不会修改") || strings.Contains(message, "选择一张") {
+		t.Fatalf("menu should stay a title and the playlist buttons: %q", message)
 	}
 	markup := aiPlaylistSessionMarkup(menu)
 	if got := markup.InlineKeyboard[1][0].Text; got != "夜间 · 28 首" {

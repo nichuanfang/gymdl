@@ -27,6 +27,7 @@ type Service struct {
 	Download func(context.Context, Track) (DownloadResult, error)
 	Pending  func(context.Context, Track) (bool, error)
 	// Notify returns an error on delivery failure so digests remain unacknowledged.
+	// Sync failures are logged and are not sent through Notify.
 	Notify               func(int64, string) error
 	OnError              func(error)
 	Authorized           func(int64, int64) bool
@@ -64,16 +65,16 @@ type FreshFavorite struct {
 }
 
 func (s *Service) Sync(ctx context.Context, user int64) ([]FreshFavorite, error) {
-	return s.sync(ctx, user, true)
+	return s.sync(ctx, user)
 }
 
-// SyncQuietly runs a user-requested sync without sending background notices.
-// The caller owns the interaction and should report the result in its message.
+// SyncQuietly runs a user-requested sync. The caller reports the result.
+// A failed round is only logged; it does not pause the source or push an alert.
 func (s *Service) SyncQuietly(ctx context.Context, user int64) ([]FreshFavorite, error) {
-	return s.sync(ctx, user, false)
+	return s.sync(ctx, user)
 }
 
-func (s *Service) sync(ctx context.Context, user int64, notifyErrors bool) (fresh []FreshFavorite, err error) {
+func (s *Service) sync(ctx context.Context, user int64) (fresh []FreshFavorite, err error) {
 	started := time.Now()
 	defer func() {
 		if ctx.Err() != nil {
@@ -93,25 +94,31 @@ func (s *Service) sync(ctx context.Context, user int64, notifyErrors bool) (fres
 	}
 	var failures []string
 	for _, b := range bindings {
-		if b.Paused || (s.Authorized != nil && !s.Authorized(b.User, b.Chat)) {
+		if s.Authorized != nil && !s.Authorized(b.User, b.Chat) {
 			continue
 		}
-		snap, e := s.fetchSnapshot(ctx, b)
-		if e == nil && snap.Platform != b.Platform {
-			e = fmt.Errorf("收藏来源标识不一致，未更新基线")
+		// Manual pause stores an empty error and stays stopped. A pause left by
+		// an older build still carries an error; clear it so one bad round
+		// cannot stick. A failed read keeps the baseline and is only logged.
+		if b.Paused && strings.TrimSpace(b.Error) == "" {
+			continue
 		}
+		if b.Paused {
+			if perr := s.Store.Pause(ctx, b.User, b.Platform, false); perr != nil {
+				failures = append(failures, b.Platform+"："+perr.Error())
+				continue
+			}
+			utils.InfoWithFormat("[Discovery] %s 已取消此前的自动暂停，继续同步", freshPlatformLabel(b.Platform))
+		}
+		snap, e := s.readSnapshot(ctx, b)
 		var added []Track
 		if e == nil {
 			_, added, e = s.Store.Apply(ctx, b.User, b.Chat, snap, false)
 		}
 		if e != nil {
 			message := b.Platform + "：" + e.Error()
-			pause := strings.Contains(message, "登录失效") || strings.Contains(message, "账号已变化") || strings.Contains(message, "列表不可访问")
-			changed, _ := s.Store.SourceError(ctx, b, message, pause)
-			if changed && notifyErrors && s.Notify != nil {
-				if nerr := s.Notify(b.Chat, "⚠️ 收藏同步异常\n"+message); nerr != nil {
-					utils.WarnWithFormat("[Discovery] 收藏异常通知发送失败: %v", nerr)
-				}
+			if _, serr := s.Store.SourceError(ctx, b, message, false); serr != nil {
+				utils.WarnWithFormat("[Discovery] 记录收藏同步失败原因失败: %v", serr)
 			}
 			failures = append(failures, message)
 			continue
@@ -125,6 +132,14 @@ func (s *Service) sync(ctx context.Context, user int64, notifyErrors bool) (fres
 		return fresh, err
 	}
 	return fresh, nil
+}
+
+func (s *Service) readSnapshot(ctx context.Context, b Binding) (Snapshot, error) {
+	snap, err := s.fetchSnapshot(ctx, b)
+	if err == nil && snap.Platform != b.Platform {
+		err = fmt.Errorf("收藏来源标识不一致，未更新基线")
+	}
+	return snap, err
 }
 
 func logFavoriteSync(user int64, elapsed time.Duration, fresh []FreshFavorite, err error) {
@@ -863,9 +878,10 @@ func (s *Service) Digest(ctx context.Context) error {
 		}
 		sort.Strings(keys)
 		var b strings.Builder
-		b.WriteString("🎵 收藏入库汇总\n")
+		b.WriteString("🎵 <b>收藏入库汇总</b>\n")
+		b.WriteString("──────────────────\n")
 		for _, key := range keys {
-			fmt.Fprintf(&b, "%s：%d 首\n", key, counts[key])
+			fmt.Fprintf(&b, "%s：%d 首\n", utils.EscapeHTML(key), counts[key])
 		}
 		b.WriteString("发送 /favorites 查看详情、待确认和失败任务。")
 		if err = s.Notify(chat, b.String()); err != nil {

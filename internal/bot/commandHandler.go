@@ -64,7 +64,8 @@ func helpText() string {
 /ai_playlist 预览后创建或更新 AI 歌单
 /rediscover 从历史和收藏找曲库缺少的歌曲
 /favorites 管理账号、同步收藏并查看入库队列
-/empty_trash 预览并确认清空回收站：删除其中的歌曲文件，并清理 MusicRAG 状态与 Pinecone 向量
+/empty_trash 预览后清空回收站
+删除歌曲文件，并清理 MusicRAG 状态与 Pinecone 向量
 
 <b>账号</b>
 /qq_login 扫码登录 QQ 音乐（仅限私聊）

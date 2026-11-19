@@ -105,9 +105,10 @@ func (s webStudio) PauseFavorite(ctx context.Context, platform string, paused bo
 		return web.FavoritesPage{}, err
 	}
 	logFavoritePause(platform, paused, nil)
-	notice := "已暂停该平台的自动同步。"
+	name := aichat.PlatformLabel(platform)
+	notice := "已暂停" + name + "的自动同步。"
 	if !paused {
-		notice = "已恢复该平台的自动同步。"
+		notice = "已恢复" + name + "的自动同步。"
 	}
 	return s.favoritePage(ctx, notice)
 }
@@ -130,7 +131,10 @@ func (s webStudio) SyncFavorites(ctx context.Context) (web.FavoritesPage, error)
 	fresh, syncErr := s.app.discovery.SyncQuietly(ctx, user)
 	notice := strings.TrimPrefix(favoritesSyncNotice(fresh), "✅ ")
 	if syncErr != nil {
-		notice = "同步没有完成：" + discoveryPublicError(syncErr)
+		notice = "这一轮没有同步完成，收藏基线未改。"
+		if reason := favoriteErrorText(discoveryPublicError(syncErr)); reason != "" {
+			notice += " " + reason
+		}
 		if len(fresh) > 0 {
 			notice += " " + strings.TrimPrefix(favoritesSyncNotice(fresh), "✅ ")
 		}
@@ -271,7 +275,7 @@ func (s webStudio) favoritePage(ctx context.Context, notice string) (web.Favorit
 			item.Bound = true
 			item.Paused = binding.Paused
 			item.Account = maskedDiscoveryAccount(binding.Account)
-			item.Error = clipStudioText(binding.Error, 60)
+			item.Error = clipStudioText(favoritePlatformError(platform, binding.Error), 80)
 			item.State = favoritePlatformState(s.app.discovery.Enabled, binding.Paused)
 		}
 		page.Platforms = append(page.Platforms, item)

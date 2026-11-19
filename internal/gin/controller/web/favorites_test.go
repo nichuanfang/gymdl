@@ -12,6 +12,40 @@ import (
 	"github.com/nichuanfang/gymdl/config"
 )
 
+func TestQQFavoritesRetriesAFlakyLoginCheck(t *testing.T) {
+	useQQMusicCredentialPath(t)
+	checks := 0
+	pages := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "check_expired") {
+			checks++
+			if checks == 1 {
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": false})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "homepage") {
+			fmt.Fprint(w, `{"code":0,"data":{"base_info":{"encrypted_uin":"encrypted"}}}`)
+			return
+		}
+		pages++
+		if pages == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		data := map[string]any{"code": 0, "total": 1, "hasmore": 0, "songs": []any{map[string]any{"id": 1, "mid": "1", "title": "Song", "singer": []any{map[string]any{"name": "Artist"}}, "album": map[string]any{"name": "Album"}, "interval": 200}}, "info": map[string]any{"creator": map[string]any{"musicid": json.Number("123")}}}
+		json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": data})
+	}))
+	defer server.Close()
+	cfg := &config.Config{QQMusicApiConfig: &config.QQMusicApiConfig{Enable: true, Endpoint: server.URL, MusicId: "123", MusicKey: "test-key"}}
+	account, tracks, err := QQFavorites(context.Background(), cfg)
+	if err != nil || account != "123" || len(tracks) != 1 || checks != 2 || pages != 2 {
+		t.Fatalf("account=%s tracks=%d checks=%d pages=%d err=%v", account, len(tracks), checks, pages, err)
+	}
+}
+
 func TestQQFavoritePaginationAndIncompleteBaseline(t *testing.T) {
 	for _, mode := range []string{"normalized", "legacy", "large_id", "partial", "changed_account", "expired"} {
 		t.Run(mode, func(t *testing.T) {

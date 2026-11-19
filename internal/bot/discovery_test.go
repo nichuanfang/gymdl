@@ -236,8 +236,11 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 		{Platform: "qq", ID: "4", Title: "第四首", Artist: "丁", URL: "https://y.qq.com/n/ryqq/songDetail/4"},
 	}
 	text, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 0)
-	if strings.Contains(text, "第二首") || strings.Contains(text, "第四首") || !strings.Contains(text, "第一首") || !strings.Contains(text, "1 / 4") || strings.Contains(text, "已避开") || strings.Contains(text, "点歌名试听") || strings.Contains(text, "\n1. ") {
+	if strings.Contains(text, "第二首") || strings.Contains(text, "第四首") || !strings.Contains(text, "第一首") || !strings.Contains(text, "1 / 4") || strings.Contains(text, "已避开") || strings.Contains(text, "点歌名") || strings.Contains(text, "\n1. ") {
 		t.Fatalf("first song was not alone: %s", text)
+	}
+	if !strings.Contains(text, "🎵 <b>遗珠</b>\n──────────────────\n") {
+		t.Fatalf("heading lost the shared card frame: %s", text)
 	}
 	if !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">第一首</a></b>`) || !strings.Contains(text, "《专辑甲》") {
 		t.Fatalf("title or album was not the card body: %s", text)
@@ -269,11 +272,11 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 		t.Fatalf("last song still offered a next page: %s %#v", last, buttonTexts(lastMarkup))
 	}
 	skipped, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks, SkippedOwned: 4}, 0)
-	if !strings.Contains(skipped, "已避开曲库里的 4 首") {
-		t.Fatalf("owned skips were not shown: %s", skipped)
+	if strings.Contains(skipped, "已避开") || strings.Contains(skipped, "点歌名") {
+		t.Fatalf("owned skips or listen hint returned to the song card: %s", skipped)
 	}
 	short, shortMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks[:1], SkippedOwned: 1, Unconfirmed: 2, Requested: 3}, 0)
-	if !strings.Contains(short, "有 2 首对不上唯一版本，所以没有找满 3 首。") || !strings.Contains(short, "已避开曲库里的 1 首") || strings.Contains(short, " / ") {
+	if !strings.Contains(short, "有 2 首对不上唯一版本，所以没有找满 3 首。") || strings.Contains(short, "已避开") || strings.Contains(short, " / ") {
 		t.Fatalf("shortfall was not explained: %s", short)
 	}
 	if buttonTexts(shortMarkup)["未处理的全部入库"] || buttonTexts(shortMarkup)["下一首"] || !buttonTexts(shortMarkup)["入库"] {
@@ -416,6 +419,38 @@ func TestRediscoverDecisionStaysOnTheCard(t *testing.T) {
 	jobs, _ = store.Jobs(context.Background(), 1, false)
 	if len(jobs) != 1 {
 		t.Fatalf("second click queued again: %d", len(jobs))
+	}
+}
+
+func TestFavoritesCardShowsNamedSyncState(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if _, _, err = store.Apply(ctx, 7, 7, discovery.Snapshot{Platform: "netease", Account: "112345170", Complete: true, Tracks: []discovery.Track{{Platform: "netease", ID: "1", Title: "歌", Artist: "甲", Verified: true}}}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.SourceError(ctx, discovery.Binding{User: 7, Platform: "netease"}, "netease：网易云收藏暂时读不到，本轮跳过", false); err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{discovery: &discovery.Service{Store: store, Enabled: true, PollInterval: 10 * time.Minute}}
+	text, markup, err := app.renderFavorites(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<b>收藏同步</b>", "<b>网易云</b> · 已开启", "账号：112…170", "上次同步：", "上一轮：网易云收藏暂时读不到，本轮跳过", "<b>QQ 音乐</b> · 未绑定", "入库：暂无待处理任务"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "每 10 分钟") || strings.Contains(text, "私聊通知") || strings.Contains(text, "netease：") {
+		t.Fatal(text)
+	}
+	labels := buttonTexts(markup)
+	if !labels["重绑网易云"] || !labels["暂停网易云"] || !labels["绑定 QQ 音乐"] || !labels["绑定 YouTube"] || labels["重新绑定"] || labels["暂停"] {
+		t.Fatalf("buttons = %#v", labels)
 	}
 }
 
