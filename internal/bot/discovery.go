@@ -402,18 +402,18 @@ func rediscoverShortfallLine(card discovery.Card) string {
 	if card.Unconfirmed <= 0 || card.Requested <= 0 || len(card.Tracks) >= card.Requested {
 		return ""
 	}
-	return fmt.Sprintf("有 %d 首对不上唯一版本，所以没有找满 %d 首。\n", card.Unconfirmed, card.Requested)
+	return fmt.Sprintf("搜索中有 %d 首候选歌曲无法确认唯一版本；本次找到 %d/%d 首。\n", card.Unconfirmed, len(card.Tracks), card.Requested)
 }
 
 func rediscoverEmptyCopy(platform string, batch discovery.RediscoverBatch) string {
 	name := aichat.PlatformLabel(platform)
 	switch {
 	case batch.SkippedOwned > 0 && batch.Unconfirmed > 0:
-		return fmt.Sprintf("这批里有 %d 首曲库已经有了，另有 %d 首在%s对不上唯一版本，没有新的可入库歌曲。可以换个平台或稍后再试。", batch.SkippedOwned, batch.Unconfirmed, name)
+		return fmt.Sprintf("这批里有 %d 首曲库已经有了，另有 %d 首候选歌曲在%s无法确认唯一版本，没有新的可入库歌曲。可以换个平台或稍后再试。", batch.SkippedOwned, batch.Unconfirmed, name)
 	case batch.SkippedOwned > 0:
 		return fmt.Sprintf("这批里有 %d 首曲库已经有了，没有新的可入库歌曲。可以换个平台或稍后再试。", batch.SkippedOwned)
 	case batch.Unconfirmed > 0:
-		return fmt.Sprintf("有 %d 首在%s对不上唯一版本，没有新的可入库歌曲。可以换个平台或稍后再试。", batch.Unconfirmed, name)
+		return fmt.Sprintf("有 %d 首候选歌曲在%s无法确认唯一版本，没有新的可入库歌曲。可以换个平台或稍后再试。", batch.Unconfirmed, name)
 	default:
 		return "在" + name + "里，这批历史和收藏暂时没有可确认的缺失歌曲。可以换个平台或稍后再试。"
 	}
@@ -519,7 +519,7 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 			fmt.Fprintf(&text, "\n账号：%s", utils.EscapeHTML(account))
 		}
 		if binding.LastSync > 0 {
-			fmt.Fprintf(&text, "\n上次同步：%s", time.Unix(binding.LastSync, 0).Format("01-02 15:04"))
+			fmt.Fprintf(&text, "\n上次同步：%s", time.Unix(binding.LastSync, 0).Local().Format("01-02 15:04"))
 		}
 		if reason := favoritePlatformError(platform, binding.Error); reason != "" {
 			fmt.Fprintf(&text, "\n上一轮：%s", utils.EscapeHTML(utils.TruncateString(reason, 80)))

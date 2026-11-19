@@ -276,7 +276,7 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 		t.Fatalf("owned skips or listen hint returned to the song card: %s", skipped)
 	}
 	short, shortMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks[:1], SkippedOwned: 1, Unconfirmed: 2, Requested: 3}, 0)
-	if !strings.Contains(short, "有 2 首对不上唯一版本，所以没有找满 3 首。") || strings.Contains(short, "已避开") || strings.Contains(short, " / ") {
+	if !strings.Contains(short, "搜索中有 2 首候选歌曲无法确认唯一版本；本次找到 1/3 首。") || strings.Contains(short, "已避开") || strings.Contains(short, " / ") {
 		t.Fatalf("shortfall was not explained: %s", short)
 	}
 	if buttonTexts(shortMarkup)["未处理的全部入库"] || buttonTexts(shortMarkup)["下一首"] || !buttonTexts(shortMarkup)["入库"] {
@@ -314,11 +314,11 @@ func TestRediscoverEmptyCopyExplainsUnconfirmedVersions(t *testing.T) {
 		t.Fatal(owned)
 	}
 	both := rediscoverEmptyCopy("qq", discovery.RediscoverBatch{SkippedOwned: 1, Unconfirmed: 3})
-	if !strings.Contains(both, "曲库已经有了") || !strings.Contains(both, "3 首在QQ 音乐对不上唯一版本") {
+	if !strings.Contains(both, "曲库已经有了") || !strings.Contains(both, "3 首候选歌曲在QQ 音乐无法确认唯一版本") {
 		t.Fatal(both)
 	}
 	only := rediscoverEmptyCopy("youtube", discovery.RediscoverBatch{Unconfirmed: 4})
-	if !strings.Contains(only, "4 首在YouTube对不上唯一版本") {
+	if !strings.Contains(only, "4 首候选歌曲在YouTube无法确认唯一版本") {
 		t.Fatal(only)
 	}
 }
