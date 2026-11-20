@@ -233,17 +233,6 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 		text.WriteByte('\n')
 		fmt.Fprintf(&text, "%s\n", fact)
 	}
-	var notes []string
-	if line := rediscoverShortfallLine(card); line != "" {
-		notes = append(notes, strings.TrimRight(line, "\n"))
-	}
-	if rediscoverNeedsConfirmation(card.Tracks) {
-		notes = append(notes, "有一首需要你确认一下。")
-	}
-	if len(notes) > 0 {
-		text.WriteByte('\n')
-		text.WriteString(strings.Join(notes, "\n"))
-	}
 	discoverySongButtons(markup, card, page)
 	return strings.TrimRight(text.String(), "\n"), markup
 }
@@ -259,31 +248,6 @@ func discoverySongButtons(markup *tb.ReplyMarkup, card discovery.Card, page int)
 	if track.CardAction == "" {
 		appendDiscoveryRows(markup, markup.Row(
 			markup.Data("入库", discoveryCallbackUnique, "download", card.Token, index),
-		))
-	}
-	nav := tb.Row{}
-	if page > 0 {
-		nav = append(nav, markup.Data("上一首", discoveryCallbackUnique, "page", card.Token, strconv.Itoa(page-1)))
-	}
-	if page+1 < len(card.Tracks) {
-		nav = append(nav, markup.Data("下一首", discoveryCallbackUnique, "page", card.Token, strconv.Itoa(page+1)))
-	}
-	if len(nav) > 0 {
-		appendDiscoveryRows(markup, nav)
-	}
-	waiting := 0
-	for _, item := range card.Tracks {
-		if item.CardAction == "" {
-			waiting++
-		}
-	}
-	if waiting > 1 {
-		appendDiscoveryRows(markup, markup.Row(
-			markup.Data("未处理的全部入库", discoveryCallbackUnique, "batch", card.Token, "ask", strconv.Itoa(page)),
-		))
-	}
-	if track.CardAction == "" {
-		appendDiscoveryRows(markup, markup.Row(
 			markup.Data("不再推荐", discoveryCallbackUnique, "ignore", card.Token, index),
 		))
 	}
@@ -292,23 +256,19 @@ func discoverySongButtons(markup *tb.ReplyMarkup, card discovery.Card, page int)
 			markup.Data("恢复推荐", discoveryCallbackUnique, "restore", card.Token, index),
 		))
 	}
-	if rediscoverNeedsConfirmation(card.Tracks) {
-		appendDiscoveryRows(markup, markup.Row(
-			markup.Data("处理待确认", discoveryCallbackUnique, "pending", "0"),
-		))
+	rediscoverActionRow := tb.Row{}
+	if platform := rediscoverCardPlatform(card.Tracks); validRediscoverPlatform(platform) {
+		rediscoverActionRow = append(rediscoverActionRow, markup.Data("重新拾遗", discoveryCallbackUnique, "find", platform, strconv.Itoa(rediscoverCardRequested(card))))
 	}
-	if allRediscoverSettled(card.Tracks) {
-		platform := rediscoverCardPlatform(card.Tracks)
-		if validRediscoverPlatform(platform) && validRediscoverLimit(card.Requested) {
-			appendDiscoveryRows(markup, markup.Row(
-				markup.Data("再来一首", discoveryCallbackUnique, "find", platform, strconv.Itoa(card.Requested)),
-			))
-		} else {
-			appendDiscoveryRows(markup, markup.Row(
-				markup.Data("换平台", discoveryCallbackUnique, "source", "menu"),
-			))
-		}
+	rediscoverActionRow = append(rediscoverActionRow, markup.Data("取消", discoveryCallbackUnique, "cancel", "card"))
+	appendDiscoveryRows(markup, rediscoverActionRow)
+}
+
+func rediscoverCardRequested(card discovery.Card) int {
+	if validRediscoverLimit(card.Requested) {
+		return card.Requested
 	}
+	return 1
 }
 
 func allRediscoverSettled(tracks []discovery.Track) bool {
@@ -999,6 +959,9 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 	case "cancel":
 		if err := c.Respond(); err != nil {
 			return err
+		}
+		if key == "card" {
+			return c.Edit("已取消。", &tb.ReplyMarkup{})
 		}
 		return c.Edit("已取消。", &tb.ReplyMarkup{})
 	case "pending":
