@@ -246,8 +246,8 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	if !strings.Contains(text, "🎵 <b>遗珠</b>\n──────────────────\n") {
 		t.Fatalf("heading lost the shared card frame: %s", text)
 	}
-	if !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">第一首</a></b>`) || !strings.Contains(text, "甲") || strings.Contains(text, "《专辑甲》") {
-		t.Fatalf("title or artist was not the compact card body: %s", text)
+	if !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">第一首</a></b>`) || !strings.Contains(text, "甲") || !strings.Contains(text, "《专辑甲》") || strings.Contains(text, "听过") || strings.Contains(text, "收藏过") {
+		t.Fatalf("card should show only title, artist and album: %s", text)
 	}
 	labels := buttonTexts(markup)
 	for _, unwanted := range []string{"下载前 3 首", "全部下载", "换一批", "下一组", "这组入库", "1 入库", "上一首", "跳过", "试听"} {
@@ -385,7 +385,7 @@ func TestFavoritesActionsRewriteTheSameCard(t *testing.T) {
 		}
 		return ctx
 	}
-	if edited := click("history", "menu").edited; !strings.Contains(edited, "选个平台") {
+	if edited := click("history", "menu").edited; !strings.Contains(edited, "找回遗珠") {
 		t.Fatalf("history did not become the platform menu: %s", edited)
 	}
 	if edited := click("pause", "netease").edited; !strings.Contains(edited, "收藏") {
@@ -794,8 +794,8 @@ func buttonRowTexts(markup *tb.ReplyMarkup) [][]string {
 
 func TestRediscoverMenuAsksOnlyForPlatform(t *testing.T) {
 	text, markup := discoveryPlatformMenu()
-	if !strings.Contains(text, "选个平台") || !strings.Contains(text, "找首你可能想再听的") || buttonTexts(markup)["下载前 3 首"] {
-		t.Fatalf("platform menu = %s", text)
+	if text != "找回遗珠" || buttonTexts(markup)["下载前 3 首"] {
+		t.Fatalf("platform menu = %q", text)
 	}
 	labels := buttonTexts(markup)
 	for _, unwanted := range []string{"3 首", "6 首", "9 首"} {

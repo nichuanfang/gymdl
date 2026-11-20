@@ -102,7 +102,7 @@ func discoveryPlatformMenu() (string, *tb.ReplyMarkup) {
 		markup.Row(markup.Data("YouTube", discoveryCallbackUnique, "source", "youtube")),
 		markup.Row(markup.Data("取消", discoveryCallbackUnique, "cancel", "menu"), markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
 	)
-	return "找回遗珠\n选个平台。我会从收藏和听歌记录里找首你可能想再听的。", markup
+	return "找回遗珠", markup
 }
 
 func rediscoverResultRecoveryMarkup(platform string, limit int) *tb.ReplyMarkup {
@@ -226,12 +226,10 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	if artist := strings.TrimSpace(track.Artist); artist != "" {
 		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
 	}
-	decision := rediscoverDecision(track)
-	if decision == "" {
-		if reason := rediscoverCardReason(track); reason != "" {
-			fmt.Fprintf(&text, "%s\n", reason)
-		}
-	} else {
+	if album := strings.TrimSpace(track.Album); album != "" {
+		fmt.Fprintf(&text, "《%s》\n", utils.EscapeHTML(utils.TruncateString(album, 32)))
+	}
+	if decision := rediscoverDecision(track); decision != "" {
 		fmt.Fprintf(&text, "%s\n", decision)
 	}
 	discoverySongButtons(markup, card, page)
@@ -311,16 +309,6 @@ func rediscoverHeading(tracks []discovery.Track) string {
 		return "遗珠"
 	}
 	return "遗珠 · " + aichat.PlatformLabel(platform)
-}
-
-func rediscoverCardReason(track discovery.Track) string {
-	if track.Favorite {
-		return "收藏过"
-	}
-	if track.Plays > 0 {
-		return fmt.Sprintf("听过 %d 次", track.Plays)
-	}
-	return "听过"
 }
 
 func rediscoverFactLine(track discovery.Track) string {
