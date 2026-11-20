@@ -1824,7 +1824,7 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 		return text.String()
 	}
 	text.WriteString("\n")
-	fmt.Fprintf(&text, "<b>%s</b>\n", utils.EscapeHTML(displaySongValue(assignment.song.Title)))
+	fmt.Fprintf(&text, "<b>%s</b>\n", playlistAssignmentTitle(assignment.song))
 	fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(displaySongValue(assignment.song.Artist)))
 	album := strings.TrimSpace(assignment.song.Album)
 	switch {
@@ -1849,6 +1849,42 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 		fmt.Fprintf(&text, "\n⚠️ %d 个歌单未显示。", assignment.hiddenPlaylistCount)
 	}
 	return text.String()
+}
+
+func playlistAssignmentTitle(song unplaylistSong) string {
+	title := utils.EscapeHTML(displaySongValue(song.Title))
+	sourceURL := playlistAssignmentSourceURL(song.Comment)
+	if sourceURL == "" {
+		return title
+	}
+	href := strings.ReplaceAll(utils.EscapeHTML(sourceURL), `"`, "&quot;")
+	return `<a href="` + href + `">` + title + `</a>`
+}
+
+func playlistAssignmentSourceURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	lower := strings.ToLower(raw)
+	start := -1
+	for _, scheme := range []string{"https://", "http://"} {
+		if index := strings.Index(lower, scheme); index >= 0 && (start < 0 || index < start) {
+			start = index
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	candidate := raw[start:]
+	if end := strings.IndexAny(candidate, " \t\r\n<>「」()（）[]【】,，;；。"); end >= 0 {
+		candidate = candidate[:end]
+	}
+	parsed, err := url.Parse(candidate)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+		return ""
+	}
+	return candidate
 }
 
 func playlistAssignmentMarkup(assignment pendingPlaylistAssignment) *tb.ReplyMarkup {

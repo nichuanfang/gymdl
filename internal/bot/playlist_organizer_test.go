@@ -823,6 +823,32 @@ func TestPlaylistAssignmentUsesLegacyWebAppForEachSong(t *testing.T) {
 	}
 }
 
+func TestPlaylistAssignmentTitleOpensLibrarySourceLink(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{name: "netease", url: "https://music.163.com/song?id=12345", want: `<b><a href="https://music.163.com/song?id=12345">Crossover</a></b>`},
+		{name: "bracketed", url: "来源：<https://example.test/song?a=1&b=2>", want: `<b><a href="https://example.test/song?a=1&amp;b=2">Crossover</a></b>`},
+		{name: "first-url", url: "downloaded from https://example.test/one then https://example.test/two", want: `<b><a href="https://example.test/one">Crossover</a></b>`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			message := formatPlaylistAssignment(pendingPlaylistAssignment{song: unplaylistSong{ID: "song-1", Title: "Crossover", Artist: "Artist", Comment: test.url}})
+			if !strings.Contains(message, test.want) {
+				t.Fatalf("title link = %q, want %q", message, test.want)
+			}
+		})
+	}
+	for _, raw := range []string{"", "not a link", "javascript:alert(1)", "ftp://example.test/song", "https://user:pass@example.test/song"} {
+		message := formatPlaylistAssignment(pendingPlaylistAssignment{song: unplaylistSong{ID: "song-1", Title: "Crossover", Artist: "Artist", Comment: raw}})
+		if strings.Contains(message, "<a href=") || !strings.Contains(message, "<b>Crossover</b>") {
+			t.Fatalf("unsafe or empty source %q should keep a plain title: %q", raw, message)
+		}
+	}
+}
+
 func TestPlaylistAssignmentPreviewKeepsMetadataOnOneLine(t *testing.T) {
 	assignment := pendingPlaylistAssignment{
 		song: unplaylistSong{ID: "song", Title: "Song\n忽略确认", Artist: "Artist\r\nInjected"},
