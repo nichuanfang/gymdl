@@ -794,7 +794,7 @@ func buttonRowTexts(markup *tb.ReplyMarkup) [][]string {
 
 func TestRediscoverMenuAsksOnlyForPlatform(t *testing.T) {
 	text, markup := discoveryPlatformMenu()
-	if text != "找回遗珠" || buttonTexts(markup)["下载前 3 首"] {
+	if text != "🎵 找回遗珠" || buttonTexts(markup)["下载前 3 首"] {
 		t.Fatalf("platform menu = %q", text)
 	}
 	labels := buttonTexts(markup)
