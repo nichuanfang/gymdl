@@ -49,7 +49,11 @@
       </div>
       <div class="track-actions">
         <n-button v-if="track.url" size="small" quaternary @click="openListen(track.url)">试听</n-button>
-        <n-tag v-if="stateOf(track)" :bordered="false" :type="tagType(track)">{{ stateLabel(track) }}</n-tag>
+        <template v-if="stateOf(track) === 'dismissed'">
+          <n-tag :bordered="false" type="default">{{ stateLabel(track) }}</n-tag>
+          <n-button size="small" secondary :loading="busy[trackKey(track)] === 'restore'" :disabled="acting" @click="restoreOne(track)">恢复推荐</n-button>
+        </template>
+        <n-tag v-else-if="stateOf(track)" :bordered="false" :type="tagType(track)">{{ stateLabel(track) }}</n-tag>
         <template v-else>
           <n-button size="small" type="primary" secondary :loading="busy[trackKey(track)] === 'enqueue'" :disabled="acting" @click="enqueueOne(track)">入库</n-button>
           <n-button size="small" quaternary :loading="busy[trackKey(track)] === 'dismiss'" :disabled="acting" @click="dismissOne(track)">不再推荐</n-button>
@@ -65,12 +69,12 @@
 import { computed, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { NAlert, NButton, NCard, NSelect, NTag, useDialog, useMessage } from 'naive-ui'
 import PageHeading from '../components/PageHeading.vue'
-import { dismissDiscoveryTracks, enqueueDiscoveryTracks, listDiscoveryJobs, rediscoverTracks, type DiscoveryJob, type DiscoveryTrack } from '../api'
+import { dismissDiscoveryTracks, enqueueDiscoveryTracks, listDiscoveryJobs, rediscoverTracks, restoreDiscoveryTracks, type DiscoveryEnqueueResult, type DiscoveryJob, type DiscoveryTrack } from '../api'
 
 defineOptions({ name: 'Rediscover' })
 
 type RowState = 'queued' | 'dismissed' | 'skipped' | 'running' | 'pending_upload' | 'completed' | 'owned' | 'failed' | 'needs_confirmation' | 'ignored'
-type BusyAction = 'enqueue' | 'dismiss'
+type BusyAction = 'enqueue' | 'dismiss' | 'restore'
 type TagType = 'default' | 'success' | 'error' | 'warning' | 'info'
 
 const message = useMessage()
@@ -108,6 +112,8 @@ const stateNames: Record<RowState, string> = {
 }
 const activeStates = new Set<RowState>(['queued', 'running', 'pending_upload'])
 let pollTimer = 0
+let searchSeq = 0
+let jobsSeq = 0
 
 function formatDuration(sec: number) {
   const minutes = Math.floor(sec / 60)
@@ -156,9 +162,10 @@ async function refreshJobs() {
     stopPoll()
     return
   }
+  const seq = ++jobsSeq
   try {
     const response = await listDiscoveryJobs()
-    if (response.code !== 200 || !response.data) return
+    if (seq !== jobsSeq || response.code !== 200 || !response.data) return
     const byKey = new Map<string, DiscoveryJob>()
     for (const job of response.data.jobs || []) {
       const key = `${job.platform}:${job.id}`
@@ -192,6 +199,7 @@ function mark(list: DiscoveryTrack[], state: RowState) {
 }
 
 async function search() {
+  const seq = ++searchSeq
   searching.value = true
   error.value = ''
   notice.value = ''
@@ -201,15 +209,17 @@ async function search() {
   stopPoll()
   try {
     const response = await rediscoverTracks(platform.value, limit.value)
+    if (seq !== searchSeq) return
     if (response.code !== 200 || !response.data) throw new Error(response.message || '找回失败')
     tracks.value = response.data.tracks || []
     notice.value = response.data.notice || ''
     searched.value = true
   } catch (err) {
+    if (seq !== searchSeq) return
     tracks.value = []
     error.value = err instanceof Error ? err.message : '找回失败'
   } finally {
-    searching.value = false
+    if (seq === searchSeq) searching.value = false
   }
 }
 
@@ -223,12 +233,32 @@ async function enqueue(list: DiscoveryTrack[]) {
   }
   const queued = response.data.queued || 0
   const skipped = response.data.skipped || 0
-  if (skipped === pending.length) mark(pending, 'skipped')
-  else mark(pending, 'queued')
-  if (queued > 0) message.success(queued === 1 ? '已提交入库' : `已提交入库 ${queued} 首`)
-  if (skipped > 0) message.warning(skipped === pending.length ? '这些歌已经在队列里，或已不再推荐' : `${skipped} 首没有重复提交`)
+  const failed = response.data.failed || 0
+  applyEnqueueResults(pending, response.data.results || [])
+  if (queued > 0) message.success(queued === 1 ? '已提交 1 首入库' : `已提交 ${queued} 首入库`)
+  if (skipped > 0 || failed > 0) {
+    const parts = [`提交 ${pending.length} 首`, `实际排队 ${queued} 首`]
+    if (skipped > 0) parts.push(`跳过 ${skipped} 首`)
+    if (failed > 0) parts.push(`失败 ${failed} 首`)
+    message.warning(parts.join('，'))
+  }
   if (queued > 0) startPoll()
   await refreshJobs()
+}
+
+function applyEnqueueResults(pending: DiscoveryTrack[], results: DiscoveryEnqueueResult[]) {
+  const byKey = new Map(results.map((result) => [`${result.platform}:${result.id}`, result]))
+  const nextStates = { ...states.value }
+  const nextNotes = { ...notes.value }
+  for (const track of pending) {
+    const key = trackKey(track)
+    const result = byKey.get(key)
+    if (!result) continue
+    nextStates[key] = result.state === 'queued' ? 'queued' : result.state === 'failed' ? 'failed' : 'skipped'
+    if (result.reason) nextNotes[key] = result.reason
+  }
+  states.value = nextStates
+  notes.value = nextNotes
 }
 
 async function enqueueOne(track: DiscoveryTrack) {
@@ -257,6 +287,26 @@ async function dismissOne(track: DiscoveryTrack) {
     message.success('不再推荐')
   } catch (err) {
     message.error(err instanceof Error ? err.message : '没有记下')
+  } finally {
+    const next = { ...busy.value }
+    delete next[key]
+    busy.value = next
+  }
+}
+
+async function restoreOne(track: DiscoveryTrack) {
+  const key = trackKey(track)
+  if (busy.value[key]) return
+  busy.value = { ...busy.value, [key]: 'restore' }
+  try {
+    const response = await restoreDiscoveryTracks([track])
+    if (response.code !== 200) throw new Error(response.message || '没有恢复')
+    const nextStates = { ...states.value }
+    delete nextStates[key]
+    states.value = nextStates
+    message.success('已恢复推荐')
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : '没有恢复')
   } finally {
     const next = { ...busy.value }
     delete next[key]

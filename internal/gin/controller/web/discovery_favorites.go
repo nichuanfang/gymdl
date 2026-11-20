@@ -26,13 +26,13 @@ type FavoritesAPI interface {
 }
 
 type FavoritesPage struct {
-	Enabled     bool                 `json:"enabled"`
-	PollMinutes int                  `json:"poll_minutes"`
-	Notice      string               `json:"notice,omitempty"`
-	Platforms   []FavoritePlatform   `json:"platforms"`
-	Queue       []FavoriteQueueCount `json:"queue"`
-	Failed      []FavoriteJob        `json:"failed"`
-	Pending     []FavoriteJob        `json:"pending"`
+	Enabled          bool                 `json:"enabled"`
+	PollMinutes      int                  `json:"poll_minutes"`
+	Notice           string               `json:"notice,omitempty"`
+	Platforms        []FavoritePlatform   `json:"platforms"`
+	Queue            []FavoriteQueueCount `json:"queue"`
+	Pending          []FavoriteJob        `json:"pending"`
+	IngestExceptions []FavoriteJob        `json:"ingest_exceptions"`
 }
 
 type FavoritePlatform struct {

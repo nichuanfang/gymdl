@@ -83,13 +83,14 @@ type Snapshot struct {
 	Complete bool    `json:"complete"`
 }
 type Binding struct {
-	User     int64
-	Chat     int64
-	Platform string
-	Account  string
-	Paused   bool
-	LastSync int64
-	Error    string
+	User         int64
+	Chat         int64
+	Platform     string
+	Account      string
+	Paused       bool
+	PausedByUser bool
+	LastSync     int64
+	Error        string
 }
 type Job struct {
 	ID       string
@@ -115,6 +116,15 @@ type Card struct {
 	SkippedOwned int `json:"skipped_owned,omitempty"`
 	// Unconfirmed is how many distinct works had no single version on the chosen platform.
 	Unconfirmed int `json:"unconfirmed,omitempty"`
+	// The remaining counters explain why a short batch was not filled.
+	SkippedShown     int `json:"skipped_shown,omitempty"`
+	SkippedPending   int `json:"skipped_pending,omitempty"`
+	SkippedDismissed int `json:"skipped_dismissed,omitempty"`
+	SkippedQueued    int `json:"skipped_queued,omitempty"`
+	SkippedArtistCap int `json:"skipped_artist_cap,omitempty"`
+	SkippedDuplicate int `json:"skipped_duplicate,omitempty"`
+	SkippedOther     int `json:"skipped_other,omitempty"`
+	Unavailable      int `json:"unavailable,omitempty"`
 	// Requested is the 3, 6, or 9 the user asked for.
 	Requested int `json:"requested,omitempty"`
 	// Page is the group currently shown on the Telegram message.

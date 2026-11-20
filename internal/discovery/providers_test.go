@@ -199,6 +199,32 @@ func TestAccountChangeKeepsBaselineWithoutPause(t *testing.T) {
 	}
 }
 
+func TestLegacyAutomaticPauseRecoversOnTheNextRead(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, _, err := s.Apply(ctx, 1, 1, snapshot("account", testTrack("1", "Song", "Artist")), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE discovery_bindings SET paused=1,paused_by_user=0,last_error='旧版自动暂停' WHERE user_id=1`); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	svc := Service{
+		Store: s, Enabled: true,
+		Provider: gatingProvider{fetch: func(context.Context, string) (Snapshot, error) {
+			calls++
+			return snapshot("account", testTrack("1", "Song", "Artist")), nil
+		}},
+	}
+	if _, err := svc.Sync(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	bindings, _ := s.Bindings(ctx, 1)
+	if calls != 1 || bindings[0].Paused || bindings[0].PausedByUser {
+		t.Fatalf("legacy pause was not recovered: calls=%d binding=%+v", calls, bindings[0])
+	}
+}
+
 func TestPausedLoginRetriesWhenCookieWorksAgain(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -225,6 +251,127 @@ func TestPausedLoginRetriesWhenCookieWorksAgain(t *testing.T) {
 	bindings, _ := s.Bindings(ctx, 1)
 	if bindings[0].Paused || bindings[0].Error != "" || len(notices) != 0 {
 		t.Fatalf("binding=%+v notices=%v", bindings[0], notices)
+	}
+}
+
+func TestJobCountsDoesNotStopAtTheDisplayLimit(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	for i := 0; i < 105; i++ {
+		if _, err := s.Enqueue(ctx, 1, 1, testTrack(fmt.Sprintf("%d", i), fmt.Sprintf("Song %d", i), fmt.Sprintf("Artist %d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counts, err := s.JobCounts(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs, err := s.Jobs(ctx, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[Queued] != 105 || len(jobs) != 100 {
+		t.Fatalf("counts=%v list=%d", counts, len(jobs))
+	}
+}
+
+func TestUserPauseSurvivesSourceFailuresAndIsOnlyClearedByUser(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, _, err := s.Apply(ctx, 1, 1, snapshot("account", testTrack("1", "Song", "Artist")), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Pause(ctx, 1, "netease", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SourceError(ctx, Binding{User: 1, Platform: "netease"}, "netease：旧的读取错误", true); err != nil {
+		t.Fatal(err)
+	}
+	bindings, err := s.Bindings(ctx, 1)
+	if err != nil || len(bindings) != 1 {
+		t.Fatal(err, bindings)
+	}
+	if !bindings[0].Paused || bindings[0].Error == "" {
+		t.Fatalf("user pause was erased by source error: %+v", bindings[0])
+	}
+	if err = s.Pause(ctx, 1, "netease", false); err != nil {
+		t.Fatal(err)
+	}
+	bindings, _ = s.Bindings(ctx, 1)
+	if bindings[0].Paused {
+		t.Fatalf("explicit resume did not clear user pause: %+v", bindings[0])
+	}
+}
+
+func TestManualSyncReturnsPerPlatformResultsForPartialFailure(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, _, err := s.Apply(ctx, 1, 1, snapshot("account", testTrack("1", "Old", "Artist")), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Apply(ctx, 1, 1, Snapshot{Platform: "qq", Account: "qq-account", Tracks: []Track{{Platform: "qq", ID: "q1", Title: "Q", Artist: "A", Verified: true}}, Complete: true}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Apply(ctx, 1, 1, Snapshot{Platform: "youtube", Account: "yt-account", Tracks: []Track{{Platform: "youtube", ID: "y1", Title: "Y", Artist: "A", Verified: true}}, Complete: true}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Pause(ctx, 1, "youtube", true); err != nil {
+		t.Fatal(err)
+	}
+	svc := Service{
+		Store: s, Enabled: true,
+		Provider: gatingProvider{fetch: func(_ context.Context, platform string) (Snapshot, error) {
+			switch platform {
+			case "netease":
+				return snapshot("account", testTrack("2", "New", "Artist")), nil
+			case "qq":
+				return Snapshot{}, fmt.Errorf("QQ 登录失效")
+			default:
+				t.Fatalf("paused source was read: %s", platform)
+				return Snapshot{}, nil
+			}
+		}},
+	}
+	fresh, results, err := svc.SyncWithResults(ctx, 1)
+	if err == nil || len(fresh) != 1 || len(results) != 3 {
+		t.Fatalf("fresh=%d results=%+v err=%v", len(fresh), results, err)
+	}
+	byPlatform := map[string]FavoriteSyncResult{}
+	for _, result := range results {
+		byPlatform[result.Platform] = result
+	}
+	if byPlatform["netease"].Status != "synced" || byPlatform["netease"].Added != 1 {
+		t.Fatalf("netease result=%+v", byPlatform["netease"])
+	}
+	if byPlatform["qq"].Status != "failed" || byPlatform["qq"].Error == "" {
+		t.Fatalf("qq result=%+v", byPlatform["qq"])
+	}
+	if byPlatform["youtube"].Status != "paused" {
+		t.Fatalf("youtube result=%+v", byPlatform["youtube"])
+	}
+}
+
+func TestManualSyncSuppressesTheImmediateBackgroundNotice(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, _, err := s.Apply(ctx, 1, 9, snapshot("account", testTrack("1", "Old", "Artist")), true); err != nil {
+		t.Fatal(err)
+	}
+	notices := 0
+	svc := Service{
+		Store: s, Enabled: true,
+		Provider: gatingProvider{fetch: func(context.Context, string) (Snapshot, error) {
+			return snapshot("account", testTrack("2", "New", "Artist")), nil
+		}},
+		Notify: func(int64, string) error { notices++; return nil },
+	}
+	fresh, err := svc.SyncQuietly(ctx, 1)
+	if err != nil || len(fresh) != 1 {
+		t.Fatalf("fresh=%+v err=%v", fresh, err)
+	}
+	svc.notifyFresh(svc.suppressAfterManualSync(fresh))
+	if notices != 0 {
+		t.Fatalf("manual sync duplicated a background notice: %d", notices)
 	}
 }
 

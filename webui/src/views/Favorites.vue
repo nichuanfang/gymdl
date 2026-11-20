@@ -14,9 +14,9 @@
           <span v-for="item in page?.queue || []" :key="item.state" class="queue-chip">{{ item.count }} {{ item.label }}</span>
         </div>
         <div class="track-actions">
-          <n-button v-if="page?.enabled" size="small" type="primary" secondary :loading="syncing" :disabled="acting" @click="syncNow">现在同步</n-button>
+          <n-button v-if="page?.enabled" size="small" type="primary" secondary :loading="syncing" :disabled="acting" @click="syncNow">同步全部平台</n-button>
           <n-button size="small" quaternary :loading="refreshing" :disabled="acting" @click="refreshQueue">刷新状态</n-button>
-          <n-button v-if="failedCount" size="small" secondary :loading="retrying" :disabled="acting" @click="retryFailed">失败的重新排队</n-button>
+          <n-button v-if="failedCount" size="small" secondary :loading="retrying" :disabled="acting" @click="retryFailed">入库异常重新排队</n-button>
         </div>
       </div>
     </n-card>
@@ -29,7 +29,7 @@
         <span class="track-title">{{ item.label }}</span>
         <p>{{ item.state }}<template v-if="item.account"> · {{ item.account }}</template></p>
         <p class="track-meta">{{ item.last_sync ? `上次同步 ${item.last_sync}` : '还没有同步过' }}</p>
-        <p v-if="item.error" class="track-note">{{ item.error }}</p>
+        <p v-if="item.error" class="track-note">同步异常：{{ item.error }}</p>
       </div>
       <div class="track-actions">
         <n-button
@@ -85,10 +85,10 @@
       </div>
     </article>
 
-    <div v-if="page?.failed.length" class="result-head">
-      <span>失败 {{ failedCount }} 首</span>
+    <div v-if="page?.ingest_exceptions?.length" class="result-head">
+      <span>入库异常 {{ failedCount }} 首</span>
     </div>
-    <article v-for="job in page?.failed || []" :key="job.id" class="track-card">
+    <article v-for="job in page?.ingest_exceptions || []" :key="job.id" class="track-card">
       <div class="track-copy">
         <span class="track-title">{{ job.title || '未命名' }}</span>
         <p>{{ job.artist || '未知歌手' }} · {{ platformLabel(job.platform) }}</p>
@@ -124,16 +124,17 @@ const notice = ref('')
 const page = ref<FavoritesPage | null>(null)
 let pollTimer = 0
 let skipActivate = true
+let loadSeq = 0
 
 const platforms = computed(() => page.value?.platforms || [])
-const failedCount = computed(() => page.value?.queue.find((item) => item.state === 'failed')?.count || page.value?.failed.length || 0)
+const failedCount = computed(() => page.value?.queue.find((item) => item.state === 'failed')?.count || page.value?.ingest_exceptions.length || 0)
 const acting = computed(() => loading.value || syncing.value || refreshing.value || retrying.value || binding.value || previewing.value !== '' || pausing.value !== '' || resolving.value !== '')
 const helpText = computed(() => {
   if (!page.value) return '读取收藏只是预览。确认后才建立基线，这批已有收藏不会下载。'
-  if (page.value.enabled) return `每 ${page.value.poll_minutes} 分钟检查一次。新收藏会出现在这页的入库队列里。确认绑定只建立基线，这批已有收藏不会下载。`
+  if (page.value.enabled) return `每 ${page.value.poll_minutes} 分钟检查一次，并按网易云、QQ 音乐、YouTube 顺序读取。新收藏会出现在这页的入库队列里。确认绑定只建立基线，这批已有收藏不会下载。`
   return '自动同步没开。绑定之后，新增收藏也不会自动入库。确认绑定只建立基线，这批已有收藏不会下载。'
 })
-const noticeType = computed(() => (notice.value.includes('失败') || notice.value.includes('没有完成') ? 'warning' : 'success') as 'warning' | 'success')
+const noticeType = computed(() => (notice.value.includes('异常') || notice.value.includes('失败') || notice.value.includes('没有完成') ? 'warning' : 'success') as 'warning' | 'success')
 const platformNames: Record<string, string> = { netease: '网易云', qq: 'QQ 音乐', youtube: 'YouTube' }
 
 function platformLabel(platform: string) {
@@ -144,7 +145,7 @@ function applyPage(data: FavoritesPage, keepNotice = false) {
     ...data,
     platforms: data.platforms || [],
     queue: data.queue || [],
-    failed: data.failed || [],
+    ingest_exceptions: data.ingest_exceptions || [],
     pending: data.pending || [],
   }
   if (!keepNotice) notice.value = data.notice || ''
@@ -162,17 +163,20 @@ function startPoll() {
   pollTimer = window.setInterval(() => { void load(true) }, 3000)
 }
 async function load(quiet = false) {
+  const seq = ++loadSeq
   if (!quiet) loading.value = true
   try {
     const response = await getFavorites()
+    if (seq !== loadSeq) return
     if (response.code !== 200 || !response.data) throw new Error(response.message || '读取收藏状态失败')
     applyPage(response.data, quiet)
     if (!quiet) error.value = ''
   } catch (err) {
+    if (seq !== loadSeq) return
     if (!quiet) error.value = err instanceof Error ? err.message : '读取收藏状态失败'
     if (!quiet) stopPoll()
   } finally {
-    if (!quiet) loading.value = false
+    if (seq === loadSeq && !quiet) loading.value = false
   }
 }
 async function runAction(kind: 'sync' | 'refresh' | 'retry') {
@@ -197,10 +201,10 @@ async function togglePause(item: FavoritePlatform) {
   error.value = ''
   try {
     const response = await pauseFavorites(item.platform, !item.paused)
-    if (response.code !== 200 || !response.data) throw new Error(response.message || '没有改成')
+    if (response.code !== 200 || !response.data) throw new Error(response.message || '没有更新暂停状态')
     applyPage(response.data)
   } catch (err) {
-    message.error(err instanceof Error ? err.message : '没有改成')
+    message.error(err instanceof Error ? err.message : '没有更新暂停状态')
   } finally {
     pausing.value = ''
   }
@@ -237,10 +241,10 @@ async function resolve(id: string, accept: boolean) {
   error.value = ''
   try {
     const response = await resolveFavorite(id, accept)
-    if (response.code !== 200 || !response.data) throw new Error(response.message || '没有处理成')
+    if (response.code !== 200 || !response.data) throw new Error(response.message || '没有完成确认')
     applyPage(response.data)
   } catch (err) {
-    message.error(err instanceof Error ? err.message : '没有处理成')
+    message.error(err instanceof Error ? err.message : '没有完成确认')
   } finally {
     resolving.value = ''
   }

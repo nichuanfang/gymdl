@@ -78,6 +78,7 @@ func SetupWebRoutesWithTaskManager(rg *gin.RouterGroup, c *config.Config, tm *ta
 	group.POST("/discovery/rediscover", web.HandleRediscover)
 	group.POST("/discovery/enqueue", web.HandleRediscoverEnqueue)
 	group.POST("/discovery/dismiss", web.HandleRediscoverDismiss)
+	group.POST("/discovery/restore", web.HandleRediscoverRestore)
 	group.GET("/discovery/jobs", web.HandleDiscoveryJobs)
 	group.GET("/discovery/favorites", web.HandleFavorites)
 	group.POST("/discovery/favorites/preview", web.HandleFavoritePreview)

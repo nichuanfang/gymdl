@@ -316,6 +316,78 @@ func TestPlaylistDescEditLetsADownloadLinkThrough(t *testing.T) {
 	}
 }
 
+type playlistDescCallbackTestContext struct {
+	tb.Context
+	mu      sync.Mutex
+	args    []string
+	sender  *tb.User
+	chat    *tb.Chat
+	message *tb.Message
+	edits   []string
+	alerts  []string
+}
+
+func (c *playlistDescCallbackTestContext) Args() []string       { return c.args }
+func (c *playlistDescCallbackTestContext) Sender() *tb.User     { return c.sender }
+func (c *playlistDescCallbackTestContext) Chat() *tb.Chat       { return c.chat }
+func (c *playlistDescCallbackTestContext) Message() *tb.Message { return c.message }
+func (c *playlistDescCallbackTestContext) Respond(resp ...*tb.CallbackResponse) error {
+	if len(resp) > 0 && resp[0] != nil {
+		c.alerts = append(c.alerts, resp[0].Text)
+	}
+	return nil
+}
+func (c *playlistDescCallbackTestContext) Edit(v interface{}, _ ...interface{}) error {
+	c.mu.Lock()
+	c.edits = append(c.edits, fmt.Sprint(v))
+	c.mu.Unlock()
+	return nil
+}
+
+func TestPlaylistDescClearNeedsConfirmationAndCanBeUndone(t *testing.T) {
+	store, err := playlistcatalog.Open(filepath.Join(t.TempDir(), "gymdl.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if _, err = store.Apply(ctx, []playlistcatalog.Remote{{ID: "zh", Name: "中文"}}, []config.PlaylistInfo{{Name: "中文", Desc: "原来的描述"}}, time.Unix(1_700_000_000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{playlistCatalog: store}
+	msg := &tb.Message{ID: 9, Chat: &tb.Chat{ID: 7}}
+	session := pendingPlaylistDesc{token: "0123456789abcdef0123456789abcdef", userID: 7, chatID: 7, message: msg, synced: true, editingID: "zh", playlists: []playlistcatalog.Playlist{{ID: "zh", Name: "中文", Desc: "原来的描述"}}, expiresAt: time.Now().Add(time.Minute)}
+	app.savePlaylistDesc(session)
+	testCtx := &playlistDescCallbackTestContext{args: []string{"clear", session.token}, sender: &tb.User{ID: 7}, chat: &tb.Chat{ID: 7, Type: tb.ChatPrivate}, message: msg}
+	if err = app.HandlePlaylistDescCallback(testCtx); err != nil {
+		t.Fatal(err)
+	}
+	if desc, err := store.Description(ctx, "zh"); err != nil || desc != "原来的描述" {
+		t.Fatalf("first click erased description=%q err=%v", desc, err)
+	}
+	if len(testCtx.edits) != 1 || !strings.Contains(testCtx.edits[0], "清空歌单描述？") {
+		t.Fatalf("confirmation = %#v", testCtx.edits)
+	}
+	testCtx.args = []string{"clear", session.token, "yes"}
+	if err = app.HandlePlaylistDescCallback(testCtx); err != nil {
+		t.Fatal(err)
+	}
+	if desc, err := store.Description(ctx, "zh"); err != nil || desc != "" {
+		t.Fatalf("confirmed clear desc=%q err=%v", desc, err)
+	}
+	saved, ok := app.getPlaylistDesc(session.token, 7, 7)
+	if !ok || saved.lastClear == nil || saved.lastClear.desc != "原来的描述" {
+		t.Fatalf("undo state lost: %#v", saved.lastClear)
+	}
+	testCtx.args = []string{"clear_undo", session.token}
+	if err = app.HandlePlaylistDescCallback(testCtx); err != nil {
+		t.Fatal(err)
+	}
+	if desc, err := store.Description(ctx, "zh"); err != nil || desc != "原来的描述" {
+		t.Fatalf("undo desc=%q err=%v", desc, err)
+	}
+}
+
 func TestPlaylistDescSyncLeavesTheUpdateLoop(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once

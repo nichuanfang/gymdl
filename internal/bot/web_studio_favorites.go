@@ -145,17 +145,8 @@ func (s webStudio) SyncFavorites(ctx context.Context) (web.FavoritesPage, error)
 		return web.FavoritesPage{}, errors.New("正在处理上一条请求")
 	}
 	defer s.app.discoveryCommandMu.Unlock()
-	fresh, syncErr := s.app.discovery.SyncQuietly(ctx, user)
-	notice := strings.TrimPrefix(favoritesSyncNotice(fresh), "✅ ")
-	if syncErr != nil {
-		notice = "这一轮没有同步完成，收藏基线未改。"
-		if reason := favoriteErrorText(discoveryPublicError(syncErr)); reason != "" {
-			notice += " " + reason
-		}
-		if len(fresh) > 0 {
-			notice += " " + strings.TrimPrefix(favoritesSyncNotice(fresh), "✅ ")
-		}
-	}
+	_, results, syncErr := s.app.discovery.SyncWithResults(ctx, user)
+	notice := strings.TrimPrefix(favoritesSyncResultNotice(results, syncErr), "✅ ")
 	return s.favoritePage(ctx, notice)
 }
 
@@ -167,25 +158,20 @@ func (s webStudio) RetryFavorites(ctx context.Context) (web.FavoritesPage, error
 	if s.app.discovery == nil || s.app.discovery.Store == nil {
 		return web.FavoritesPage{}, errors.New("收藏服务尚未就绪")
 	}
-	jobs, err := s.app.discovery.Store.Jobs(ctx, user, false)
+	counts, err := s.app.discovery.Store.JobCounts(ctx, user)
 	if err != nil {
 		return web.FavoritesPage{}, errors.New("无法读取失败记录")
 	}
-	failed := 0
-	for _, job := range jobs {
-		if job.State == discovery.Failed {
-			failed++
-		}
-	}
+	failed := counts[discovery.Failed]
 	if failed == 0 {
-		return s.favoritePage(ctx, "没有需要重试的失败任务。")
+		return s.favoritePage(ctx, "没有需要重试的入库异常。")
 	}
 	if err = s.app.discovery.Store.Retry(ctx, user); err != nil {
 		logFavoriteRetry(failed, err)
 		return web.FavoritesPage{}, err
 	}
 	logFavoriteRetry(failed, nil)
-	return s.favoritePage(ctx, fmt.Sprintf("%d 首失败任务已重新排队。", failed))
+	return s.favoritePage(ctx, fmt.Sprintf("%d 首入库异常已重新排队。", failed))
 }
 
 func (s webStudio) RefreshFavorites(ctx context.Context) (web.FavoritesPage, error) {
@@ -269,6 +255,10 @@ func (s webStudio) favoritePage(ctx context.Context, notice string) (web.Favorit
 	if err != nil {
 		return web.FavoritesPage{}, errors.New("读取入库队列失败")
 	}
+	counts, err := s.app.discovery.Store.JobCounts(ctx, user)
+	if err != nil {
+		return web.FavoritesPage{}, errors.New("读取入库队列失败")
+	}
 	minutes := 1
 	if s.app.discovery.PollInterval > 0 {
 		if n := int(s.app.discovery.PollInterval / time.Minute); n > 1 {
@@ -281,37 +271,35 @@ func (s webStudio) favoritePage(ctx context.Context, notice string) (web.Favorit
 	}
 	page := web.FavoritesPage{
 		Enabled: s.app.discovery.Enabled, PollMinutes: minutes, Notice: notice,
-		Platforms: make([]web.FavoritePlatform, 0, 3),
-		Queue:     []web.FavoriteQueueCount{},
-		Failed:    []web.FavoriteJob{},
-		Pending:   []web.FavoriteJob{},
+		Platforms:        make([]web.FavoritePlatform, 0, 3),
+		Queue:            []web.FavoriteQueueCount{},
+		Pending:          []web.FavoriteJob{},
+		IngestExceptions: []web.FavoriteJob{},
 	}
 	for _, platform := range []string{"netease", "qq", "youtube"} {
 		item := web.FavoritePlatform{Platform: platform, Label: aichat.PlatformLabel(platform), State: "未绑定"}
 		if binding, ok := byPlatform[platform]; ok {
 			item.Bound = true
-			item.Paused = binding.Paused
+			item.Paused = binding.PausedByUser
 			item.Account = maskedDiscoveryAccount(binding.Account)
 			if binding.LastSync > 0 {
-				item.LastSync = time.Unix(binding.LastSync, 0).Format("01-02 15:04")
+				item.LastSync = time.Unix(binding.LastSync, 0).Local().Format("01-02 15:04")
 			}
 			item.Error = clipStudioText(favoritePlatformError(platform, binding.Error), 80)
-			item.State = favoritePlatformState(s.app.discovery.Enabled, binding.Paused)
+			item.State = favoritePlatformState(s.app.discovery.Enabled, binding.PausedByUser)
 		}
 		page.Platforms = append(page.Platforms, item)
 	}
-	counts := map[string]int{}
 	for _, job := range jobs {
-		counts[job.State]++
 		view := web.FavoriteJob{
 			ID: job.ID, Platform: job.Track.Platform, TrackID: job.Track.ID,
 			Title: job.Track.Title, Artist: job.Track.Artist, State: job.State,
-			Label: discovery.StateLabel(job.State), Error: clipStudioText(job.Error, 180),
+			Label: favoriteJobLabel(job.State), Error: clipStudioText(job.Error, 180),
 		}
 		switch job.State {
 		case discovery.Failed:
-			if len(page.Failed) < 20 {
-				page.Failed = append(page.Failed, view)
+			if len(page.IngestExceptions) < 20 {
+				page.IngestExceptions = append(page.IngestExceptions, view)
 			}
 		case discovery.NeedsConfirmation:
 			if len(page.Pending) < 20 {
@@ -327,9 +315,19 @@ func (s webStudio) favoritePage(ctx context.Context, notice string) (web.Favorit
 		if state == discovery.PendingUpload {
 			label = "待上传"
 		}
+		if state == discovery.Failed {
+			label = "入库异常"
+		}
 		page.Queue = append(page.Queue, web.FavoriteQueueCount{State: state, Label: label, Count: counts[state]})
 	}
 	return page, nil
+}
+
+func favoriteJobLabel(state string) string {
+	if state == discovery.Failed {
+		return "入库异常"
+	}
+	return discovery.StateLabel(state)
 }
 
 func favoritePlatformState(enabled, paused bool) string {

@@ -39,8 +39,14 @@ type pendingPlaylistDesc struct {
 	synced    bool
 	page      int
 	editingID string
+	lastClear *playlistDescUndo
 	syncing   bool
 	expiresAt time.Time
+}
+
+type playlistDescUndo struct {
+	id   string
+	desc string
 }
 
 func (app *BotApp) initPlaylistCatalog() {
@@ -172,14 +178,28 @@ func (app *BotApp) HandlePlaylistDescCallback(c tb.Context) error {
 		if session.editingID == "" {
 			return c.Respond(&tb.CallbackResponse{Text: "请先选择一张歌单", ShowAlert: true})
 		}
+		if len(args) != 3 || args[2] != "yes" {
+			current := playlistByID(session.playlists, session.editingID)
+			if err := c.Respond(&tb.CallbackResponse{Text: "请确认清空"}); err != nil {
+				return err
+			}
+			text, markup := formatPlaylistDescClearConfirm(session, current)
+			return c.Edit(text, tb.ModeHTML, markup)
+		}
 		clearedID := session.editingID
-		if err := app.playlistCatalog.SetDesc(context.Background(), clearedID, ""); err != nil {
+		previous, err := app.playlistCatalog.Description(context.Background(), clearedID)
+		if err != nil {
+			utils.WarnWithFormat("[Playlist] 读取待清空歌单描述失败 id=%s: %v", clearedID, err)
+			return c.Respond(&tb.CallbackResponse{Text: discoveryPublicError(err), ShowAlert: true})
+		}
+		if err = app.playlistCatalog.SetDesc(context.Background(), clearedID, ""); err != nil {
 			utils.WarnWithFormat("[Playlist] 清空歌单描述失败 id=%s: %v", clearedID, err)
 			return c.Respond(&tb.CallbackResponse{Text: discoveryPublicError(err), ShowAlert: true})
 		}
 		utils.InfoWithFormat("[Playlist] 已清空歌单描述 id=%s", clearedID)
 		session.editingID = ""
-		if err := app.reloadPlaylistDesc(&session); err != nil {
+		session.lastClear = &playlistDescUndo{id: clearedID, desc: previous}
+		if err = app.reloadPlaylistDesc(&session); err != nil {
 			app.deletePlaylistDesc(session.token)
 			if respondErr := c.Respond(&tb.CallbackResponse{Text: "描述已清空，但列表刷新失败"}); respondErr != nil {
 				return respondErr
@@ -190,7 +210,35 @@ func (app *BotApp) HandlePlaylistDescCallback(c tb.Context) error {
 		if err := c.Respond(&tb.CallbackResponse{Text: "已清空"}); err != nil {
 			return err
 		}
-		text, markup := formatPlaylistDesc(session, "✅ 描述已清空；整理歌单时不再参考这条说明。")
+		text, markup := formatPlaylistDesc(session, "✅ 描述已清空；可点“撤销清空”恢复上一版。")
+		return c.Edit(text, tb.ModeHTML, markup)
+	case "clear_cancel":
+		if session.editingID == "" {
+			return c.Respond(&tb.CallbackResponse{Text: "请先选择一张歌单", ShowAlert: true})
+		}
+		if err := c.Respond(); err != nil {
+			return err
+		}
+		text, markup := formatPlaylistDesc(session, "")
+		return c.Edit(text, tb.ModeHTML, markup)
+	case "clear_undo":
+		if session.lastClear == nil || session.lastClear.id == "" {
+			return c.Respond(&tb.CallbackResponse{Text: "没有可撤销的清空操作", ShowAlert: true})
+		}
+		undo := *session.lastClear
+		if err := app.playlistCatalog.SetDesc(context.Background(), undo.id, undo.desc); err != nil {
+			utils.WarnWithFormat("[Playlist] 撤销清空歌单描述失败 id=%s: %v", undo.id, err)
+			return c.Respond(&tb.CallbackResponse{Text: discoveryPublicError(err), ShowAlert: true})
+		}
+		session.lastClear = nil
+		if err := app.reloadPlaylistDesc(&session); err != nil {
+			return c.Respond(&tb.CallbackResponse{Text: "描述已恢复，但列表刷新失败", ShowAlert: true})
+		}
+		app.savePlaylistDesc(session)
+		if err := c.Respond(&tb.CallbackResponse{Text: "已恢复描述"}); err != nil {
+			return err
+		}
+		text, markup := formatPlaylistDesc(session, "✅ 已恢复清空前的描述。")
 		return c.Edit(text, tb.ModeHTML, markup)
 	case "sync":
 		return app.syncPlaylistDesc(c, session)
@@ -218,6 +266,9 @@ func (app *BotApp) handlePlaylistDescText(c tb.Context) (bool, error) {
 		return false, nil
 	}
 	savedID := session.editingID
+	if session.lastClear != nil && session.lastClear.id == savedID {
+		session.lastClear = nil
+	}
 	if err := app.playlistCatalog.SetDesc(context.Background(), savedID, c.Text()); err != nil {
 		utils.WarnWithFormat("[Playlist] 保存歌单描述失败 id=%s: %v", savedID, err)
 		return true, app.updatePlaylistDescCard(c, session, "❌ 保存失败："+discoveryPublicError(err)+"。请修正后重新发送。", false)
@@ -428,8 +479,12 @@ func formatPlaylistDesc(session pendingPlaylistDesc, notice string) (string, *tb
 			fmt.Fprintf(&text, "\n\n%s", utils.EscapeHTML(utils.TruncateString(current.Desc, 180)))
 		}
 		fmt.Fprintf(&text, "\n\n当前 %d / 200 字\n发送新描述即可保存", len([]rune(current.Desc)))
+		editRow := tb.Row{markup.Data("↩ 返回列表", playlistDescCallbackUnique, "back", session.token)}
+		if strings.TrimSpace(current.Desc) != "" {
+			editRow = append(editRow, markup.Data("⌫ 清空描述", playlistDescCallbackUnique, "clear", session.token))
+		}
 		markup.Inline(
-			markup.Row(markup.Data("↩ 返回列表", playlistDescCallbackUnique, "back", session.token), markup.Data("⌫ 清空描述", playlistDescCallbackUnique, "clear", session.token)),
+			editRow,
 			markup.Row(markup.Data("✕ 取消", playlistDescCallbackUnique, "cancel", session.token)),
 		)
 		return text.String(), markup
@@ -453,8 +508,23 @@ func formatPlaylistDesc(session pendingPlaylistDesc, notice string) (string, *tb
 		rows = append(rows, markup.Row(markup.Data(playlistDescButtonLabel(session.playlists[index]), playlistDescCallbackUnique, "open", session.token, strconv.Itoa(index))))
 	}
 	rows = append(rows, playlistDescActionRows(markup, session, end < len(session.playlists))...)
+	if session.lastClear != nil && session.lastClear.id != "" {
+		rows = append(rows, markup.Row(markup.Data("↶ 撤销清空", playlistDescCallbackUnique, "clear_undo", session.token)))
+	}
 	markup.Inline(rows...)
 	return text.String(), markup
+}
+
+func formatPlaylistDescClearConfirm(session pendingPlaylistDesc, current playlistcatalog.Playlist) (string, *tb.ReplyMarkup) {
+	text := fmt.Sprintf("清空歌单描述？\n\n<b>%s</b>\n\n当前描述：\n%s\n\n清空后 /assign_playlist 和 /ai_playlist 将不再参考这条说明。", utils.EscapeHTML(utils.TruncateString(current.Name, 40)), utils.EscapeHTML(utils.TruncateString(current.Desc, 180)))
+	markup := &tb.ReplyMarkup{}
+	markup.Inline(
+		markup.Row(
+			markup.Data("确认清空", playlistDescCallbackUnique, "clear", session.token, "yes"),
+			markup.Data("返回", playlistDescCallbackUnique, "clear_cancel", session.token),
+		),
+	)
+	return text, markup
 }
 
 // playlistDescActionRows 把翻页、同步、取消放在名称列表下面。
@@ -564,6 +634,11 @@ func (app *BotApp) savePlaylistDesc(session pendingPlaylistDesc) {
 	app.playlistDescMu.Lock()
 	defer app.playlistDescMu.Unlock()
 	app.ensurePlaylistDescLocked(time.Now())
+	// Callers often pass an older copy of the session after reloading. Keep
+	// undo state from the stored session so it is not silently dropped.
+	if stored, ok := app.playlistDescSessions[session.token]; ok && session.lastClear == nil {
+		session.lastClear = stored.lastClear
+	}
 	if previous, ok := app.playlistDescByChat[session.chatID]; ok && previous != session.token {
 		delete(app.playlistDescSessions, previous)
 	}

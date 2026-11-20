@@ -42,6 +42,7 @@ type Service struct {
 	historyReady         bool
 	resolveCache         map[string]resolveCacheEntry
 	neteaseRefreshCursor map[string]int
+	manualSyncedAt       map[int64]time.Time
 }
 
 const (
@@ -64,6 +65,67 @@ type FreshFavorite struct {
 	Track    Track
 }
 
+// FavoriteSyncResult is the outcome for one bound source in a user-requested
+// sync. A successful source may still fail on another source in the same round.
+type FavoriteSyncResult struct {
+	Platform string
+	Status   string // synced, paused, failed
+	Added    int
+	Error    string
+}
+
+// markManualSynced records the manual-sync boundary per chat. The next
+// background poll still updates the baseline, but must not repeat this
+// conversation's fresh-favorite notice.
+func (s *Service) markManualSynced(items []FreshFavorite) {
+	if len(items) == 0 {
+		return
+	}
+	seen := map[int64]struct{}{}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.manualSyncedAt == nil {
+		s.manualSyncedAt = map[int64]time.Time{}
+	}
+	now := time.Now()
+	for _, item := range items {
+		if _, ok := seen[item.Chat]; ok {
+			continue
+		}
+		seen[item.Chat] = struct{}{}
+		s.manualSyncedAt[item.Chat] = now
+	}
+}
+
+func (s *Service) suppressAfterManualSync(items []FreshFavorite) []FreshFavorite {
+	if len(items) == 0 {
+		return items
+	}
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if len(s.manualSyncedAt) == 0 {
+		return items
+	}
+	for chat, boundary := range s.manualSyncedAt {
+		if time.Since(boundary) > 10*time.Minute {
+			delete(s.manualSyncedAt, chat)
+		}
+	}
+	out := make([]FreshFavorite, 0, len(items))
+	for _, item := range items {
+		boundary, ok := s.manualSyncedAt[item.Chat]
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		if time.Since(boundary) >= 2*time.Minute {
+			delete(s.manualSyncedAt, item.Chat)
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func (s *Service) Sync(ctx context.Context, user int64) ([]FreshFavorite, error) {
 	return s.sync(ctx, user)
 }
@@ -71,10 +133,29 @@ func (s *Service) Sync(ctx context.Context, user int64) ([]FreshFavorite, error)
 // SyncQuietly runs a user-requested sync. The caller reports the result.
 // A failed round is only logged; it does not pause the source or push an alert.
 func (s *Service) SyncQuietly(ctx context.Context, user int64) ([]FreshFavorite, error) {
-	return s.sync(ctx, user)
+	fresh, _, err := s.syncWithResults(ctx, user)
+	if len(fresh) > 0 {
+		s.markManualSynced(fresh)
+	}
+	return fresh, err
 }
 
-func (s *Service) sync(ctx context.Context, user int64) (fresh []FreshFavorite, err error) {
+// SyncWithResults is the user-facing sync path. It returns one result per
+// bound platform so a partial success is never described as a total failure.
+func (s *Service) SyncWithResults(ctx context.Context, user int64) ([]FreshFavorite, []FavoriteSyncResult, error) {
+	fresh, results, err := s.syncWithResults(ctx, user)
+	if len(fresh) > 0 {
+		s.markManualSynced(fresh)
+	}
+	return fresh, results, err
+}
+
+func (s *Service) sync(ctx context.Context, user int64) ([]FreshFavorite, error) {
+	fresh, _, err := s.syncWithResults(ctx, user)
+	return fresh, err
+}
+
+func (s *Service) syncWithResults(ctx context.Context, user int64) (fresh []FreshFavorite, results []FavoriteSyncResult, err error) {
 	started := time.Now()
 	defer func() {
 		if ctx.Err() != nil {
@@ -84,31 +165,34 @@ func (s *Service) sync(ctx context.Context, user int64) (fresh []FreshFavorite, 
 	}()
 	if !s.Enabled {
 		err = fmt.Errorf("自动收藏同步未启用，请先配置 favorites.enable: true；可先预览并绑定账号")
-		return nil, err
+		return nil, nil, err
 	}
 	s.syncMu.Lock()
 	defer s.syncMu.Unlock()
 	bindings, err := s.Store.Bindings(ctx, user)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var failures []string
 	for _, b := range bindings {
 		if s.Authorized != nil && !s.Authorized(b.User, b.Chat) {
 			continue
 		}
-		// Manual pause stores an empty error and stays stopped. A pause left by
-		// an older build still carries an error; clear it so one bad round
-		// cannot stick. A failed read keeps the baseline and is only logged.
-		if b.Paused && strings.TrimSpace(b.Error) == "" {
+		// Only an explicit user pause stops a source. A failed read updates the
+		// error message but never turns an automatic retry into a pause.
+		if b.PausedByUser {
+			results = append(results, FavoriteSyncResult{Platform: b.Platform, Status: "paused"})
 			continue
 		}
 		if b.Paused {
 			if perr := s.Store.Pause(ctx, b.User, b.Platform, false); perr != nil {
-				failures = append(failures, b.Platform+"："+perr.Error())
+				message := b.Platform + "：" + perr.Error()
+				failures = append(failures, message)
+				results = append(results, FavoriteSyncResult{Platform: b.Platform, Status: "failed", Error: perr.Error()})
 				continue
 			}
-			utils.InfoWithFormat("[Discovery] %s 已取消此前的自动暂停，继续同步", freshPlatformLabel(b.Platform))
+			b.Paused = false
+			utils.InfoWithFormat("[Discovery] %s 已取消旧版的自动暂停，继续同步", freshPlatformLabel(b.Platform))
 		}
 		snap, e := s.readSnapshot(ctx, b)
 		var added []Track
@@ -121,17 +205,19 @@ func (s *Service) sync(ctx context.Context, user int64) (fresh []FreshFavorite, 
 				utils.WarnWithFormat("[Discovery] 记录收藏同步失败原因失败: %v", serr)
 			}
 			failures = append(failures, message)
+			results = append(results, FavoriteSyncResult{Platform: b.Platform, Status: "failed", Error: e.Error()})
 			continue
 		}
+		results = append(results, FavoriteSyncResult{Platform: b.Platform, Status: "synced", Added: len(added)})
 		for _, track := range added {
 			fresh = append(fresh, FreshFavorite{User: b.User, Chat: b.Chat, Platform: b.Platform, Track: track})
 		}
 	}
 	if len(failures) > 0 {
 		err = errors.New(strings.Join(failures, "\n"))
-		return fresh, err
+		return fresh, results, err
 	}
-	return fresh, nil
+	return fresh, results, nil
 }
 
 func (s *Service) readSnapshot(ctx context.Context, b Binding) (Snapshot, error) {
@@ -264,17 +350,25 @@ func (s *Service) neteaseRefreshIDs(account string, ids []string) []string {
 }
 
 func (s *Service) Recommend(ctx context.Context, user int64) ([]Track, error) {
-	tracks, _, _, err := s.recommend(ctx, user, "", 10)
-	return tracks, err
+	batch, err := s.recommend(ctx, user, "", 10)
+	return batch.Tracks, err
 }
 
 // RediscoverBatch is one platform search. SkippedOwned counts distinct works
 // already in the library, including different artist credits of the same title.
 // Unconfirmed counts distinct works whose platform search had no single version.
 type RediscoverBatch struct {
-	Tracks       []Track
-	SkippedOwned int
-	Unconfirmed  int
+	Tracks           []Track
+	SkippedOwned     int
+	Unconfirmed      int
+	SkippedShown     int
+	SkippedPending   int
+	SkippedDismissed int
+	SkippedQueued    int
+	SkippedArtistCap int
+	SkippedDuplicate int
+	SkippedOther     int
+	Unavailable      int
 }
 
 // RecommendLimited searches one download platform and stops after limit songs.
@@ -298,17 +392,13 @@ func (s *Service) Rediscover(ctx context.Context, user int64, platform string, l
 	default:
 		return RediscoverBatch{}, fmt.Errorf("数量只能是 3、6 或 9")
 	}
-	tracks, skipped, unconfirmed, err := s.recommend(ctx, user, platform, limit)
-	if err != nil {
-		return RediscoverBatch{}, err
-	}
-	return RediscoverBatch{Tracks: tracks, SkippedOwned: skipped, Unconfirmed: unconfirmed}, nil
+	return s.recommend(ctx, user, platform, limit)
 }
 
-func (s *Service) recommend(ctx context.Context, user int64, platform string, limit int) ([]Track, int, int, error) {
+func (s *Service) recommend(ctx context.Context, user int64, platform string, limit int) (RediscoverBatch, error) {
 	favorites, err := s.Store.Favorites(ctx, user)
 	if err != nil {
-		return nil, 0, 0, err
+		return RediscoverBatch{}, err
 	}
 	// Enrich a bounded number of old YouTube favourites per request and cache
 	// the result. Unstructured video titles never become invented song names.
@@ -323,13 +413,13 @@ func (s *Service) recommend(ctx context.Context, user int64, platform string, li
 			updated.NonMusic = skip
 			favorites[i] = updated
 			if e = s.Store.RememberFavorite(ctx, user, updated); e != nil {
-				return nil, 0, 0, e
+				return RediscoverBatch{}, e
 			}
 		}
 	}
 	history, historyErr := s.cachedHistory(ctx)
 	if historyErr != nil && len(favorites) == 0 {
-		return nil, 0, 0, historyErr
+		return RediscoverBatch{}, historyErr
 	}
 	activeFavorites := make([]Track, 0, len(favorites))
 	for _, track := range favorites {
@@ -363,15 +453,33 @@ func (s *Service) recommend(ctx context.Context, user int64, platform string, li
 		}
 		merged[key] = old
 	}
-	excluded, err := s.Store.Excluded(ctx, user)
+	exclusions, err := s.Store.Exclusions(ctx, user)
 	if err != nil {
-		return nil, 0, 0, err
+		return RediscoverBatch{}, err
+	}
+	state := &recommendPick{
+		artists:           map[string]int{},
+		skipped:           map[string]struct{}{},
+		unconfirmed:       map[string]struct{}{},
+		excludedShown:     map[string]struct{}{},
+		excludedPending:   map[string]struct{}{},
+		excludedDismissed: map[string]struct{}{},
+		excludedQueued:    map[string]struct{}{},
+		excludedArtist:    map[string]struct{}{},
+		excludedDuplicate: map[string]struct{}{},
+		excludedOther:     map[string]struct{}{},
+		unavailable:       map[string]struct{}{},
 	}
 	var ranked []Track
 	for key, t := range merged {
-		if !excluded[key] && !t.NonMusic && t.Title != "" && t.Artist != "" {
-			ranked = append(ranked, t)
+		if t.NonMusic || t.Title == "" || t.Artist == "" {
+			continue
 		}
+		if reason := exclusions[key]; reason != "" {
+			state.markExclusion(reason, t)
+			continue
+		}
+		ranked = append(ranked, t)
 	}
 	sort.Slice(ranked, func(i, j int) bool {
 		a, b := ranked[i], ranked[j]
@@ -386,18 +494,11 @@ func (s *Service) recommend(ctx context.Context, user int64, platform string, li
 		}
 		return Identity(a) < Identity(b)
 	})
-	state := &recommendPick{
-		artists:     map[string]int{},
-		skipped:     map[string]struct{}{},
-		unconfirmed: map[string]struct{}{},
-	}
-	finish := func(err error) ([]Track, int, int, error) {
+	finish := func(err error) (RediscoverBatch, error) {
 		if err != nil {
-			return nil, 0, 0, err
+			return RediscoverBatch{}, err
 		}
-		// Rendering, not selection, commits shown timestamps. A Telegram delivery
-		// failure must not hide this batch for a month.
-		return state.out, len(state.skipped), len(state.unconfirmed), nil
+		return state.batch(), nil
 	}
 	if platform == "" {
 		_, stop, err := s.pickTracks(ctx, state, ranked, limit, platform, 0)
@@ -458,10 +559,18 @@ func discoveryQuotas(limit int) (history int, favorite int) {
 }
 
 type recommendPick struct {
-	out         []Track
-	artists     map[string]int
-	skipped     map[string]struct{}
-	unconfirmed map[string]struct{}
+	out               []Track
+	artists           map[string]int
+	skipped           map[string]struct{}
+	unconfirmed       map[string]struct{}
+	excludedShown     map[string]struct{}
+	excludedPending   map[string]struct{}
+	excludedDismissed map[string]struct{}
+	excludedQueued    map[string]struct{}
+	excludedArtist    map[string]struct{}
+	excludedDuplicate map[string]struct{}
+	excludedOther     map[string]struct{}
+	unavailable       map[string]struct{}
 }
 
 func (s *Service) pickTracks(ctx context.Context, state *recommendPick, ranked []Track, want int, platform string, budget int) ([]Track, bool, error) {
@@ -481,6 +590,7 @@ func (s *Service) pickTracks(ctx context.Context, state *recommendPick, ranked [
 			return nil, false, err
 		}
 		if state.artists[Normalize(t.Artist)] >= 2 {
+			state.markDistinct(state.excludedArtist, t)
 			continue
 		}
 		owned, err := s.Library.Contains(ctx, t)
@@ -497,6 +607,7 @@ func (s *Service) pickTracks(ctx context.Context, state *recommendPick, ranked [
 				return nil, false, err
 			}
 			if pending {
+				state.markDistinct(state.excludedPending, t)
 				continue
 			}
 		}
@@ -508,6 +619,8 @@ func (s *Service) pickTracks(ctx context.Context, state *recommendPick, ranked [
 		if err != nil {
 			if errors.Is(err, ErrAmbiguousRecording) || errors.Is(err, ErrNoUniqueRecording) {
 				state.markDistinct(state.unconfirmed, t)
+			} else {
+				state.markDistinct(state.unavailable, t)
 			}
 			continue
 		}
@@ -518,6 +631,8 @@ func (s *Service) pickTracks(ctx context.Context, state *recommendPick, ranked [
 		if owned || batchHasWork(state.out, resolved) {
 			if owned {
 				state.markOwned(resolved)
+			} else {
+				state.markDistinct(state.excludedDuplicate, resolved)
 			}
 			continue
 		}
@@ -533,6 +648,39 @@ func (s *Service) pickTracks(ctx context.Context, state *recommendPick, ranked [
 
 func (state *recommendPick) markOwned(t Track) {
 	state.markDistinct(state.skipped, t)
+}
+
+func (state *recommendPick) markExclusion(reason string, t Track) {
+	switch reason {
+	case ExcludedShown:
+		state.markDistinct(state.excludedShown, t)
+	case ExcludedPending:
+		state.markDistinct(state.excludedPending, t)
+	case ExcludedDismissed:
+		state.markDistinct(state.excludedDismissed, t)
+	case ExcludedQueued:
+		state.markDistinct(state.excludedQueued, t)
+	default:
+		state.markDistinct(state.excludedOther, t)
+	}
+}
+
+func (state *recommendPick) batch() RediscoverBatch {
+	unavailable := len(state.unavailable)
+	other := len(state.excludedOther)
+	return RediscoverBatch{
+		Tracks:           state.out,
+		SkippedOwned:     len(state.skipped),
+		Unconfirmed:      len(state.unconfirmed),
+		SkippedShown:     len(state.excludedShown),
+		SkippedPending:   len(state.excludedPending),
+		SkippedDismissed: len(state.excludedDismissed),
+		SkippedQueued:    len(state.excludedQueued),
+		SkippedArtistCap: len(state.excludedArtist),
+		SkippedDuplicate: len(state.excludedDuplicate),
+		SkippedOther:     other,
+		Unavailable:      unavailable,
+	}
 }
 
 func (state *recommendPick) markDistinct(dst map[string]struct{}, t Track) {
@@ -683,7 +831,7 @@ func (s *Service) runFavoritePoll(ctx context.Context, poll time.Duration) {
 					utils.InfoWithFormat("[Discovery] 收藏读取已停止")
 					return
 				}
-				s.notifyFresh(fresh)
+				s.notifyFresh(s.suppressAfterManualSync(fresh))
 			}
 			timer.Reset(poll)
 		}

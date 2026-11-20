@@ -120,6 +120,23 @@ func (s *Store) Active(ctx context.Context) ([]Playlist, error) {
 	return out, rows.Err()
 }
 
+// Description returns the current saved description for one active playlist.
+func (s *Store) Description(ctx context.Context, id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if !safePlaylistID(id) {
+		return "", fmt.Errorf("歌单编号无效")
+	}
+	var name, desc string
+	err := s.db.QueryRowContext(ctx, `SELECT name,description FROM playlist_catalog WHERE id=? AND active=1`, id).Scan(&name, &desc)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !usablePlaylistName(name)) {
+		return "", fmt.Errorf("这张歌单不在当前列表里")
+	}
+	if err != nil {
+		return "", err
+	}
+	return desc, nil
+}
+
 // SetDesc stores a user-written description. An empty description is allowed.
 func (s *Store) SetDesc(ctx context.Context, id, desc string) error {
 	id = strings.TrimSpace(id)

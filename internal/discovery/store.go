@@ -20,23 +20,67 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{db: db}
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS discovery_bindings(user_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,platform TEXT NOT NULL,account TEXT NOT NULL,paused INTEGER NOT NULL DEFAULT 0,last_sync INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',PRIMARY KEY(user_id,platform));
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS discovery_bindings(user_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,platform TEXT NOT NULL,account TEXT NOT NULL,paused INTEGER NOT NULL DEFAULT 0,paused_by_user INTEGER NOT NULL DEFAULT 0,last_sync INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',PRIMARY KEY(user_id,platform));
  CREATE TABLE IF NOT EXISTS discovery_favorites(user_id INTEGER NOT NULL,platform TEXT NOT NULL,account TEXT NOT NULL,track_id TEXT NOT NULL,track_json TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(user_id,platform,account,track_id));
  CREATE TABLE IF NOT EXISTS discovery_jobs(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,identity TEXT NOT NULL,track_json TEXT NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_run INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',updated INTEGER NOT NULL,result TEXT NOT NULL DEFAULT '',source_platform TEXT NOT NULL DEFAULT '',source_account TEXT NOT NULL DEFAULT '',notified INTEGER NOT NULL DEFAULT 0,UNIQUE(user_id,identity));
  CREATE INDEX IF NOT EXISTS discovery_job_ready ON discovery_jobs(state,next_run);
  CREATE TABLE IF NOT EXISTS discovery_preferences(user_id INTEGER NOT NULL,identity TEXT NOT NULL,shown INTEGER NOT NULL DEFAULT 0,dismissed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(user_id,identity));
+ CREATE INDEX IF NOT EXISTS discovery_preference_user ON discovery_preferences(user_id,dismissed,shown);
  CREATE TABLE IF NOT EXISTS discovery_cards(token TEXT PRIMARY KEY,user_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,payload TEXT NOT NULL,expires INTEGER NOT NULL);`)
 	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = s.ensureBindingPauseColumn(); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return s, nil
 }
 
+// ensureBindingPauseColumn upgrades older databases in place. It is idempotent
+// and repairs rows from the older boolean-only pause state.
+func (s *Store) ensureBindingPauseColumn() error {
+	exists, err := s.hasColumn("discovery_bindings", "paused_by_user")
+	if err != nil {
+		return fmt.Errorf("inspect discovery binding pause state: %w", err)
+	}
+	if !exists {
+		if _, err = s.db.Exec(`ALTER TABLE discovery_bindings ADD COLUMN paused_by_user INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add discovery binding pause state: %w", err)
+		}
+	}
+	if _, err = s.db.Exec(`UPDATE discovery_bindings
+SET paused_by_user=CASE WHEN paused=1 AND paused_by_user=0 AND trim(last_error)='' THEN 1 ELSE paused_by_user END,
+    paused=CASE WHEN paused=1 AND paused_by_user=0 AND trim(last_error)<>'' THEN 0 ELSE paused END
+WHERE paused=1 AND paused_by_user=0`); err != nil {
+		return fmt.Errorf("migrate discovery binding pause state: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) hasColumn(table, column string) (bool, error) {
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err = rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 func (s *Store) Close() error { return s.db.Close() }
 func token() string           { return uuid.NewString()[:8] + uuid.NewString()[:8] }
 func (s *Store) Bindings(ctx context.Context, user int64) ([]Binding, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT user_id,chat_id,platform,account,paused,last_sync,last_error FROM discovery_bindings WHERE (?=0 OR user_id=?) ORDER BY platform`, user, user)
+	rows, err := s.db.QueryContext(ctx, `SELECT user_id,chat_id,platform,account,paused,paused_by_user,last_sync,last_error FROM discovery_bindings WHERE (?=0 OR user_id=?) ORDER BY platform`, user, user)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +88,7 @@ func (s *Store) Bindings(ctx context.Context, user int64) ([]Binding, error) {
 	var out []Binding
 	for rows.Next() {
 		var b Binding
-		if err = rows.Scan(&b.User, &b.Chat, &b.Platform, &b.Account, &b.Paused, &b.LastSync, &b.Error); err != nil {
+		if err = rows.Scan(&b.User, &b.Chat, &b.Platform, &b.Account, &b.Paused, &b.PausedByUser, &b.LastSync, &b.Error); err != nil {
 			return nil, err
 		}
 		out = append(out, b)
@@ -79,13 +123,13 @@ func (s *Store) Apply(ctx context.Context, user, chat int64, snap Snapshot, bind
 	}
 	defer tx.Rollback()
 	var account string
-	var paused bool
-	err = tx.QueryRowContext(ctx, `SELECT account,paused FROM discovery_bindings WHERE user_id=? AND platform=?`, user, snap.Platform).Scan(&account, &paused)
+	var paused, pausedByUser bool
+	err = tx.QueryRowContext(ctx, `SELECT account,paused,paused_by_user FROM discovery_bindings WHERE user_id=? AND platform=?`, user, snap.Platform).Scan(&account, &paused, &pausedByUser)
 	if !bind {
 		if err != nil {
 			return 0, nil, fmt.Errorf("请先绑定收藏账号")
 		}
-		if paused {
+		if paused || pausedByUser {
 			return 0, nil, fmt.Errorf("该来源已暂停")
 		}
 		if account != snap.Account {
@@ -112,7 +156,7 @@ func (s *Store) Apply(ctx context.Context, user, chat int64, snap Snapshot, bind
 			return 0, nil, e
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE discovery_favorites SET active=0 WHERE user_id=? AND platform=?`, user, snap.Platform); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE discovery_favorites SET active=0 WHERE user_id=? AND platform=? AND account=?`, user, snap.Platform, snap.Account); err != nil {
 		return 0, nil, err
 	}
 	count := 0
@@ -151,7 +195,7 @@ func (s *Store) Apply(ctx context.Context, user, chat int64, snap Snapshot, bind
 			}
 		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO discovery_bindings(user_id,chat_id,platform,account,paused,last_sync,last_error) VALUES(?,?,?,?,0,?,'') ON CONFLICT(user_id,platform) DO UPDATE SET chat_id=excluded.chat_id,account=excluded.account,paused=0,last_sync=excluded.last_sync,last_error=''`, user, chat, snap.Platform, snap.Account, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO discovery_bindings(user_id,chat_id,platform,account,paused,paused_by_user,last_sync,last_error) VALUES(?,?,?,?,0,0,?,'') ON CONFLICT(user_id,platform) DO UPDATE SET chat_id=excluded.chat_id,account=excluded.account,paused=0,paused_by_user=0,last_sync=excluded.last_sync,last_error=''`, user, chat, snap.Platform, snap.Account, now)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -194,16 +238,18 @@ func (s *Store) Enqueue(ctx context.Context, user, chat int64, t Track) (string,
 }
 
 func (s *Store) Pause(ctx context.Context, user int64, platform string, pause bool) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE discovery_bindings SET paused=?,last_error='' WHERE user_id=? AND platform=?`, pause, user, platform)
+	_, err := s.db.ExecContext(ctx, `UPDATE discovery_bindings SET paused=?,paused_by_user=?,last_error='' WHERE user_id=? AND platform=?`, pause, pause, user, platform)
 	return err
 }
 
+// SourceError records a read failure without changing a user's pause choice.
+// The bool return reports whether the message changed.
 func (s *Store) SourceError(ctx context.Context, b Binding, message string, pause bool) (bool, error) {
 	var old string
 	if err := s.db.QueryRowContext(ctx, `SELECT last_error FROM discovery_bindings WHERE user_id=? AND platform=?`, b.User, b.Platform).Scan(&old); err != nil {
 		return false, err
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE discovery_bindings SET last_error=?,paused=CASE WHEN ? THEN 1 ELSE paused END WHERE user_id=? AND platform=?`, message, pause, b.User, b.Platform)
+	_, err := s.db.ExecContext(ctx, `UPDATE discovery_bindings SET last_error=? WHERE user_id=? AND platform=?`, message, b.User, b.Platform)
 	return old != message, err
 }
 
@@ -254,26 +300,110 @@ func (s *Store) Favorites(ctx context.Context, user int64) ([]Track, error) {
 	return tracks, rows.Err()
 }
 
-func (s *Store) Excluded(ctx context.Context, user int64) (map[string]bool, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT identity FROM discovery_preferences WHERE user_id=? AND (dismissed=1 OR shown>?) UNION SELECT identity FROM discovery_jobs WHERE user_id=? AND state IN ('queued','running','pending_upload','completed','owned','ignored')`, user, time.Now().Add(-30*24*time.Hour).Unix(), user)
+const (
+	ExcludedDismissed = "dismissed"
+	ExcludedShown     = "shown"
+	ExcludedPending   = "pending"
+	ExcludedQueued    = "queued"
+	ExcludedOther     = "other"
+)
+
+// Exclusions keeps the reason a song is hidden. The old boolean-only view made
+// a short batch look like a failed search instead of "already seen".
+func (s *Store) Exclusions(ctx context.Context, user int64) (map[string]string, error) {
+	out := map[string]string{}
+	rows, err := s.db.QueryContext(ctx, `SELECT identity,dismissed,shown FROM discovery_preferences WHERE user_id=?`, user)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[string]bool{}
+	cutoff := time.Now().Add(-30 * 24 * time.Hour).Unix()
 	for rows.Next() {
-		var key string
-		if err = rows.Scan(&key); err != nil {
+		var identity string
+		var dismissed bool
+		var shown int64
+		if err = rows.Scan(&identity, &dismissed, &shown); err != nil {
+			rows.Close()
 			return nil, err
 		}
+		switch {
+		case dismissed:
+			out[identity] = ExcludedDismissed
+		case shown > cutoff:
+			out[identity] = ExcludedShown
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	jobs, err := s.db.QueryContext(ctx, `SELECT identity,state FROM discovery_jobs WHERE user_id=? AND state IN ('queued','running','pending_upload','completed','owned','ignored')`, user)
+	if err != nil {
+		return nil, err
+	}
+	defer jobs.Close()
+	for jobs.Next() {
+		var identity, state string
+		if err = jobs.Scan(&identity, &state); err != nil {
+			return nil, err
+		}
+		reason := ExcludedQueued
+		switch state {
+		case PendingUpload:
+			reason = ExcludedPending
+		case Ignored:
+			reason = ExcludedDismissed
+		}
+		// A service row can map to the same preferred title as a user's
+		// dismissal. Keep the more specific permanent decision in that case.
+		if existing, exists := out[identity]; !exists || reason == ExcludedPending || (reason == ExcludedDismissed && existing != ExcludedDismissed) {
+			out[identity] = reason
+		}
+	}
+	return out, jobs.Err()
+}
+
+func (s *Store) Excluded(ctx context.Context, user int64) (map[string]bool, error) {
+	reasons, err := s.Exclusions(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(reasons))
+	for key := range reasons {
 		out[key] = true
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *Store) Preference(ctx context.Context, user int64, t Track, dismiss bool) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO discovery_preferences(user_id,identity,shown,dismissed) VALUES(?,?,?,?) ON CONFLICT(user_id,identity) DO UPDATE SET shown=excluded.shown,dismissed=MAX(dismissed,excluded.dismissed)`, user, Identity(t), time.Now().Unix(), dismiss)
 	return err
+}
+
+// RestorePreference clears a permanent dismissal and the short display window
+// so a song can be offered again. It intentionally does not delete queue jobs.
+func (s *Store) RestorePreference(ctx context.Context, user int64, t Track) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM discovery_preferences WHERE user_id=? AND identity=?`, user, Identity(t))
+	return err
+}
+
+// JobCounts returns state counts without the 100-row display limit.
+func (s *Store) JobCounts(ctx context.Context, user int64) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT state,COUNT(*) FROM discovery_jobs WHERE (?=0 OR user_id=?) GROUP BY state`, user, user)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var state string
+		var count int
+		if err = rows.Scan(&state, &count); err != nil {
+			return nil, err
+		}
+		out[state] = count
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) SaveCard(ctx context.Context, c Card) (Card, error) {
@@ -353,6 +483,35 @@ func (s *Store) Jobs(ctx context.Context, user int64, unnotified bool) ([]Job, e
 		out = append(out, j)
 	}
 	return out, rows.Err()
+}
+
+// FailedJobs reads failure rows directly, so the failure detail view is not
+// limited to the newest 100 jobs that the card overview happens to load.
+func (s *Store) FailedJobs(ctx context.Context, user int64, offset, limit int) ([]Job, int, error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM discovery_jobs WHERE user_id=? AND state='failed'`, user).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+jobColumns+` FROM discovery_jobs WHERE user_id=? AND state='failed' ORDER BY updated DESC,id LIMIT ? OFFSET ?`, user, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]Job, 0, limit)
+	for rows.Next() {
+		j, e := scanJob(rows)
+		if e != nil {
+			return nil, 0, e
+		}
+		out = append(out, j)
+	}
+	return out, total, rows.Err()
 }
 
 func (s *Store) Claim(ctx context.Context, allowAuto bool) (Job, error) {

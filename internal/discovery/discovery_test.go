@@ -107,6 +107,89 @@ func TestSnapshotBaselineIncrementalRebindAndIncomplete(t *testing.T) {
 	}
 }
 
+func TestDiscoveryMigrationSeparatesManualAndAutomaticPause(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`CREATE TABLE discovery_bindings(user_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,platform TEXT NOT NULL,account TEXT NOT NULL,paused INTEGER NOT NULL DEFAULT 0,last_sync INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',PRIMARY KEY(user_id,platform))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`INSERT INTO discovery_bindings VALUES(1,1,'netease','a',1,0,''),(1,1,'qq','b',1,0,'old login failure')`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	bindings, err := store.Bindings(context.Background(), 1)
+	if err != nil || len(bindings) != 2 {
+		t.Fatal(err, bindings)
+	}
+	byPlatform := map[string]Binding{}
+	for _, binding := range bindings {
+		byPlatform[binding.Platform] = binding
+	}
+	if !byPlatform["netease"].Paused {
+		t.Fatalf("manual legacy pause = %+v", byPlatform["netease"])
+	}
+	if byPlatform["qq"].Paused {
+		t.Fatalf("automatic legacy pause = %+v", byPlatform["qq"])
+	}
+	store.Close()
+	again, err := Open(path)
+	if err != nil {
+		t.Fatalf("second startup migration: %v", err)
+	}
+	defer again.Close()
+	bindings, err = again.Bindings(context.Background(), 1)
+	if err != nil || len(bindings) != 2 {
+		t.Fatalf("repeat migration changed bindings: %+v err=%v", bindings, err)
+	}
+	for _, binding := range bindings {
+		if binding.Platform == "netease" && !binding.Paused {
+			t.Fatalf("repeat migration lost manual pause: %+v", binding)
+		}
+		if binding.Platform == "qq" && binding.Paused {
+			t.Fatalf("repeat migration revived automatic pause: %+v", binding)
+		}
+	}
+}
+
+func TestRebindDoesNotDeactivateThePreviousAccount(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	first := testTrack("1", "旧账号歌", "甲")
+	second := testTrack("2", "新账号歌", "乙")
+	if _, _, err := s.Apply(ctx, 1, 1, snapshot("first", first), true); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Apply(ctx, 1, 1, snapshot("second", second), true); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT account,track_id,active FROM discovery_favorites WHERE user_id=1 ORDER BY account,track_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var account, id string
+		var active bool
+		if err = rows.Scan(&account, &id, &active); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%s:%s:%t", account, id, active))
+	}
+	if strings.Join(got, ",") != "first:1:true,second:2:true" {
+		t.Fatalf("rebind changed the old account baseline: %v", got)
+	}
+}
+
 func TestSyncAnnouncesOnlyNewFavorites(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -220,6 +303,29 @@ func TestRunKeepsDownloadingWhileFavoriteReadIsSlow(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not stop")
+	}
+}
+
+func TestFailedJobsStaysCompleteBeyondTheOverviewLimit(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	for i := 0; i < 105; i++ {
+		if _, err := s.Enqueue(ctx, 1, 1, testTrack(fmt.Sprintf("%d", i), fmt.Sprintf("Song %d", i), "Artist")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs, err := s.Jobs(ctx, 1, false)
+	if err != nil || len(jobs) != 100 {
+		t.Fatalf("overview jobs=%d err=%v", len(jobs), err)
+	}
+	for _, job := range jobs {
+		if err := s.Finish(ctx, job, Failed, "下载失败", "", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, total, err := s.FailedJobs(ctx, 1, 0, 1)
+	if err != nil || total != 100 || len(page) != 1 || page[0].State != Failed {
+		t.Fatalf("failed page=%#v total=%d err=%v", page, total, err)
 	}
 }
 
@@ -633,6 +739,36 @@ func TestAcceptPlatformHitIgnoresAlbumTitleWhenVersionAndDurationMatch(t *testin
 	far.Duration = 320
 	if acceptPlatformHit(source, far) {
 		t.Fatal("duration must stay strict")
+	}
+}
+
+func TestRediscoverSplitsDismissedQueuedAndArtistCapReasons(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	dismissed := testTrack("d", "不再推荐", "甲")
+	queued := testTrack("q", "已在队列", "乙")
+	artist1 := testTrack("a1", "同艺人一", "同歌手")
+	artist2 := testTrack("a2", "同艺人二", "同歌手")
+	artist3 := testTrack("a3", "同艺人三", "同歌手")
+	artist1.Plays, artist2.Plays, artist3.Plays = 30, 20, 10
+	if err := s.Preference(ctx, 1, dismissed, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Enqueue(ctx, 1, 1, queued); err != nil {
+		t.Fatal(err)
+	}
+	svc := Service{Store: s, Provider: stubProvider{}, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
+		return []Track{dismissed, queued, artist1, artist2, artist3}, nil
+	}}
+	batch, err := svc.Rediscover(ctx, 1, "netease", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch.SkippedDismissed != 1 || batch.SkippedQueued != 1 || batch.SkippedArtistCap != 1 {
+		t.Fatalf("reason counts = %+v", batch)
+	}
+	if len(batch.Tracks) != 2 {
+		t.Fatalf("tracks = %+v", batch.Tracks)
 	}
 }
 

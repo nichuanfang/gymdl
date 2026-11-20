@@ -34,16 +34,34 @@ type DiscoveryTrack struct {
 
 // DiscoveryBatch is one rediscover result. Counts match the Telegram card.
 type DiscoveryBatch struct {
-	Tracks       []DiscoveryTrack
-	SkippedOwned int
-	Unconfirmed  int
+	Tracks           []DiscoveryTrack
+	SkippedOwned     int
+	Unconfirmed      int
+	SkippedShown     int
+	SkippedPending   int
+	SkippedDismissed int
+	SkippedQueued    int
+	SkippedArtistCap int
+	SkippedDuplicate int
+	SkippedOther     int
+	Unavailable      int
+}
+
+// DiscoveryEnqueueResult is one row's queue decision. The browser must use
+// this instead of inferring per-song state from aggregate counts.
+type DiscoveryEnqueueResult struct {
+	Platform string `json:"platform"`
+	ID       string `json:"id"`
+	State    string `json:"state"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 // DiscoveryAPI is the running遗珠 service. The bot registers it at startup.
 type DiscoveryAPI interface {
 	Rediscover(ctx context.Context, platform string, limit int) (DiscoveryBatch, error)
-	Enqueue(ctx context.Context, tracks []DiscoveryTrack) (queued int, skipped int, err error)
+	Enqueue(ctx context.Context, tracks []DiscoveryTrack) ([]DiscoveryEnqueueResult, error)
 	Dismiss(ctx context.Context, tracks []DiscoveryTrack) (int, error)
+	Restore(ctx context.Context, tracks []DiscoveryTrack) (int, error)
 }
 
 // AIPlaylistAPI reuses the same preview-then-confirm pipeline as /ai_playlist.
@@ -256,11 +274,19 @@ func HandleRediscover(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{
-		"tracks":        batch.Tracks,
-		"skipped_owned": batch.SkippedOwned,
-		"unconfirmed":   batch.Unconfirmed,
-		"requested":     body.Limit,
-		"notice":        discoveryNotice(platform, body.Limit, batch),
+		"tracks":             batch.Tracks,
+		"skipped_owned":      batch.SkippedOwned,
+		"unconfirmed":        batch.Unconfirmed,
+		"skipped_shown":      batch.SkippedShown,
+		"skipped_pending":    batch.SkippedPending,
+		"skipped_dismissed":  batch.SkippedDismissed,
+		"skipped_queued":     batch.SkippedQueued,
+		"skipped_artist_cap": batch.SkippedArtistCap,
+		"skipped_duplicate":  batch.SkippedDuplicate,
+		"skipped_other":      batch.SkippedOther,
+		"unavailable":        batch.Unavailable,
+		"requested":          body.Limit,
+		"notice":             discoveryNotice(platform, body.Limit, batch),
 	})
 }
 
@@ -274,16 +300,53 @@ func HandleRediscoverEnqueue(c *gin.Context) {
 		response.Fail(c, http.StatusServiceUnavailable, "遗珠服务尚未就绪")
 		return
 	}
-	queued, skipped, err := api.Enqueue(c.Request.Context(), tracks)
+	results, err := api.Enqueue(c.Request.Context(), tracks)
 	if err != nil {
-		msg := studioPublicError(err)
-		if queued > 0 {
-			msg = fmt.Sprintf("已提交 %d 首后中断。%s", queued, msg)
+		queued, skipped, failed := 0, 0, 0
+		for _, result := range results {
+			switch result.State {
+			case "queued":
+				queued++
+			case "skipped":
+				skipped++
+			case "failed":
+				failed++
+			}
 		}
+		msg := fmt.Sprintf("提交 %d 首：实际排队 %d 首，跳过 %d 首，失败 %d 首。%s", len(tracks), queued, skipped, failed, studioPublicError(err))
 		response.Fail(c, http.StatusBadRequest, msg)
 		return
 	}
-	response.Success(c, gin.H{"queued": queued, "skipped": skipped})
+	queued, skipped, failed := 0, 0, 0
+	for _, result := range results {
+		switch result.State {
+		case "queued":
+			queued++
+		case "skipped":
+			skipped++
+		case "failed":
+			failed++
+		}
+	}
+	response.Success(c, gin.H{"queued": queued, "skipped": skipped, "failed": failed, "results": results})
+}
+
+func HandleRediscoverRestore(c *gin.Context) {
+	tracks, ok := readDiscoveryTracks(c)
+	if !ok {
+		return
+	}
+	api := currentDiscoveryAPI()
+	if api == nil {
+		response.Fail(c, http.StatusServiceUnavailable, "遗珠服务尚未就绪")
+		return
+	}
+	count, err := api.Restore(c.Request.Context(), tracks)
+	if err != nil {
+		response.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	response.Success(c, gin.H{"restored": count})
 }
 
 func HandleRediscoverDismiss(c *gin.Context) {
@@ -433,22 +496,41 @@ func normalizeDiscoveryTrack(item discoveryTrackBody) (DiscoveryTrack, error) {
 func discoveryNotice(platform string, requested int, batch DiscoveryBatch) string {
 	name := discoveryPlatformName(platform)
 	count := len(batch.Tracks)
-	if count == 0 {
-		switch {
-		case batch.SkippedOwned > 0 && batch.Unconfirmed > 0:
-			return fmt.Sprintf("这批里有 %d 首曲库已经有了，另有 %d 首候选歌曲在%s无法确认唯一版本，没有新的可入库歌曲。可以换个平台或稍后再试。", batch.SkippedOwned, batch.Unconfirmed, name)
-		case batch.SkippedOwned > 0:
-			return fmt.Sprintf("这批里有 %d 首曲库已经有了，没有新的可入库歌曲。可以换个平台或稍后再试。", batch.SkippedOwned)
-		case batch.Unconfirmed > 0:
-			return fmt.Sprintf("有 %d 首候选歌曲在%s无法确认唯一版本，没有新的可入库歌曲。可以换个平台或稍后再试。", batch.Unconfirmed, name)
-		default:
-			return "在" + name + "里，这批历史和收藏暂时没有可确认的缺失歌曲。可以换个平台或稍后再试。"
+	counts := []struct {
+		value int
+		label string
+	}{
+		{batch.SkippedOwned, "曲库已有"},
+		{batch.Unconfirmed, "无法确认唯一版本"},
+		{batch.SkippedShown, "最近看过"},
+		{batch.SkippedPending, "待上传"},
+		{batch.SkippedDismissed, "不再推荐"},
+		{batch.SkippedQueued, "已在队列或处理过"},
+		{batch.SkippedArtistCap, "同艺人已达上限"},
+		{batch.SkippedDuplicate, "本批重复候选"},
+		{batch.SkippedOther, "其他已处理原因"},
+		{batch.Unavailable, "暂时无法核对"},
+	}
+	var reasons []string
+	for _, item := range counts {
+		if item.value > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d 首%s", item.value, item.label))
 		}
 	}
-	if batch.Unconfirmed > 0 && requested > 0 && count < requested {
-		return fmt.Sprintf("搜索中有 %d 首候选歌曲无法确认唯一版本；本次找到 %d/%d 首。", batch.Unconfirmed, count, requested)
+	reasonText := strings.Join(reasons, "，")
+	if count == 0 {
+		if reasonText != "" {
+			return fmt.Sprintf("在%s里没有新的可入库歌曲：%s。可以换个平台或稍后再试。", name, reasonText)
+		}
+		return "在" + name + "里，这批历史和收藏暂时没有可确认的缺失歌曲。可以换个平台或稍后再试。"
 	}
-	return ""
+	if requested <= 0 || count >= requested {
+		return ""
+	}
+	if reasonText == "" {
+		return fmt.Sprintf("本次找到 %d/%d 首。", count, requested)
+	}
+	return fmt.Sprintf("%s；本次找到 %d/%d 首。", reasonText, count, requested)
 }
 
 func discoveryPlatformName(platform string) string {

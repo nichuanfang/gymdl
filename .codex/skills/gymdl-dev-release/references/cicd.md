@@ -6,6 +6,51 @@
 
 在开发机完成代码验证后，只有获得提交/推送/发版/部署授权时才推进对应阶段。应用发布使用本仓库的 GitHub Actions 标签链路；VPS 更新通过已配置的远端部署方式完成，并在目标服务器核验容器、接口和 Bot。若当前会话无法访问目标服务器，报告 CI 与镜像结果，明确部署尚未完成；不得把本地构建或 Compose 成功描述为线上成功。执行环境或 Docker context 不明确时，不部署。
 
+## Mac 开发机发版链路
+
+用户已确认的 Mac 发版主流程是：
+
+1. 在 gymdl 应用仓库本地修改并完成对应验证。
+2. 提交并推送应用仓库；具体默认分支、远端和提交风格以现场仓库为准。
+3. 在 GitHub 为这次提交创建版本 Release/标签（当前工作流匹配 `v*.*.*`），由标签触发的 `Build&Publish` 构建并推送 `ghcr.io/nichuanfang/gymdl:<tag>` 和 `latest`，随后生成安装包与 GitHub Release。
+4. 在部署仓库修改 `gymdl` 服务 Compose 中的镜像版本，例如 `ghcr.io/nichuanfang/gymdl:vX.Y.Z`。只改本次 gymdl 服务需要的版本，不带入无关服务或本地改动。
+5. 提交并推送部署仓库，触发该仓库现有的部署链路；若没有适用的自动部署工作流，按现场已确认方式更新目标服务器的 gymdl 容器。
+6. 在目标服务器核对容器实际使用的镜像标签/ID、启动日志、HTTP/WebUI 和 Bot 状态；镜像已推送不等于容器已更新。
+
+这条链路的关键边界：
+
+- 应用仓库负责代码、标签、镜像和 GitHub Release；部署仓库负责“线上运行哪个 gymdl 版本”，两者是不同提交，不能只推其中一个就报告发版完成。
+- GitHub Release/标签触发的 Actions 与部署仓库 push 触发的部署要分别核验。应用工作流成功但部署仓库未推送，或部署仓库已推送但容器仍跑旧镜像，都不能算完成。
+- 部署仓库路径和触发方式要现场发现。已知用户常在 `~/code/docker` 维护部署仓库，但该路径不保证存在于每台 Mac；本机可能位于其他工作区。先确认 Git 仓库、默认分支、Compose 文件、服务名和 push 后的实际路由。
+- 修改版本前先查看部署仓库 `git status`、目标 Compose 差异和当前镜像；保护用户未提交改动。不要为了“干净工作树” stash、reset 或把其他服务改动一起提交。
+- 若部署仓库有多个服务或路径触发其他栈，先确认本次只影响 gymdl；不要为了更新版本顺带部署无关服务。
+- 服务器更新优先使用现有 Compose 流程：校验配置、拉取目标镜像、原地重建 gymdl 服务、等待可用并核验；不执行影响其他服务的 `down`。
+- 发版前记录回退镜像标签/ID 和必要的持久数据备份。容器回滚不会自动回滚 SQLite 迁移，数据库兼容性单独判断。
+- 纯技能/文档修改默认不创建应用版本标签，也不走镜像发版链路；只有用户明确要求发布时执行。
+
+部署仓库示意操作（路径和文件以现场为准）：
+
+```bash
+cd <deployment-repo>
+git status --short
+# 只替换目标 gymdl 服务的 image 版本，审查完整 diff
+git diff -- dockerfile_work/gymdl/docker-compose.yml
+git add dockerfile_work/gymdl/docker-compose.yml
+git commit -m "chore(gymdl): deploy vX.Y.Z"
+git push
+```
+
+服务器端示意（先确认真实 Compose 文件、项目名和服务名）：
+
+```bash
+docker compose -f <gymdl-compose-file> config -q
+docker compose -f <gymdl-compose-file> pull gymdl
+docker compose -f <gymdl-compose-file> up -d --wait --wait-timeout 240 gymdl
+docker inspect --format '{{.Config.Image}} {{.Image}} {{.State.Status}} {{.RestartCount}}' gymdl
+```
+
+若部署仓库 push 会自动触发服务器更新，仍要在目标服务器核验实际镜像和运行结果；若没有自动触发，使用当前环境中已经确认的远端部署方式执行，不能把本地 Docker Desktop 操作当线上更新。
+
 ## 两条发布链路
 
 | 变更/动作 | 实际链路 | 需要核对 |

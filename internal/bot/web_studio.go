@@ -71,16 +71,17 @@ func (s webStudio) Rediscover(ctx context.Context, platform string, limit int) (
 	if err != nil {
 		return web.DiscoveryBatch{}, err
 	}
-	for _, track := range batch.Tracks {
-		if err = s.app.discovery.Store.Preference(ctx, user, track, false); err != nil {
-			return web.DiscoveryBatch{}, err
-		}
-	}
 	tracks := make([]web.DiscoveryTrack, 0, len(batch.Tracks))
 	for _, track := range batch.Tracks {
 		tracks = append(tracks, webDiscoveryTrack(track))
 	}
-	return web.DiscoveryBatch{Tracks: tracks, SkippedOwned: batch.SkippedOwned, Unconfirmed: batch.Unconfirmed}, nil
+	return web.DiscoveryBatch{
+		Tracks: tracks, SkippedOwned: batch.SkippedOwned, Unconfirmed: batch.Unconfirmed,
+		SkippedShown: batch.SkippedShown, SkippedPending: batch.SkippedPending,
+		SkippedDismissed: batch.SkippedDismissed, SkippedQueued: batch.SkippedQueued,
+		SkippedArtistCap: batch.SkippedArtistCap, SkippedDuplicate: batch.SkippedDuplicate,
+		SkippedOther: batch.SkippedOther, Unavailable: batch.Unavailable,
+	}, nil
 }
 
 func webDiscoveryTrack(track discovery.Track) web.DiscoveryTrack {
@@ -102,33 +103,75 @@ func studioDiscoveryTrack(track web.DiscoveryTrack) discovery.Track {
 	}
 }
 
-func (s webStudio) Enqueue(ctx context.Context, tracks []web.DiscoveryTrack) (int, int, error) {
+func discoveryExclusionReason(reason string) string {
+	switch reason {
+	case discovery.ExcludedDismissed:
+		return "已设为不再推荐"
+	case discovery.ExcludedShown:
+		return "最近已展示"
+	case discovery.ExcludedPending:
+		return "已待上传"
+	case discovery.ExcludedQueued:
+		return "已在队列或处理过"
+	default:
+		return "已在队列、曲库已有或不再推荐"
+	}
+}
+
+func (s webStudio) Enqueue(ctx context.Context, tracks []web.DiscoveryTrack) ([]web.DiscoveryEnqueueResult, error) {
 	user, err := s.owner()
 	if err != nil {
-		return 0, 0, err
+		return nil, err
 	}
 	if s.app.discovery == nil || s.app.discovery.Store == nil {
-		return 0, 0, errors.New("遗珠服务尚未就绪")
+		return nil, errors.New("遗珠服务尚未就绪")
 	}
-	excluded, err := s.app.discovery.Store.Excluded(ctx, user)
-	if err != nil {
-		return 0, 0, err
-	}
-	queued, skipped := 0, 0
+	results := make([]web.DiscoveryEnqueueResult, 0, len(tracks))
 	for _, item := range tracks {
 		track := studioDiscoveryTrack(item)
-		identity := discovery.Identity(track)
-		if excluded[identity] {
-			skipped++
+		result := web.DiscoveryEnqueueResult{Platform: track.Platform, ID: track.ID}
+		// Check each row against the current store instead of a batch snapshot.
+		// If an earlier row failed, the next submission of the same row must not
+		// be mislabeled as skipped because of stale in-memory state.
+		excluded, lookupErr := s.app.discovery.Store.Exclusions(ctx, user)
+		if lookupErr != nil {
+			result.State = "failed"
+			result.Reason = lookupErr.Error()
+			results = append(results, result)
+			return results, lookupErr
+		}
+		if reason := excluded[discovery.Identity(track)]; reason != "" {
+			result.State = "skipped"
+			result.Reason = discoveryExclusionReason(reason)
+			results = append(results, result)
 			continue
 		}
 		if _, err = s.app.discovery.Store.Enqueue(ctx, user, user, track); err != nil {
-			return queued, skipped, err
+			result.State = "failed"
+			result.Reason = err.Error()
+			results = append(results, result)
+			return results, err
 		}
-		excluded[identity] = true
-		queued++
+		result.State = "queued"
+		results = append(results, result)
 	}
-	return queued, skipped, nil
+	return results, nil
+}
+
+func (s webStudio) Restore(ctx context.Context, tracks []web.DiscoveryTrack) (int, error) {
+	user, err := s.owner()
+	if err != nil {
+		return 0, err
+	}
+	if s.app.discovery == nil || s.app.discovery.Store == nil {
+		return 0, errors.New("遗珠服务尚未就绪")
+	}
+	for _, track := range tracks {
+		if err = s.app.discovery.Store.RestorePreference(ctx, user, studioDiscoveryTrack(track)); err != nil {
+			return 0, err
+		}
+	}
+	return len(tracks), nil
 }
 
 func (s webStudio) Dismiss(ctx context.Context, tracks []web.DiscoveryTrack) (int, error) {

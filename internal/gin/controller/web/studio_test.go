@@ -17,12 +17,16 @@ import (
 
 func TestDiscoveryNoticeSkipsTheOwnedCountWhenSongsRemain(t *testing.T) {
 	notice := discoveryNotice("netease", 3, DiscoveryBatch{Tracks: []DiscoveryTrack{{Title: "晴天"}}, SkippedOwned: 4, Unconfirmed: 2})
-	if strings.Contains(notice, "已避开") || !strings.Contains(notice, "有 2 首对不上唯一版本，所以没有找满 3 首。") {
+	if !strings.Contains(notice, "4 首曲库已有，2 首无法确认唯一版本；本次找到 1/3 首。") {
 		t.Fatalf("notice = %q", notice)
 	}
 	empty := discoveryNotice("qq", 3, DiscoveryBatch{SkippedOwned: 2})
-	if !strings.Contains(empty, "曲库已经有了") {
+	if !strings.Contains(empty, "2 首曲库已有") {
 		t.Fatalf("empty notice = %q", empty)
+	}
+	shown := discoveryNotice("netease", 3, DiscoveryBatch{SkippedShown: 3})
+	if !strings.Contains(shown, "3 首最近看过") || strings.Contains(shown, "缺失歌曲") {
+		t.Fatalf("seen history was misreported as empty library: %q", shown)
 	}
 }
 

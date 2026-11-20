@@ -3,10 +3,12 @@ package bot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -158,6 +160,7 @@ type discoveryCallbackContext struct {
 	responses int
 	edited    string
 	sent      []string
+	sendOpts  [][]any
 }
 
 func (c *discoveryCallbackContext) Callback() *tb.Callback { return c.callback }
@@ -192,8 +195,9 @@ func (c *discoveryCallbackContext) waitEdited(t *testing.T, part string) string 
 	return ""
 }
 
-func (c *discoveryCallbackContext) Send(v interface{}, _ ...interface{}) error {
+func (c *discoveryCallbackContext) Send(v interface{}, opts ...interface{}) error {
 	c.sent = append(c.sent, fmt.Sprint(v))
+	c.sendOpts = append(c.sendOpts, append([]any(nil), opts...))
 	return nil
 }
 
@@ -236,7 +240,7 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 		{Platform: "qq", ID: "4", Title: "第四首", Artist: "丁", URL: "https://y.qq.com/n/ryqq/songDetail/4"},
 	}
 	text, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 0)
-	if strings.Contains(text, "第二首") || strings.Contains(text, "第四首") || !strings.Contains(text, "第一首") || !strings.Contains(text, "1 / 4") || strings.Contains(text, "已避开") || strings.Contains(text, "点歌名") || strings.Contains(text, "\n1. ") {
+	if strings.Contains(text, "第二首") || strings.Contains(text, "第四首") || !strings.Contains(text, "第一首") || !strings.Contains(text, "本批 4 首 · 第 1 首") || strings.Contains(text, "已避开") || strings.Contains(text, "点歌名") || strings.Contains(text, "\n1. ") {
 		t.Fatalf("first song was not alone: %s", text)
 	}
 	if !strings.Contains(text, "🎵 <b>遗珠</b>\n──────────────────\n") {
@@ -261,7 +265,7 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 		t.Fatalf("callbacks = %s / %s", markup.InlineKeyboard[0][0].Data, markup.InlineKeyboard[2][0].Data)
 	}
 	second, secondMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 1)
-	if strings.Contains(second, "第一首") || !strings.Contains(second, "第二首") || !strings.Contains(second, "2 / 4") {
+	if strings.Contains(second, "第一首") || !strings.Contains(second, "第二首") || !strings.Contains(second, "本批 4 首 · 第 2 首") {
 		t.Fatalf("second song did not stay on the saved card: %s", second)
 	}
 	if got := buttonRowTexts(secondMarkup); len(got) != 4 || len(got[1]) != 2 || got[1][0] != "上一首" || got[1][1] != "下一首" {
@@ -276,7 +280,7 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 		t.Fatalf("owned skips or listen hint returned to the song card: %s", skipped)
 	}
 	short, shortMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks[:1], SkippedOwned: 1, Unconfirmed: 2, Requested: 3}, 0)
-	if !strings.Contains(short, "搜索中有 2 首候选歌曲无法确认唯一版本；本次找到 1/3 首。") || strings.Contains(short, "已避开") || strings.Contains(short, " / ") {
+	if !strings.Contains(short, "1 首曲库已有，2 首无法确认唯一版本；本次找到 1/3 首。") || strings.Contains(short, " / ") {
 		t.Fatalf("shortfall was not explained: %s", short)
 	}
 	if buttonTexts(shortMarkup)["未处理的全部入库"] || buttonTexts(shortMarkup)["下一首"] || !buttonTexts(shortMarkup)["入库"] {
@@ -308,18 +312,24 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	}
 }
 
-func TestRediscoverEmptyCopyExplainsUnconfirmedVersions(t *testing.T) {
+func TestRediscoverEmptyCopyExplainsSeparateSkipReasons(t *testing.T) {
 	owned := rediscoverEmptyCopy("netease", discovery.RediscoverBatch{SkippedOwned: 2})
-	if !strings.Contains(owned, "曲库已经有了") || strings.Contains(owned, "对不上") {
+	if !strings.Contains(owned, "2 首曲库已有") || strings.Contains(owned, "无法确认") {
 		t.Fatal(owned)
 	}
 	both := rediscoverEmptyCopy("qq", discovery.RediscoverBatch{SkippedOwned: 1, Unconfirmed: 3})
-	if !strings.Contains(both, "曲库已经有了") || !strings.Contains(both, "3 首候选歌曲在QQ 音乐无法确认唯一版本") {
+	if !strings.Contains(both, "1 首曲库已有") || !strings.Contains(both, "3 首无法确认唯一版本") {
 		t.Fatal(both)
 	}
 	only := rediscoverEmptyCopy("youtube", discovery.RediscoverBatch{Unconfirmed: 4})
-	if !strings.Contains(only, "4 首候选歌曲在YouTube无法确认唯一版本") {
+	if !strings.Contains(only, "4 首无法确认唯一版本") {
 		t.Fatal(only)
+	}
+	reasons := rediscoverEmptyCopy("netease", discovery.RediscoverBatch{SkippedDismissed: 1, SkippedQueued: 2, SkippedArtistCap: 3, SkippedDuplicate: 4})
+	for _, want := range []string{"1 首已设为不再推荐", "2 首已在队列或处理过", "3 首因同艺人已达上限", "4 首为本批重复候选"} {
+		if !strings.Contains(reasons, want) {
+			t.Fatalf("missing %q: %s", want, reasons)
+		}
 	}
 }
 
@@ -357,10 +367,10 @@ func TestFavoritesActionsRewriteTheSameCard(t *testing.T) {
 		t.Fatalf("pause did not refresh the favorites card: %s", edited)
 	}
 	syncCard := click("sync", "menu")
-	if edited := syncCard.waitEdited(t, "没有新的收藏"); !strings.Contains(edited, "收藏") {
+	if edited := syncCard.waitEdited(t, "没有已绑定的收藏来源"); !strings.Contains(edited, "收藏") {
 		t.Fatalf("sync did not stay on the favorites card: %s", edited)
 	}
-	if edited := click("retry", "menu").edited; !strings.Contains(edited, "没有需要重试的失败任务") {
+	if edited := click("retry", "menu").edited; !strings.Contains(edited, "没有需要重试的入库异常") {
 		t.Fatalf("retry did not stay on the favorites card: %s", edited)
 	}
 }
@@ -422,6 +432,184 @@ func TestRediscoverDecisionStaysOnTheCard(t *testing.T) {
 	}
 }
 
+func TestRediscoverBatchKeepsSuccessfulRowsWhenOneEnqueueFails(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	tracks := []discovery.Track{
+		{Platform: "netease", ID: "1", Title: "一", Artist: "甲", URL: "https://music.163.com/song?id=1", Verified: true},
+		{Platform: "netease", ID: "2", Title: "二", Artist: "乙", URL: "https://music.163.com/song?id=2", Verified: true},
+	}
+	card, err := store.SaveCard(context.Background(), discovery.Card{User: 1, Chat: 1, Kind: "recommend", Tracks: tracks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{cfg: &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"1"}}}, discovery: &discovery.Service{Store: store}}
+	msg := &tb.Message{ID: 3, Chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate}}
+	ctx := &discoveryCallbackContext{
+		args: []string{"batch", card.Token, "all", "0"}, sender: &tb.User{ID: 1},
+		chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate}, callback: &tb.Callback{ID: "cb", Message: msg}, message: msg,
+	}
+	if err = app.HandleDiscoveryCallback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ctx.edited, "提交 2 首：实际排队 2 首，跳过 0 首") {
+		t.Fatalf("batch result = %s", ctx.edited)
+	}
+	saved, err := store.Card(context.Background(), card.Token, 1, 1)
+	if err != nil || saved.Tracks[0].CardAction != discovery.Queued || saved.Tracks[1].CardAction != discovery.Queued {
+		t.Fatalf("saved card = %+v err=%v", saved.Tracks, err)
+	}
+}
+
+func TestRediscoverPagerMovesAcrossTheSavedCard(t *testing.T) {
+	tracks := []discovery.Track{
+		{Platform: "netease", ID: "1", Title: "第一首", Artist: "甲", Verified: true},
+		{Platform: "netease", ID: "2", Title: "第二首", Artist: "乙", Verified: true},
+		{Platform: "netease", ID: "3", Title: "第三首", Artist: "丙", Verified: true},
+	}
+	text, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 1)
+	if !strings.Contains(text, "第二首") || !strings.Contains(text, "本批 3 首 · 第 2 首") {
+		t.Fatalf("middle card = %s", text)
+	}
+	nav := buttonRowTexts(markup)[1]
+	if len(nav) != 2 || nav[0] != "上一首" || nav[1] != "下一首" {
+		t.Fatalf("middle pager = %#v", nav)
+	}
+}
+
+func TestRediscoverRestorePreferenceMakesTheSongAvailableAgain(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	track := discovery.Track{Platform: "netease", ID: "1", Title: "一", Artist: "甲", URL: "https://music.163.com/song?id=1", Verified: true}
+	card, err := store.SaveCard(context.Background(), discovery.Card{User: 1, Chat: 1, Kind: "recommend", Tracks: []discovery.Track{track}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Preference(context.Background(), 1, track, true); err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{cfg: &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"1"}}}, discovery: &discovery.Service{Store: store}}
+	msg := &tb.Message{ID: 9, Chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate}}
+	ctx := &discoveryCallbackContext{
+		args: []string{"restore", card.Token, "0"}, sender: &tb.User{ID: 1},
+		chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate}, callback: &tb.Callback{ID: "cb", Message: msg}, message: msg,
+	}
+	if err = app.HandleDiscoveryCallback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(ctx.edited, "恢复推荐") {
+		t.Fatalf("restored card kept restore button: %s", ctx.edited)
+	}
+	saved, err := store.Card(context.Background(), card.Token, 1, 1)
+	if err != nil || saved.Tracks[0].CardAction != "" {
+		t.Fatalf("stored card = %+v err=%v", saved.Tracks, err)
+	}
+	excluded, err := store.Excluded(context.Background(), 1)
+	if err != nil || excluded[discovery.Identity(track)] {
+		t.Fatalf("preference was not restored: %+v err=%v", excluded, err)
+	}
+}
+
+func TestFavoritesCommandRendersHTMLOnFirstSend(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app := &BotApp{cfg: &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"7"}}}, discovery: &discovery.Service{Store: store}}
+	ctx := &discoveryCallbackContext{sender: &tb.User{ID: 7}, chat: &tb.Chat{ID: 7, Type: tb.ChatPrivate}}
+	if err := app.FavoritesCommand(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(ctx.sent) != 1 || !strings.Contains(ctx.sent[0], "<b>收藏同步</b>") || strings.Contains(ctx.sent[0], "<b>") && !strings.Contains(ctx.sent[0], "</b>") {
+		t.Fatalf("favorites command sent raw HTML: %#v", ctx.sent)
+	}
+	htmlMode := false
+	for _, opt := range ctx.sendOpts[0] {
+		if mode, ok := opt.(string); ok && mode == tb.ModeHTML {
+			htmlMode = true
+		}
+	}
+	if !htmlMode {
+		t.Fatalf("favorites command did not send with HTML parse mode: %#v", ctx.sendOpts)
+	}
+}
+
+func TestRediscoverAllSettledOffersTheSameBatchAgain(t *testing.T) {
+	tracks := []discovery.Track{
+		{Platform: "netease", ID: "1", Title: "一", Artist: "甲", CardAction: discovery.Completed},
+		{Platform: "netease", ID: "2", Title: "二", Artist: "乙", CardAction: "dismissed"},
+	}
+	_, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks, Requested: 9}, 0)
+	if markup.InlineKeyboard[len(markup.InlineKeyboard)-1][0].Data != "find|netease|9" {
+		t.Fatalf("settled card did not offer the same batch: %#v", markup.InlineKeyboard)
+	}
+}
+
+func TestRediscoverShortfallExplainsOwnedSongs(t *testing.T) {
+	tracks := []discovery.Track{{Platform: "netease", Title: "一首", Artist: "甲"}}
+	text, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks, SkippedOwned: 2, Unconfirmed: 1, Requested: 3}, 0)
+	if !strings.Contains(text, "2 首曲库已有，1 首无法确认唯一版本；本次找到 1/3 首。") {
+		t.Fatalf("owned skips were hidden from the shortfall: %s", text)
+	}
+}
+
+func TestFavoritesCardSeparatesSourceAndIngestFailures(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app := &BotApp{discovery: &discovery.Service{Store: store}}
+	ctx := context.Background()
+	for i, title := range []string{"下载失败一", "下载失败二"} {
+		if _, err = store.Enqueue(ctx, 7, 7, discovery.Track{Platform: "netease", ID: strconv.Itoa(i + 1), Title: title, Artist: "甲", URL: "https://music.163.com/song?id=" + strconv.Itoa(i+1), Verified: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs, err := store.Jobs(ctx, 7, false)
+	if err != nil || len(jobs) != 2 {
+		t.Fatal(err, jobs)
+	}
+	for _, job := range jobs {
+		if err = store.Finish(ctx, job, discovery.Failed, "下载失败", "", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	text, markup, err := app.renderFavorites(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "2 入库异常") || !buttonTexts(markup)["重试入库异常"] {
+		t.Fatalf("ingest failures = %s %#v", text, buttonTexts(markup))
+	}
+	if strings.Contains(text, "同步异常") {
+		t.Fatalf("ingest failure leaked into source status: %s", text)
+	}
+}
+
+func TestFavoritesSyncResultNoticeKeepsSuccessfulPlatformsSuccessful(t *testing.T) {
+	notice := favoritesSyncResultNotice([]discovery.FavoriteSyncResult{
+		{Platform: "netease", Status: "synced", Added: 2},
+		{Platform: "qq", Status: "failed", Error: "登录失效"},
+		{Platform: "youtube", Status: "paused"},
+	}, errors.New("qq：登录失效"))
+	for _, want := range []string{"部分平台同步完成", "网易云：成功，新增 2 首", "QQ 音乐：读取失败，基线未改", "YouTube：已暂停，未读取"} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("notice missing %q: %s", want, notice)
+		}
+	}
+	if strings.Contains(notice, "收藏基线未改\n\n") || strings.Contains(notice, "收藏基线未改。") {
+		t.Fatalf("partial success reported as total baseline failure: %s", notice)
+	}
+}
+
 func TestFavoritesCardShowsNamedSyncState(t *testing.T) {
 	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
 	if err != nil {
@@ -440,7 +628,7 @@ func TestFavoritesCardShowsNamedSyncState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"<b>收藏同步</b>", "<b>网易云</b> · 已开启", "账号：112…170", "上次同步：", "上一轮：网易云收藏暂时读不到，本轮跳过", "<b>QQ 音乐</b> · 未绑定", "入库：暂无待处理任务"} {
+	for _, want := range []string{"<b>收藏同步</b>", "<b>网易云</b> · 已开启", "账号：112…170", "上次同步：", "同步异常：网易云收藏暂时读不到，本轮跳过", "<b>QQ 音乐</b> · 未绑定", "入库：暂无待处理任务"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q\n%s", want, text)
 		}
@@ -451,6 +639,22 @@ func TestFavoritesCardShowsNamedSyncState(t *testing.T) {
 	labels := buttonTexts(markup)
 	if !labels["重绑网易云"] || !labels["暂停网易云"] || !labels["绑定 QQ 音乐"] || !labels["绑定 YouTube"] || labels["重新绑定"] || labels["暂停"] {
 		t.Fatalf("buttons = %#v", labels)
+	}
+}
+
+func TestFavoritesCardNamesTheAllPlatformSyncAction(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app := &BotApp{discovery: &discovery.Service{Store: store, Enabled: true}}
+	_, markup, err := app.renderFavorites(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !buttonTexts(markup)["同步全部平台"] || buttonTexts(markup)["现在同步"] {
+		t.Fatalf("sync action = %#v", buttonTexts(markup))
 	}
 }
 
@@ -466,7 +670,7 @@ func TestFavoritesCardOmitsActionsThatHaveNothingToDo(t *testing.T) {
 		t.Fatal(err)
 	}
 	labels := buttonTexts(markup)
-	if labels["现在同步"] || labels["重试失败"] || labels["待确认"] || labels["刷新状态"] {
+	if labels["同步全部平台"] || labels["重试入库异常"] || labels["待确认"] || labels["刷新状态"] {
 		t.Fatalf("idle favorites card offered empty actions: %#v\n%s", labels, text)
 	}
 	if !labels["绑定 网易云"] || !labels["找回遗珠"] {
@@ -486,7 +690,7 @@ func TestFavoritesCardOmitsActionsThatHaveNothingToDo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !buttonTexts(markup)["重试失败"] || !buttonTexts(markup)["查看失败"] {
+	if !buttonTexts(markup)["重试入库异常"] || !buttonTexts(markup)["查看入库异常"] {
 		t.Fatal("failed job did not offer retry and inspection")
 	}
 }

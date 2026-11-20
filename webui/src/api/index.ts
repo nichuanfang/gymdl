@@ -88,16 +88,33 @@ export interface RediscoverResult {
   tracks: DiscoveryTrack[]
   skipped_owned: number
   unconfirmed: number
+  skipped_shown: number
+  skipped_pending: number
+  skipped_dismissed: number
+  skipped_queued: number
+  skipped_artist_cap: number
+  skipped_duplicate: number
+  skipped_other: number
+  unavailable: number
   requested: number
   notice: string
+}
+
+export interface DiscoveryEnqueueResult {
+  platform: string
+  id: string
+  state: 'queued' | 'skipped' | 'failed'
+  reason?: string
 }
 
 export const rediscoverTracks = (platform: string, limit: number) =>
   post<RediscoverResult>('/discovery/rediscover', { platform, limit })
 export const enqueueDiscoveryTracks = (tracks: DiscoveryTrack[]) =>
-  post<{ queued: number; skipped: number }>('/discovery/enqueue', { tracks })
+  post<{ queued: number; skipped: number; failed: number; results: DiscoveryEnqueueResult[] }>('/discovery/enqueue', { tracks })
 export const dismissDiscoveryTracks = (tracks: DiscoveryTrack[]) =>
   post<{ dismissed: number }>('/discovery/dismiss', { tracks })
+export const restoreDiscoveryTracks = (tracks: DiscoveryTrack[]) =>
+  post<{ restored: number }>('/discovery/restore', { tracks })
 
 export interface DiscoveryJob {
   platform: string
@@ -145,8 +162,8 @@ export interface FavoritesPage {
   notice?: string
   platforms: FavoritePlatform[]
   queue: FavoriteQueueCount[]
-  failed: FavoriteJob[]
   pending: FavoriteJob[]
+  ingest_exceptions: FavoriteJob[]
 }
 
 export interface FavoriteSample {

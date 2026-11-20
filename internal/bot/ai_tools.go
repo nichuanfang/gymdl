@@ -354,7 +354,7 @@ func (app *BotApp) aiTools() []aichat.Tool {
 		},
 		{
 			Name:        "favorite_status",
-			Description: "查看当前用户的收藏同步：各平台是否绑定、脱敏账号、上次同步、上一轮原因，以及入库队列数量。只读，不会触发同步、暂停或重试。",
+			Description: "查看当前用户的收藏同步：各平台是否绑定、脱敏账号、上次同步、同步异常，以及入库队列和入库异常数量。只读，不会触发同步、暂停或重试。",
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 			Run: func(ctx context.Context, _ map[string]any) (string, error) {
 				return app.favoriteStatusTool(ctx), nil
@@ -399,7 +399,7 @@ func (app *BotApp) favoriteStatusTool(ctx context.Context) string {
 	if err != nil {
 		return toolJSON(map[string]any{"available": false, "reason": "读取收藏状态失败"})
 	}
-	jobs, err := app.discovery.Store.Jobs(ctx, scope.UserID, false)
+	counts, err := app.discovery.Store.JobCounts(ctx, scope.UserID)
 	if err != nil {
 		return toolJSON(map[string]any{"available": false, "reason": "读取入库队列失败"})
 	}
@@ -415,7 +415,7 @@ func (app *BotApp) favoriteStatusTool(ctx context.Context) string {
 		row := favoriteStatusBinding{Platform: aichat.PlatformLabel(platform), State: "未绑定"}
 		binding, bound := byPlatform[platform]
 		if bound {
-			row.State = favoriteCardState(app.discovery.Enabled, binding.Paused)
+			row.State = favoriteCardState(app.discovery.Enabled, binding.PausedByUser)
 			if account := maskedDiscoveryAccount(binding.Account); account != "" {
 				row.Account = account
 			}
@@ -428,13 +428,6 @@ func (app *BotApp) favoriteStatusTool(ctx context.Context) string {
 		}
 		rows = append(rows, row)
 	}
-	counts := map[string]int{}
-	for _, job := range jobs {
-		if job.User != scope.UserID {
-			continue
-		}
-		counts[job.State]++
-	}
 	queue := make([]favoriteStatusCount, 0, 5)
 	for _, state := range []string{discovery.Queued, discovery.Running, discovery.PendingUpload, discovery.NeedsConfirmation, discovery.Failed} {
 		if counts[state] == 0 {
@@ -443,6 +436,9 @@ func (app *BotApp) favoriteStatusTool(ctx context.Context) string {
 		label := discovery.StateLabel(state)
 		if state == discovery.PendingUpload {
 			label = "待上传"
+		}
+		if state == discovery.Failed {
+			label = "入库异常"
 		}
 		queue = append(queue, favoriteStatusCount{State: state, Label: label, Count: counts[state]})
 	}
@@ -490,9 +486,10 @@ func (app *BotApp) rediscoverPreviewTool(ctx context.Context, args map[string]an
 		Tracks:    songs,
 	}
 	payload.Note = strings.TrimSpace(rediscoverShortfallLine(discovery.Card{
-		Unconfirmed: batch.Unconfirmed,
-		Requested:   limit,
-		Tracks:      batch.Tracks,
+		SkippedOwned: batch.SkippedOwned, Unconfirmed: batch.Unconfirmed,
+		SkippedShown: batch.SkippedShown, SkippedPending: batch.SkippedPending,
+		SkippedOther: batch.SkippedOther, Unavailable: batch.Unavailable,
+		Requested: limit, Tracks: batch.Tracks,
 	}))
 	if payload.Note == "" && len(songs) == 0 {
 		payload.Note = rediscoverEmptyCopy(platform, batch)
