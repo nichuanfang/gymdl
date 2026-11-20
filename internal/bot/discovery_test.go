@@ -246,8 +246,8 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	if !strings.Contains(text, "🎵 <b>遗珠</b>\n──────────────────\n") {
 		t.Fatalf("heading lost the shared card frame: %s", text)
 	}
-	if !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">第一首</a></b>`) || !strings.Contains(text, "《专辑甲》") {
-		t.Fatalf("title or album was not the card body: %s", text)
+	if !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">第一首</a></b>`) || !strings.Contains(text, "甲") || strings.Contains(text, "《专辑甲》") {
+		t.Fatalf("title or artist was not the compact card body: %s", text)
 	}
 	labels := buttonTexts(markup)
 	for _, unwanted := range []string{"下载前 3 首", "全部下载", "换一批", "下一组", "这组入库", "1 入库", "上一首", "跳过", "试听"} {
@@ -893,7 +893,7 @@ func TestRediscoverProgressFollowsTheDownload(t *testing.T) {
 	track.CardAction = discovery.Queued
 	card := discovery.Card{Token: "card", User: 1, Chat: 1, Tracks: []discovery.Track{track}, Page: 0}
 	text, markup := discoveryRecommendationCard(card, 0)
-	if !strings.Contains(text, "遗珠 · 网易云") || !strings.Contains(text, "排队") || !strings.Contains(text, "听过 4 次") || buttonTexts(markup)["入库"] {
+	if !strings.Contains(text, "遗珠 · 网易云") || !strings.Contains(text, "排队") || buttonTexts(markup)["入库"] {
 		t.Fatalf("queued card = %s %#v", text, buttonTexts(markup))
 	}
 	updated, changed, pending, err := syncRediscoverProgress(context.Background(), store, card)

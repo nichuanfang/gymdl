@@ -226,12 +226,13 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	if artist := strings.TrimSpace(track.Artist); artist != "" {
 		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
 	}
-	if album := strings.TrimSpace(track.Album); album != "" {
-		fmt.Fprintf(&text, "《%s》\n", utils.EscapeHTML(utils.TruncateString(album, 32)))
-	}
-	if fact := rediscoverFactLine(track); fact != "" {
-		text.WriteByte('\n')
-		fmt.Fprintf(&text, "%s\n", fact)
+	decision := rediscoverDecision(track)
+	if decision == "" {
+		if reason := rediscoverCardReason(track); reason != "" {
+			fmt.Fprintf(&text, "%s\n", reason)
+		}
+	} else {
+		fmt.Fprintf(&text, "%s\n", decision)
 	}
 	discoverySongButtons(markup, card, page)
 	return strings.TrimRight(text.String(), "\n"), markup
@@ -312,6 +313,16 @@ func rediscoverHeading(tracks []discovery.Track) string {
 	return "遗珠 · " + aichat.PlatformLabel(platform)
 }
 
+func rediscoverCardReason(track discovery.Track) string {
+	if track.Favorite {
+		return "收藏过"
+	}
+	if track.Plays > 0 {
+		return fmt.Sprintf("听过 %d 次", track.Plays)
+	}
+	return "听过"
+}
+
 func rediscoverFactLine(track discovery.Track) string {
 	reason := "听过"
 	if track.Favorite {
@@ -319,9 +330,6 @@ func rediscoverFactLine(track discovery.Track) string {
 	}
 	if track.Plays > 0 {
 		reason += fmt.Sprintf(" %d 次", track.Plays)
-	}
-	if !track.LastPlayed.IsZero() {
-		reason += " · " + track.LastPlayed.Local().Format("2006-01-02")
 	}
 	if decision := rediscoverDecision(track); decision != "" {
 		return reason + " · " + decision
@@ -528,6 +536,8 @@ func editDiscoveryMessage(c tb.Context, text string, markup *tb.ReplyMarkup, htm
 	opts := []any{}
 	if html {
 		opts = append(opts, tb.ModeHTML)
+	} else {
+		opts = append(opts, tb.NoPreview)
 	}
 	if markup != nil {
 		opts = append(opts, markup)
