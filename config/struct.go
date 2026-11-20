@@ -72,9 +72,10 @@ type WebDAVConfig struct {
 }
 
 type LogConfig struct {
-	Mode  int    `yaml:"mode"`  // 日志模式：1标准输出，2日志文件，3标准输出和日志文件
-	Level int    `yaml:"level"` // 日志等级，1=debug 2=info 3=warn 4=error 5=fatal
-	File  string `yaml:"file"`  // 日志文件路径
+	Mode      int    `yaml:"mode"`        // 日志模式：1标准输出，2日志文件，3标准输出和日志文件
+	Level     int    `yaml:"level"`       // 日志等级，1=debug 2=info 3=warn 4=error 5=fatal
+	File      string `yaml:"file"`        // 日志文件路径
+	MaxSizeMB int    `yaml:"max_size_mb"` // 单个日志文件上限（MB），达到后轮转；0 使用默认 500
 }
 
 type TelegramConfig struct {
@@ -122,14 +123,14 @@ type LastfmConfig struct {
 
 // AIPlaylistConfig configures the direct Pinecone-backed AI playlist flow.
 type AIPlaylistConfig struct {
-	PineconeHost      string `yaml:"pinecone_host"`      // Pinecone index host, e.g. https://index-name.svc.region.pinecone.io
-	PineconeAPIKey    string `yaml:"pinecone_api_key"`   // Pinecone API key
-	PineconeNamespace string `yaml:"pinecone_namespace"` // Existing vector namespace
-	EmbeddingBaseURL  string `yaml:"embedding_base_url"` // Optional embedding API base URL; defaults to ai.base_url
-	EmbeddingAPIKey   string `yaml:"embedding_api_key"`  // Optional embedding API key; defaults to ai.api_key
-	EmbeddingModel    string `yaml:"embedding_model"`    // Must match the model used to populate the index
-	QueryModel        string `yaml:"query_model"`        // Optional intent extraction model; defaults to ai.model
-	PlaylistModel     string `yaml:"playlist_model"`     // Optional playlist planning model; defaults to ai.model
+	PineconeHost      string  `yaml:"pinecone_host"`      // Pinecone index host, e.g. https://index-name.svc.region.pinecone.io
+	PineconeAPIKey    string  `yaml:"pinecone_api_key"`   // Pinecone API key
+	PineconeNamespace string  `yaml:"pinecone_namespace"` // Existing vector namespace
+	EmbeddingBaseURL  string  `yaml:"embedding_base_url"` // Optional embedding API base URL; defaults to ai.base_url
+	EmbeddingAPIKey   string  `yaml:"embedding_api_key"`  // Optional embedding API key; defaults to ai.api_key
+	EmbeddingModel    string  `yaml:"embedding_model"`    // Must match the model used to populate the index
+	QueryModel        string  `yaml:"query_model"`        // Optional intent extraction model; defaults to ai.model
+	PlaylistModel     string  `yaml:"playlist_model"`     // Optional playlist planning model; defaults to ai.model
 	PlaylistSize      int     `yaml:"playlist_size"`      // Desired number of songs per generated playlist
 	CandidateCount    int     `yaml:"candidate_count"`    // Maximum Pinecone candidates to rank
 	MinScore          float64 `yaml:"min_score"`          // Lowest Pinecone cosine similarity kept as a candidate

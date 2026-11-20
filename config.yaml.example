@@ -20,6 +20,7 @@ log:
   mode: 1  # 日志模式: 1=标准输出, 2=日志文件, 3=标准输出+文件
   level: 2  # 日志等级: 1=debug, 2=info, 3=warn, 4=error, 5=fatal
   file: "data/logs/run.log"  # 日志文件路径
+  max_size_mb: 500  # 单个日志文件上限（MB），达到后自动轮转
 
 # 代理配置
 proxy:

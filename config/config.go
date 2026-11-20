@@ -163,10 +163,13 @@ func (c *Config) setDefaults() {
 	}
 	if c.Log == nil {
 		c.Log = &LogConfig{
-			Mode:  1,
-			Level: 2,
-			File:  "data/logs/run.log",
+			Mode:      1,
+			Level:     2,
+			File:      "data/logs/run.log",
+			MaxSizeMB: 500,
 		}
+	} else if c.Log.MaxSizeMB <= 0 {
+		c.Log.MaxSizeMB = 500
 	}
 	if c.Telegram == nil {
 		c.Telegram = &TelegramConfig{

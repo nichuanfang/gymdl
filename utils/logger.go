@@ -8,11 +8,13 @@ import (
 	"github.com/nichuanfang/gymdl/config"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var (
 	loggerInstance        *zap.Logger
 	sugaredLoggerInstance *zap.SugaredLogger
+	fileLogWriter         *lumberjack.Logger
 )
 
 // ======================= 彩色与对齐配置 =======================
@@ -81,6 +83,13 @@ func InitLogger(cfg *config.LogConfig) error {
 		return fmt.Errorf("日志配置为空")
 	}
 
+	// Reinitialization is used by tests and hot-restart tooling. Close the
+	// previous rotating writer so its file handle is not leaked.
+	if fileLogWriter != nil {
+		_ = fileLogWriter.Close()
+		fileLogWriter = nil
+	}
+
 	var level zapcore.Level
 	switch cfg.Level {
 	case 1:
@@ -106,11 +115,19 @@ func InitLogger(cfg *config.LogConfig) error {
 		if err := os.MkdirAll(filepath.Dir(cfg.File), 0755); err != nil {
 			return fmt.Errorf("创建日志目录失败: %v", err)
 		}
-		f, err := os.OpenFile(cfg.File, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return fmt.Errorf("打开日志文件失败: %v", err)
+		maxSizeMB := cfg.MaxSizeMB
+		if maxSizeMB <= 0 {
+			maxSizeMB = 500
 		}
-		fileCore := zapcore.NewCore(newFileEncoder(), zapcore.AddSync(f), level)
+		fileLogWriter = &lumberjack.Logger{
+			Filename:   cfg.File,
+			MaxSize:    maxSizeMB,
+			MaxBackups: 5,
+			MaxAge:     30,
+			Compress:   true,
+			LocalTime:  true,
+		}
+		fileCore := zapcore.NewCore(newFileEncoder(), zapcore.AddSync(fileLogWriter), level)
 		cores = append(cores, fileCore)
 	}
 
@@ -125,6 +142,10 @@ func InitLogger(cfg *config.LogConfig) error {
 func Sync() {
 	if loggerInstance != nil {
 		_ = loggerInstance.Sync()
+	}
+	if fileLogWriter != nil {
+		_ = fileLogWriter.Close()
+		fileLogWriter = nil
 	}
 }
 
