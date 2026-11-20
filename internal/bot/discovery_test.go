@@ -133,7 +133,7 @@ func TestDiscoveryBaselineConfirmationIsSingleUse(t *testing.T) {
 	if err := app.HandleDiscoveryCallback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if ctx.responses != 1 || !strings.Contains(ctx.edited, "建立收藏基线") {
+	if ctx.responses != 1 || !strings.Contains(ctx.edited, "收藏已接上") {
 		t.Fatal("baseline confirmation silent", ctx)
 	}
 	// An old confirmation must not reset the baseline after new favourites arrive.
@@ -280,8 +280,8 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 		t.Fatalf("owned skips or listen hint returned to the song card: %s", skipped)
 	}
 	short, shortMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks[:1], SkippedOwned: 1, Unconfirmed: 2, Requested: 1}, 0)
-	if !strings.Contains(short, "1 首曲库已有，2 首版本无法确认") || !strings.Contains(short, "这次先听这首") {
-		t.Fatalf("candidate pool was not explained: %s", short)
+	if !strings.Contains(short, "2 首没找到确定的版本") || strings.Contains(short, "1 首曲库已有") {
+		t.Fatalf("card should only mention actionable issues: %s", short)
 	}
 	if buttonTexts(shortMarkup)["未处理的全部入库"] || buttonTexts(shortMarkup)["下一首"] || !buttonTexts(shortMarkup)["入库"] {
 		t.Fatalf("single song grew a pager: %#v", buttonTexts(shortMarkup))
@@ -314,19 +314,19 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 
 func TestRediscoverEmptyCopyExplainsSeparateSkipReasons(t *testing.T) {
 	owned := rediscoverEmptyCopy("netease", discovery.RediscoverBatch{SkippedOwned: 2})
-	if !strings.Contains(owned, "2 首曲库已有") || strings.Contains(owned, "无法确认") {
+	if !strings.Contains(owned, "曲库里都有了") || strings.Contains(owned, "没找到确定的版本") {
 		t.Fatal(owned)
 	}
 	both := rediscoverEmptyCopy("qq", discovery.RediscoverBatch{SkippedOwned: 1, Unconfirmed: 3})
-	if !strings.Contains(both, "1 首曲库已有") || !strings.Contains(both, "3 首版本无法确认") {
+	if !strings.Contains(both, "有 3 首没找到确定的版本") || !strings.Contains(both, "曲库里都有了") {
 		t.Fatal(both)
 	}
 	only := rediscoverEmptyCopy("youtube", discovery.RediscoverBatch{Unconfirmed: 4})
-	if !strings.Contains(only, "4 首版本无法确认") {
+	if !strings.Contains(only, "有 4 首没找到确定的版本") {
 		t.Fatal(only)
 	}
 	reasons := rediscoverEmptyCopy("netease", discovery.RediscoverBatch{SkippedDismissed: 1, SkippedQueued: 2, SkippedArtistCap: 3, SkippedDuplicate: 4})
-	for _, want := range []string{"1 首不再推荐或已处理", "2 首已在队列或待上传", "7 首本次去重或同艺人限流"} {
+	for _, want := range []string{"还有 2 首在等上传", "有几首因为重复或同一个歌手出现太多", "曲库里都有了"} {
 		if !strings.Contains(reasons, want) {
 			t.Fatalf("missing %q: %s", want, reasons)
 		}
@@ -360,14 +360,14 @@ func TestFavoritesActionsRewriteTheSameCard(t *testing.T) {
 		}
 		return ctx
 	}
-	if edited := click("history", "menu").edited; !strings.Contains(edited, "选择平台") {
+	if edited := click("history", "menu").edited; !strings.Contains(edited, "选个平台") {
 		t.Fatalf("history did not become the platform menu: %s", edited)
 	}
 	if edited := click("pause", "netease").edited; !strings.Contains(edited, "收藏") {
 		t.Fatalf("pause did not refresh the favorites card: %s", edited)
 	}
 	syncCard := click("sync", "menu")
-	if edited := syncCard.waitEdited(t, "没有已绑定的收藏来源"); !strings.Contains(edited, "收藏") {
+	if edited := syncCard.waitEdited(t, "还没绑定收藏账号"); !strings.Contains(edited, "收藏") {
 		t.Fatalf("sync did not stay on the favorites card: %s", edited)
 	}
 	if edited := click("retry", "menu").edited; !strings.Contains(edited, "没有需要重试的入库异常") {
@@ -455,7 +455,7 @@ func TestRediscoverBatchKeepsSuccessfulRowsWhenOneEnqueueFails(t *testing.T) {
 	if err = app.HandleDiscoveryCallback(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(ctx.edited, "提交 2 首：实际排队 2 首，跳过 0 首") {
+	if !strings.Contains(ctx.edited, "提交了 2 首，排队 2 首，跳过 0 首") {
 		t.Fatalf("batch result = %s", ctx.edited)
 	}
 	saved, err := store.Card(context.Background(), card.Token, 1, 1)
@@ -555,8 +555,8 @@ func TestRediscoverAllSettledOffersTheSameBatchAgain(t *testing.T) {
 func TestRediscoverShortfallExplainsTheCandidatePool(t *testing.T) {
 	tracks := []discovery.Track{{Platform: "netease", Title: "一首", Artist: "甲"}}
 	text, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks, SkippedOwned: 2, Unconfirmed: 1, Requested: 1}, 0)
-	if !strings.Contains(text, "这次先听这首") || !strings.Contains(text, "2 首曲库已有，1 首版本无法确认") {
-		t.Fatalf("candidate pool was not explained: %s", text)
+	if !strings.Contains(text, "1 首没找到确定的版本") || strings.Contains(text, "曲库已有") || strings.Contains(text, "候选池") {
+		t.Fatalf("card should read naturally: %s", text)
 	}
 }
 
@@ -625,7 +625,7 @@ func TestFavoritesCardOpensPendingUploadsAndShowsRecoveryHint(t *testing.T) {
 		t.Fatalf("pending jobs = %+v err=%v", jobs, err)
 	}
 	cardText, cardMarkup := discoveryPendingUploadCard(jobs[0], 0, 1)
-	if !strings.Contains(cardText, "不会重新下载") || !buttonTexts(cardMarkup)["检查上传"] {
+	if !strings.Contains(cardText, "不用重新下载") || !buttonTexts(cardMarkup)["检查上传"] {
 		t.Fatalf("pending upload card = %s %#v", cardText, buttonTexts(cardMarkup))
 	}
 }
@@ -768,7 +768,7 @@ func buttonRowTexts(markup *tb.ReplyMarkup) [][]string {
 
 func TestRediscoverMenuAsksOnlyForPlatform(t *testing.T) {
 	text, markup := discoveryPlatformMenu()
-	if !strings.Contains(text, "选择平台") || !strings.Contains(text, "帮你挑首歌") || buttonTexts(markup)["下载前 3 首"] {
+	if !strings.Contains(text, "选个平台") || !strings.Contains(text, "找首你可能想再听的") || buttonTexts(markup)["下载前 3 首"] {
 		t.Fatalf("platform menu = %s", text)
 	}
 	labels := buttonTexts(markup)
