@@ -17,7 +17,7 @@ import (
 
 func TestDiscoveryNoticeSkipsTheOwnedCountWhenSongsRemain(t *testing.T) {
 	notice := discoveryNotice("netease", 1, DiscoveryBatch{Tracks: []DiscoveryTrack{{Title: "晴天"}}, SkippedOwned: 4, Unconfirmed: 2})
-	if !strings.Contains(notice, "本次先找到 1 首") || !strings.Contains(notice, "4 首曲库已有") || !strings.Contains(notice, "2 首版本无法确认") {
+	if !strings.Contains(notice, "这次先听这首") || !strings.Contains(notice, "4 首曲库已有") || !strings.Contains(notice, "2 首版本无法确认") {
 		t.Fatalf("notice = %q", notice)
 	}
 	empty := discoveryNotice("qq", 1, DiscoveryBatch{SkippedOwned: 2})

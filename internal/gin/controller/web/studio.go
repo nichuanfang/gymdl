@@ -258,7 +258,7 @@ func HandleRediscover(c *gin.Context) {
 		return
 	}
 	if body.Limit != 1 {
-		response.Fail(c, http.StatusBadRequest, "每次只能找回 1 首")
+		response.Fail(c, http.StatusBadRequest, "请重新发起找回")
 		return
 	}
 	api := currentDiscoveryAPI()
@@ -506,7 +506,7 @@ func discoveryNotice(platform string, requested int, batch DiscoveryBatch) strin
 	if reasonText == "" {
 		return ""
 	}
-	return fmt.Sprintf("本次先找到 1 首。候选池里还有：%s。", reasonText)
+	return fmt.Sprintf("这次先听这首。候选池里还有：%s。", reasonText)
 }
 
 // discoveryCandidateSummary separates the one result the user receives from

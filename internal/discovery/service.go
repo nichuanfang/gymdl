@@ -392,7 +392,7 @@ func (s *Service) Rediscover(ctx context.Context, user int64, platform string, l
 	switch limit {
 	case 1:
 	default:
-		return RediscoverBatch{}, fmt.Errorf("每次只能找回 1 首")
+		return RediscoverBatch{}, fmt.Errorf("请重新发起找回")
 	}
 	return s.recommend(ctx, user, platform, limit)
 }

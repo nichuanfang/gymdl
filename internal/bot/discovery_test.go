@@ -280,7 +280,7 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 		t.Fatalf("owned skips or listen hint returned to the song card: %s", skipped)
 	}
 	short, shortMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks[:1], SkippedOwned: 1, Unconfirmed: 2, Requested: 1}, 0)
-	if !strings.Contains(short, "1 首曲库已有，2 首版本无法确认") || !strings.Contains(short, "本次先找到 1 首") {
+	if !strings.Contains(short, "1 首曲库已有，2 首版本无法确认") || !strings.Contains(short, "这次先听这首") {
 		t.Fatalf("candidate pool was not explained: %s", short)
 	}
 	if buttonTexts(shortMarkup)["未处理的全部入库"] || buttonTexts(shortMarkup)["下一首"] || !buttonTexts(shortMarkup)["入库"] {
@@ -555,7 +555,7 @@ func TestRediscoverAllSettledOffersTheSameBatchAgain(t *testing.T) {
 func TestRediscoverShortfallExplainsTheCandidatePool(t *testing.T) {
 	tracks := []discovery.Track{{Platform: "netease", Title: "一首", Artist: "甲"}}
 	text, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks, SkippedOwned: 2, Unconfirmed: 1, Requested: 1}, 0)
-	if !strings.Contains(text, "本次先找到 1 首") || !strings.Contains(text, "2 首曲库已有，1 首版本无法确认") {
+	if !strings.Contains(text, "这次先听这首") || !strings.Contains(text, "2 首曲库已有，1 首版本无法确认") {
 		t.Fatalf("candidate pool was not explained: %s", text)
 	}
 }
@@ -768,7 +768,7 @@ func buttonRowTexts(markup *tb.ReplyMarkup) [][]string {
 
 func TestRediscoverMenuAsksOnlyForPlatform(t *testing.T) {
 	text, markup := discoveryPlatformMenu()
-	if !strings.Contains(text, "选择平台") || !strings.Contains(text, "1 首") || buttonTexts(markup)["下载前 3 首"] {
+	if !strings.Contains(text, "选择平台") || !strings.Contains(text, "帮你挑首歌") || buttonTexts(markup)["下载前 3 首"] {
 		t.Fatalf("platform menu = %s", text)
 	}
 	labels := buttonTexts(markup)

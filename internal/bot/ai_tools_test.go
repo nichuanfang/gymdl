@@ -250,7 +250,7 @@ func TestRediscoverPreviewRejectsBadInputAndDoesNotRecordShown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(badLimit, "每次只能找回 1 首") || strings.Contains(badLimit, "晴天") {
+	if !strings.Contains(badLimit, "请重新发起找回") || strings.Contains(badLimit, "晴天") {
 		t.Fatalf("bad limit = %s", badLimit)
 	}
 	if _, ok := rediscoverLimitArg(map[string]any{"limit": float64(4)}); ok {

@@ -362,13 +362,13 @@ func (app *BotApp) aiTools() []aichat.Tool {
 		},
 		{
 			Name:        "rediscover_preview",
-			Description: "预览 1 首曲库里缺少的听过或收藏歌曲。平台只能是 netease、qq、youtube。只返回歌名和艺人，不会入库，也不会记成已展示。",
+			Description: "预览曲库里缺少的听过或收藏歌曲。平台只能是 netease、qq、youtube。只返回歌名和艺人，不会入库，也不会记成已展示。",
 			Parameters: map[string]any{
 				"type":     "object",
 				"required": []string{"platform"},
 				"properties": map[string]any{
 					"platform": map[string]any{"type": "string", "description": "netease、qq 或 youtube"},
-					"limit":    map[string]any{"type": "integer", "description": "固定为 1；省略时也是 1"},
+					"limit":    map[string]any{"type": "integer", "description": "兼容旧参数；每次仍只预览一首"},
 				},
 			},
 			Run: func(ctx context.Context, args map[string]any) (string, error) {
@@ -460,7 +460,7 @@ func (app *BotApp) rediscoverPreviewTool(ctx context.Context, args map[string]an
 	}
 	limit, limitOK := rediscoverLimitArg(args)
 	if !limitOK {
-		return toolJSON(map[string]any{"available": false, "reason": "每次只能找回 1 首"})
+		return toolJSON(map[string]any{"available": false, "reason": "请重新发起找回"})
 	}
 	if app == nil || app.discovery == nil {
 		return toolJSON(map[string]any{"available": false, "reason": "遗珠预览不可用"})

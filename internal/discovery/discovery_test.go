@@ -588,7 +588,7 @@ func TestRediscoverFindsOneMissingSong(t *testing.T) {
 	if len(batch.Tracks) != 1 || batch.Tracks[0].Title != "Fav" {
 		t.Fatalf("batch = %+v", batch.Tracks)
 	}
-	if _, err = svc.Rediscover(ctx, 1, "netease", 3); err == nil || !strings.Contains(err.Error(), "1 首") {
+	if _, err = svc.Rediscover(ctx, 1, "netease", 3); err == nil || !strings.Contains(err.Error(), "重新发起找回") {
 		t.Fatalf("legacy batch size accepted: %v", err)
 	}
 }

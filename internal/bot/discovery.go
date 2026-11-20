@@ -102,14 +102,14 @@ func discoveryPlatformMenu() (string, *tb.ReplyMarkup) {
 		markup.Row(markup.Data("YouTube", discoveryCallbackUnique, "source", "youtube")),
 		markup.Row(markup.Data("取消", discoveryCallbackUnique, "cancel", "menu"), markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
 	)
-	return "找回遗珠\n选择平台，每批精挑 1 首。收藏和很久没听的高频歌会优先。", markup
+	return "找回遗珠\n选择平台，我会从收藏和收听记录里帮你挑首歌。收藏和很久没听的高频歌会优先。", markup
 }
 
 func rediscoverResultRecoveryMarkup(platform string, limit int) *tb.ReplyMarkup {
 	markup := &tb.ReplyMarkup{}
 	markup.Inline(
 		markup.Row(
-			markup.Data("再找一次", discoveryCallbackUnique, "find", platform, strconv.Itoa(limit)),
+			markup.Data("换一首", discoveryCallbackUnique, "find", platform, strconv.Itoa(limit)),
 			markup.Data("换平台", discoveryCallbackUnique, "source", "menu"),
 		),
 		markup.Row(markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
@@ -142,7 +142,7 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 	}
 	limit, err := strconv.Atoi(args[2])
 	if err != nil || !validRediscoverLimit(limit) {
-		return c.Respond(&tb.CallbackResponse{Text: "每次只能找回 1 首", ShowAlert: true})
+		return c.Respond(&tb.CallbackResponse{Text: "请重新发起找回", ShowAlert: true})
 	}
 	if !app.discoveryCommandMu.TryLock() {
 		return c.Respond(&tb.CallbackResponse{Text: "正在处理上一条请求", ShowAlert: true})
@@ -155,7 +155,7 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 		app.discoveryCommandMu.Unlock()
 		return c.Send("找不到原来的消息，请重新发送 /rediscover。")
 	}
-	progress := fmt.Sprintf("⌛ 正在从%s精挑 1 首遗珠…", aichat.PlatformLabel(platform))
+	progress := fmt.Sprintf("⌛ 正在从%s帮你找歌…", aichat.PlatformLabel(platform))
 	if err = editDiscoveryMessage(c, progress, nil, false); err != nil {
 		app.discoveryCommandMu.Unlock()
 		return err
@@ -218,9 +218,7 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	var text strings.Builder
 	fmt.Fprintf(&text, "🎵 <b>%s</b>\n", utils.EscapeHTML(rediscoverHeading(card.Tracks)))
 	text.WriteString("──────────────────\n")
-	if len(card.Tracks) == 1 {
-		text.WriteString("本批 1 首\n")
-	} else {
+	if len(card.Tracks) > 1 {
 		fmt.Fprintf(&text, "本批 %d 首 · 第 %d 首\n", len(card.Tracks), page+1)
 	}
 	text.WriteByte('\n')
@@ -303,7 +301,7 @@ func discoverySongButtons(markup *tb.ReplyMarkup, card discovery.Card, page int)
 		platform := rediscoverCardPlatform(card.Tracks)
 		if validRediscoverPlatform(platform) && validRediscoverLimit(card.Requested) {
 			appendDiscoveryRows(markup, markup.Row(
-				markup.Data("再找一批", discoveryCallbackUnique, "find", platform, strconv.Itoa(card.Requested)),
+				markup.Data("再找找", discoveryCallbackUnique, "find", platform, strconv.Itoa(card.Requested)),
 			))
 		} else {
 			appendDiscoveryRows(markup, markup.Row(
@@ -464,7 +462,7 @@ func rediscoverShortfallTextWithCounts(counts rediscoverSkipCounts, found, reque
 	if len(notes) == 0 {
 		return fmt.Sprintf("本次找到 %d/%d 首。", found, requested)
 	}
-	return fmt.Sprintf("本次先找到 %d 首。候选池里还有：%s。", found, strings.Join(notes, "，"))
+	return fmt.Sprintf("这次先听这首。候选池里还有：%s。", strings.Join(notes, "，"))
 }
 
 func rediscoverShortfallLine(card discovery.Card) string {
@@ -966,7 +964,7 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		if !validRediscoverPlatform(key) {
 			return c.Respond(&tb.CallbackResponse{Text: "平台无效", ShowAlert: true})
 		}
-		if err := c.Respond(&tb.CallbackResponse{Text: "正在精挑 1 首…"}); err != nil {
+		if err := c.Respond(&tb.CallbackResponse{Text: "正在帮你找歌…"}); err != nil {
 			return err
 		}
 		return app.startRediscover(c, key, []string{"find", key, "1"})

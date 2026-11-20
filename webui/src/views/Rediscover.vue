@@ -5,9 +5,9 @@
     <n-card size="small" :bordered="false" class="studio-card">
       <div class="control-row">
         <n-select v-model:value="platform" :options="platformOptions" class="platform-select" :disabled="searching" />
-        <n-button type="primary" :loading="searching" :disabled="acting" @click="search">精挑 1 首</n-button>
+        <n-button type="primary" :loading="searching" :disabled="acting" @click="search">找找看</n-button>
       </div>
-      <p class="studio-help">每次从听过和收藏里精挑 1 首曲库还没有的歌，优先收藏和很久没听的高频歌。试听后再决定是否入库。</p>
+      <p class="studio-help">从听过和收藏里帮你挑一首曲库还没有的歌，优先收藏和很久没听的高频歌。试听后再决定是否入库。</p>
     </n-card>
 
     <n-alert v-if="notice && tracks.length" type="info" :show-icon="false">{{ notice }}</n-alert>
@@ -20,7 +20,7 @@
       </n-button>
     </div>
 
-    <div v-if="!searched && !searching" class="empty-well">选好平台后点精挑 1 首。可以试听，再决定是否入库。</div>
+    <div v-if="!searched && !searching" class="empty-well">选好平台后找找看。可以试听，再决定是否入库。</div>
     <div v-else-if="searching" class="result-list" aria-hidden="true">
       <div class="track-card skeleton"><span class="skel" /><span class="skel short" /></div>
     </div>
