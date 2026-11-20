@@ -102,20 +102,7 @@ func discoveryPlatformMenu() (string, *tb.ReplyMarkup) {
 		markup.Row(markup.Data("YouTube", discoveryCallbackUnique, "source", "youtube")),
 		markup.Row(markup.Data("取消", discoveryCallbackUnique, "cancel", "menu"), markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
 	)
-	return "找回遗珠\n先选平台，再选数量。只查这个平台，找到设定数量就停。", markup
-}
-
-func discoveryCountMenu(platform string) (string, *tb.ReplyMarkup) {
-	markup := &tb.ReplyMarkup{}
-	appendDiscoveryRows(markup,
-		markup.Row(
-			markup.Data("3 首", discoveryCallbackUnique, "find", platform, "3"),
-			markup.Data("6 首", discoveryCallbackUnique, "find", platform, "6"),
-			markup.Data("9 首", discoveryCallbackUnique, "find", platform, "9"),
-		),
-		markup.Row(markup.Data("换平台", discoveryCallbackUnique, "source", "menu"), markup.Data("取消", discoveryCallbackUnique, "cancel", "menu")),
-	)
-	return "找回遗珠 · " + aichat.PlatformLabel(platform) + "\n选择数量；结果会逐首展示，可试听后再入库。", markup
+	return "找回遗珠\n选择平台，每批精挑 1 首。收藏和很久没听的高频歌会优先。", markup
 }
 
 func rediscoverResultRecoveryMarkup(platform string, limit int) *tb.ReplyMarkup {
@@ -123,7 +110,7 @@ func rediscoverResultRecoveryMarkup(platform string, limit int) *tb.ReplyMarkup 
 	markup.Inline(
 		markup.Row(
 			markup.Data("再找一次", discoveryCallbackUnique, "find", platform, strconv.Itoa(limit)),
-			markup.Data("换平台或数量", discoveryCallbackUnique, "source", "menu"),
+			markup.Data("换平台", discoveryCallbackUnique, "source", "menu"),
 		),
 		markup.Row(markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
 	)
@@ -135,7 +122,7 @@ func validRediscoverPlatform(platform string) bool {
 }
 
 func validRediscoverLimit(limit int) bool {
-	return limit == 3 || limit == 6 || limit == 9
+	return limit == 1
 }
 
 func (app *BotApp) goDiscovery(fn func()) {
@@ -151,11 +138,11 @@ func (app *BotApp) goDiscovery(fn func()) {
 
 func (app *BotApp) startRediscover(c tb.Context, platform string, args []string) error {
 	if len(args) != 3 || !validRediscoverPlatform(platform) {
-		return c.Respond(&tb.CallbackResponse{Text: "请重新选择数量", ShowAlert: true})
+		return c.Respond(&tb.CallbackResponse{Text: "请重新选择平台", ShowAlert: true})
 	}
 	limit, err := strconv.Atoi(args[2])
 	if err != nil || !validRediscoverLimit(limit) {
-		return c.Respond(&tb.CallbackResponse{Text: "数量只能是 3、6 或 9", ShowAlert: true})
+		return c.Respond(&tb.CallbackResponse{Text: "每次只能找回 1 首", ShowAlert: true})
 	}
 	if !app.discoveryCommandMu.TryLock() {
 		return c.Respond(&tb.CallbackResponse{Text: "正在处理上一条请求", ShowAlert: true})
@@ -168,7 +155,7 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 		app.discoveryCommandMu.Unlock()
 		return c.Send("找不到原来的消息，请重新发送 /rediscover。")
 	}
-	progress := fmt.Sprintf("⌛ 正在从%s查找最多 %d 首遗珠…", aichat.PlatformLabel(platform), limit)
+	progress := fmt.Sprintf("⌛ 正在从%s精挑 1 首遗珠…", aichat.PlatformLabel(platform))
 	if err = editDiscoveryMessage(c, progress, nil, false); err != nil {
 		app.discoveryCommandMu.Unlock()
 		return err
@@ -180,7 +167,7 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 		defer cancel()
 		batch, findErr := app.discovery.Rediscover(ctx, user, platform, limit)
 		if findErr != nil {
-			_ = editDiscoveryMessage(c, "❌ 查找失败："+discoveryPublicError(findErr)+"\n可以重试，或换个平台和数量。", rediscoverResultRecoveryMarkup(platform, limit), false)
+			_ = editDiscoveryMessage(c, "❌ 查找失败："+discoveryPublicError(findErr)+"\n可以重试或换个平台。", rediscoverResultRecoveryMarkup(platform, limit), false)
 			return
 		}
 		if len(batch.Tracks) == 0 {
@@ -196,7 +183,7 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 			SkippedOther: batch.SkippedOther, Unavailable: batch.Unavailable, Requested: limit,
 		})
 		if saveErr != nil {
-			_ = editDiscoveryMessage(c, "❌ 保存查找结果失败。可以重试，或换个平台和数量。", rediscoverResultRecoveryMarkup(platform, limit), false)
+			_ = editDiscoveryMessage(c, "❌ 保存查找结果失败。可以重试或换个平台。", rediscoverResultRecoveryMarkup(platform, limit), false)
 			return
 		}
 		text, markup := discoveryRecommendationCard(card, 0)
@@ -231,7 +218,11 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	var text strings.Builder
 	fmt.Fprintf(&text, "🎵 <b>%s</b>\n", utils.EscapeHTML(rediscoverHeading(card.Tracks)))
 	text.WriteString("──────────────────\n")
-	fmt.Fprintf(&text, "本批 %d 首 · 第 %d 首\n", len(card.Tracks), page+1)
+	if len(card.Tracks) == 1 {
+		text.WriteString("本批 1 首\n")
+	} else {
+		fmt.Fprintf(&text, "本批 %d 首 · 第 %d 首\n", len(card.Tracks), page+1)
+	}
 	text.WriteByte('\n')
 	fmt.Fprintf(&text, "<b>%s</b>\n", discoveryListenTitle(track.Title, track.URL))
 	if artist := strings.TrimSpace(track.Artist); artist != "" {
@@ -316,7 +307,7 @@ func discoverySongButtons(markup *tb.ReplyMarkup, card discovery.Card, page int)
 			))
 		} else {
 			appendDiscoveryRows(markup, markup.Row(
-				markup.Data("换平台或数量", discoveryCallbackUnique, "source", "menu"),
+				markup.Data("换平台", discoveryCallbackUnique, "source", "menu"),
 			))
 		}
 	}
@@ -438,32 +429,20 @@ func (c rediscoverSkipCounts) notes() []string {
 	if c.Owned > 0 {
 		notes = append(notes, fmt.Sprintf("%d 首曲库已有", c.Owned))
 	}
-	if c.Unconfirmed > 0 {
-		notes = append(notes, fmt.Sprintf("%d 首无法确认唯一版本", c.Unconfirmed))
+	if queued := c.Queued + c.Pending; queued > 0 {
+		notes = append(notes, fmt.Sprintf("%d 首已在队列或待上传", queued))
 	}
 	if c.Shown > 0 {
 		notes = append(notes, fmt.Sprintf("%d 首最近看过", c.Shown))
 	}
-	if c.Pending > 0 {
-		notes = append(notes, fmt.Sprintf("%d 首待上传", c.Pending))
+	if handled := c.Dismissed + c.Other; handled > 0 {
+		notes = append(notes, fmt.Sprintf("%d 首不再推荐或已处理", handled))
 	}
-	if c.Dismissed > 0 {
-		notes = append(notes, fmt.Sprintf("%d 首已设为不再推荐", c.Dismissed))
+	if uncertain := c.Unconfirmed + c.Unavailable; uncertain > 0 {
+		notes = append(notes, fmt.Sprintf("%d 首版本无法确认", uncertain))
 	}
-	if c.Queued > 0 {
-		notes = append(notes, fmt.Sprintf("%d 首已在队列或处理过", c.Queued))
-	}
-	if c.ArtistCap > 0 {
-		notes = append(notes, fmt.Sprintf("%d 首因同艺人已达上限", c.ArtistCap))
-	}
-	if c.Duplicate > 0 {
-		notes = append(notes, fmt.Sprintf("%d 首为本批重复候选", c.Duplicate))
-	}
-	if c.Other > 0 {
-		notes = append(notes, fmt.Sprintf("%d 首因其他已处理原因", c.Other))
-	}
-	if c.Unavailable > 0 {
-		notes = append(notes, fmt.Sprintf("%d 首暂时无法核对", c.Unavailable))
+	if limited := c.ArtistCap + c.Duplicate; limited > 0 {
+		notes = append(notes, fmt.Sprintf("%d 首本次去重或同艺人限流", limited))
 	}
 	return notes
 }
@@ -473,14 +452,19 @@ func rediscoverShortfallText(skippedOwned, unconfirmed, found, requested int) st
 }
 
 func rediscoverShortfallTextWithCounts(counts rediscoverSkipCounts, found, requested int) string {
-	if requested <= 0 || found >= requested {
+	if requested <= 0 {
+		return ""
+	}
+	candidatePool := counts.Owned + counts.Unconfirmed + counts.Shown + counts.Pending + counts.Dismissed +
+		counts.Queued + counts.ArtistCap + counts.Duplicate + counts.Other + counts.Unavailable
+	if found >= requested && candidatePool == 0 {
 		return ""
 	}
 	notes := counts.notes()
 	if len(notes) == 0 {
 		return fmt.Sprintf("本次找到 %d/%d 首。", found, requested)
 	}
-	return fmt.Sprintf("%s；本次找到 %d/%d 首。", strings.Join(notes, "，"), found, requested)
+	return fmt.Sprintf("本次先找到 %d 首。候选池里还有：%s。", found, strings.Join(notes, "，"))
 }
 
 func rediscoverShortfallLine(card discovery.Card) string {
@@ -501,7 +485,7 @@ func rediscoverEmptyCopy(platform string, batch discovery.RediscoverBatch) strin
 		Other: batch.SkippedOther, Unavailable: batch.Unavailable,
 	}
 	if notes := counts.notes(); len(notes) > 0 {
-		return fmt.Sprintf("在%s里没有新的可入库歌曲：%s。可以换个平台或稍后再试。", name, strings.Join(notes, "，"))
+		return fmt.Sprintf("这次在%s没有找到可入库的遗珠。候选池里：%s。可以换个平台，或稍后再试。", name, strings.Join(notes, "，"))
 	}
 	return "在" + name + "里，这批历史和收藏暂时没有可确认的缺失歌曲。可以换个平台或稍后再试。"
 }
@@ -653,7 +637,8 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 		extra = append(extra, markup.Data("重试入库异常", discoveryCallbackUnique, "retry", "menu"))
 	}
 	if counts[discovery.PendingUpload] > 0 {
-		extra = append(extra, markup.Data("刷新状态", discoveryCallbackUnique, "status", "menu"))
+		extra = append(extra, markup.Data("待上传", discoveryCallbackUnique, "pending_upload", "0"))
+		extra = append(extra, markup.Data("检查上传", discoveryCallbackUnique, "status", "menu"))
 	}
 	if len(extra) > 0 {
 		appendDiscoveryRows(markup, extra)
@@ -960,6 +945,8 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		callbackNotice = "正在重试入库异常…"
 	case "status":
 		callbackNotice = "正在刷新队列状态…"
+	case "pending_upload":
+		callbackNotice = "正在打开待上传…"
 	case "accept":
 		callbackNotice = "正在确认歌曲…"
 	case "reject":
@@ -979,11 +966,10 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		if !validRediscoverPlatform(key) {
 			return c.Respond(&tb.CallbackResponse{Text: "平台无效", ShowAlert: true})
 		}
-		text, markup := discoveryCountMenu(key)
-		if err := c.Respond(&tb.CallbackResponse{Text: aichat.PlatformLabel(key)}); err != nil {
+		if err := c.Respond(&tb.CallbackResponse{Text: "正在精挑 1 首…"}); err != nil {
 			return err
 		}
-		return c.Edit(text, markup)
+		return app.startRediscover(c, key, []string{"find", key, "1"})
 	case "find":
 		return app.startRediscover(c, key, args)
 	case "cancel":
@@ -1009,6 +995,15 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			return err
 		}
 		return app.showDiscoveryFailed(c, page)
+	case "pending_upload":
+		page, e := strconv.Atoi(key)
+		if e != nil || page < 0 || page > 10000 {
+			return c.Respond(&tb.CallbackResponse{Text: "页码无效", ShowAlert: true})
+		}
+		if err := c.Respond(&tb.CallbackResponse{Text: "正在打开待上传…"}); err != nil {
+			return err
+		}
+		return app.showDiscoveryPendingUpload(c, page)
 	case "probe", "pause", "resume", "sync", "history", "favorites", "retry", "status", "accept", "reject":
 		if err := c.Respond(&tb.CallbackResponse{Text: callbackNotice}); err != nil {
 			return err
@@ -1482,6 +1477,57 @@ func discoveryPendingCard(job discovery.Job, index, total int) (string, *tb.Repl
 		markup.Data("不再处理", discoveryCallbackUnique, "reject", job.ID, strconv.Itoa(index)),
 	))
 	appendDiscoveryRows(markup, markup.Row(markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")))
+	return strings.TrimRight(text.String(), "\n"), markup
+}
+
+func (app *BotApp) showDiscoveryPendingUpload(c tb.Context, page int) error {
+	if page < 0 {
+		page = 0
+	}
+	jobs, err := app.discovery.Store.PendingJobs(context.Background(), c.Sender().ID)
+	if err != nil {
+		return answerOnCard(c, "无法读取待上传任务", nil, false)
+	}
+	if len(jobs) == 0 {
+		return app.presentFavorites(c, "✅ 没有待上传任务。")
+	}
+	if page >= len(jobs) {
+		page = len(jobs) - 1
+	}
+	text, markup := discoveryPendingUploadCard(jobs[page], page, len(jobs))
+	return answerOnCard(c, text, markup, true)
+}
+
+func discoveryPendingUploadCard(job discovery.Job, index, total int) (string, *tb.ReplyMarkup) {
+	var text strings.Builder
+	text.WriteString("待上传\n")
+	if total > 1 {
+		fmt.Fprintf(&text, "%d / %d\n", index+1, total)
+	}
+	text.WriteString("\n")
+	fmt.Fprintf(&text, "<b>%s</b>\n", discoveryListenTitle(job.Track.Title, job.Track.URL))
+	if artist := strings.TrimSpace(job.Track.Artist); artist != "" {
+		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
+	}
+	text.WriteString("\n下载已完成，正在等待 NAS/WebDAV 恢复后自动补传；不会重新下载。\n")
+	if note := strings.TrimSpace(job.Error); note != "" {
+		fmt.Fprintf(&text, "最近错误：%s\n", utils.EscapeHTML(utils.TruncateString(note, 140)))
+	}
+	markup := &tb.ReplyMarkup{}
+	nav := tb.Row{}
+	if index > 0 {
+		nav = append(nav, markup.Data("上一首", discoveryCallbackUnique, "pending_upload", strconv.Itoa(index-1)))
+	}
+	if index+1 < total {
+		nav = append(nav, markup.Data("下一首", discoveryCallbackUnique, "pending_upload", strconv.Itoa(index+1)))
+	}
+	if len(nav) > 0 {
+		appendDiscoveryRows(markup, nav)
+	}
+	appendDiscoveryRows(markup,
+		markup.Row(markup.Data("检查上传", discoveryCallbackUnique, "status", "menu")),
+		markup.Row(markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
+	)
 	return strings.TrimRight(text.String(), "\n"), markup
 }
 

@@ -16,15 +16,15 @@ import (
 )
 
 func TestDiscoveryNoticeSkipsTheOwnedCountWhenSongsRemain(t *testing.T) {
-	notice := discoveryNotice("netease", 3, DiscoveryBatch{Tracks: []DiscoveryTrack{{Title: "晴天"}}, SkippedOwned: 4, Unconfirmed: 2})
-	if !strings.Contains(notice, "4 首曲库已有，2 首无法确认唯一版本；本次找到 1/3 首。") {
+	notice := discoveryNotice("netease", 1, DiscoveryBatch{Tracks: []DiscoveryTrack{{Title: "晴天"}}, SkippedOwned: 4, Unconfirmed: 2})
+	if !strings.Contains(notice, "本次先找到 1 首") || !strings.Contains(notice, "4 首曲库已有") || !strings.Contains(notice, "2 首版本无法确认") {
 		t.Fatalf("notice = %q", notice)
 	}
-	empty := discoveryNotice("qq", 3, DiscoveryBatch{SkippedOwned: 2})
-	if !strings.Contains(empty, "2 首曲库已有") {
+	empty := discoveryNotice("qq", 1, DiscoveryBatch{SkippedOwned: 2})
+	if !strings.Contains(empty, "候选池里") || !strings.Contains(empty, "2 首曲库已有") || strings.Contains(empty, "缺失歌曲") {
 		t.Fatalf("empty notice = %q", empty)
 	}
-	shown := discoveryNotice("netease", 3, DiscoveryBatch{SkippedShown: 3})
+	shown := discoveryNotice("netease", 1, DiscoveryBatch{SkippedShown: 3})
 	if !strings.Contains(shown, "3 首最近看过") || strings.Contains(shown, "缺失歌曲") {
 		t.Fatalf("seen history was misreported as empty library: %q", shown)
 	}

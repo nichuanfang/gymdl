@@ -337,7 +337,11 @@ func (s *Store) Exclusions(ctx context.Context, user int64) (map[string]string, 
 		return nil, err
 	}
 	rows.Close()
-	jobs, err := s.db.QueryContext(ctx, `SELECT identity,state FROM discovery_jobs WHERE user_id=? AND state IN ('queued','running','pending_upload','completed','owned','ignored')`, user)
+	// Pending uploads and failures stay visible in the favorites/queue views,
+	// but they are not permanent rediscover exclusions. NAS outages can leave a
+	// song pending for days, and hiding it made the next rediscover batch look
+	// empty even though it had never reached the library.
+	jobs, err := s.db.QueryContext(ctx, `SELECT identity,state FROM discovery_jobs WHERE user_id=? AND state IN ('queued','running','completed','owned')`, user)
 	if err != nil {
 		return nil, err
 	}

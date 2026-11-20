@@ -149,8 +149,8 @@ func TestWebRediscoverPreviewDoesNotConsumeTheShownWindow(t *testing.T) {
 		},
 	}
 	ctx := context.Background()
-	first, err := (webStudio{app: app}).Rediscover(ctx, "netease", 3)
-	if err != nil || len(first.Tracks) != 3 {
+	first, err := (webStudio{app: app}).Rediscover(ctx, "netease", 1)
+	if err != nil || len(first.Tracks) != 1 {
 		t.Fatalf("first batch=%d err=%v", len(first.Tracks), err)
 	}
 	sawPlayed := false
@@ -165,11 +165,11 @@ func TestWebRediscoverPreviewDoesNotConsumeTheShownWindow(t *testing.T) {
 	if !sawPlayed {
 		t.Fatalf("last played was dropped: %+v", first.Tracks)
 	}
-	second, err := (webStudio{app: app}).Rediscover(ctx, "netease", 3)
+	second, err := (webStudio{app: app}).Rediscover(ctx, "netease", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second.Tracks) != 3 {
+	if len(second.Tracks) != 1 {
 		t.Fatalf("web preview consumed the shown window: %+v", second.Tracks)
 	}
 	prefs, err := store.Exclusions(ctx, 42)

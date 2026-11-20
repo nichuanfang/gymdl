@@ -257,8 +257,8 @@ func HandleRediscover(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, "请选择网易云、QQ 音乐或 YouTube")
 		return
 	}
-	if body.Limit != 3 && body.Limit != 6 && body.Limit != 9 {
-		response.Fail(c, http.StatusBadRequest, "数量只能是 3、6 或 9")
+	if body.Limit != 1 {
+		response.Fail(c, http.StatusBadRequest, "每次只能找回 1 首")
 		return
 	}
 	api := currentDiscoveryAPI()
@@ -496,41 +496,46 @@ func normalizeDiscoveryTrack(item discoveryTrackBody) (DiscoveryTrack, error) {
 func discoveryNotice(platform string, requested int, batch DiscoveryBatch) string {
 	name := discoveryPlatformName(platform)
 	count := len(batch.Tracks)
-	counts := []struct {
-		value int
-		label string
-	}{
-		{batch.SkippedOwned, "曲库已有"},
-		{batch.Unconfirmed, "无法确认唯一版本"},
-		{batch.SkippedShown, "最近看过"},
-		{batch.SkippedPending, "待上传"},
-		{batch.SkippedDismissed, "不再推荐"},
-		{batch.SkippedQueued, "已在队列或处理过"},
-		{batch.SkippedArtistCap, "同艺人已达上限"},
-		{batch.SkippedDuplicate, "本批重复候选"},
-		{batch.SkippedOther, "其他已处理原因"},
-		{batch.Unavailable, "暂时无法核对"},
-	}
-	var reasons []string
-	for _, item := range counts {
-		if item.value > 0 {
-			reasons = append(reasons, fmt.Sprintf("%d 首%s", item.value, item.label))
-		}
-	}
-	reasonText := strings.Join(reasons, "，")
+	reasonText := discoveryCandidateSummary(batch)
 	if count == 0 {
 		if reasonText != "" {
-			return fmt.Sprintf("在%s里没有新的可入库歌曲：%s。可以换个平台或稍后再试。", name, reasonText)
+			return fmt.Sprintf("这次在%s没有找到可入库的遗珠。候选池里：%s。可以换个平台，或稍后再试。", name, reasonText)
 		}
 		return "在" + name + "里，这批历史和收藏暂时没有可确认的缺失歌曲。可以换个平台或稍后再试。"
 	}
-	if requested <= 0 || count >= requested {
+	if reasonText == "" {
 		return ""
 	}
-	if reasonText == "" {
-		return fmt.Sprintf("本次找到 %d/%d 首。", count, requested)
+	return fmt.Sprintf("本次先找到 1 首。候选池里还有：%s。", reasonText)
+}
+
+// discoveryCandidateSummary separates the one result the user receives from
+// the whole prefiltered candidate pool. Showing every raw counter inline made
+// it look like the app had searched more than 600 songs for this one request.
+func discoveryCandidateSummary(batch DiscoveryBatch) string {
+	type group struct {
+		counts []int
+		label  string
 	}
-	return fmt.Sprintf("%s；本次找到 %d/%d 首。", reasonText, count, requested)
+	groups := []group{
+		{[]int{batch.SkippedOwned}, "曲库已有"},
+		{[]int{batch.SkippedQueued, batch.SkippedPending}, "已在队列或待上传"},
+		{[]int{batch.SkippedShown}, "最近看过"},
+		{[]int{batch.SkippedDismissed, batch.SkippedOther}, "不再推荐或已处理"},
+		{[]int{batch.Unconfirmed, batch.Unavailable}, "版本无法确认"},
+		{[]int{batch.SkippedArtistCap, batch.SkippedDuplicate}, "本次去重或同艺人限流"},
+	}
+	var notes []string
+	for _, item := range groups {
+		total := 0
+		for _, n := range item.counts {
+			total += n
+		}
+		if total > 0 {
+			notes = append(notes, fmt.Sprintf("%d 首%s", total, item.label))
+		}
+	}
+	return strings.Join(notes, "，")
 }
 
 func discoveryPlatformName(platform string) string {

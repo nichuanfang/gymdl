@@ -536,75 +536,84 @@ func TestRecommendRanksEvidenceAndExcludesOwnedShownDismissed(t *testing.T) {
 	}
 }
 
-func TestRediscoverReservesHistoryBesideFavorites(t *testing.T) {
+func TestPendingUploadDoesNotPermanentlyHideARediscoverSong(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
-	favorites := []Track{
-		testTrack("f1", "FavHigh", "FA"),
-		testTrack("f2", "FavMid", "FB"),
-		testTrack("f3", "FavLow", "FC"),
-	}
-	favorites[0].Plays, favorites[1].Plays, favorites[2].Plays = 100, 90, 80
-	if _, _, err := store.Apply(ctx, 1, 1, snapshot("account", favorites...), true); err != nil {
+	track := testTrack("pending", "等待上传", "甲")
+	id, err := store.Enqueue(ctx, 1, 1, track)
+	if err != nil {
 		t.Fatal(err)
 	}
-	history := []Track{
-		testTrack("h1", "HistHigh", "HA"),
-		testTrack("h2", "HistMid", "HB"),
-		testTrack("h3", "HistLow", "HC"),
+	job, err := store.Job(ctx, id)
+	if err != nil {
+		t.Fatal(err)
 	}
-	history[0].Plays, history[1].Plays, history[2].Plays = 10, 9, 1
+	if err = store.Finish(ctx, job, PendingUpload, "WebDAV unavailable", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	exclusions, err := store.Exclusions(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, hidden := exclusions[Identity(track)]; hidden {
+		t.Fatalf("pending upload was treated as a permanent rediscover exclusion: %+v", exclusions)
+	}
 	svc := Service{Store: store, Provider: stubProvider{}, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
-		return history, nil
+		return []Track{track}, nil
 	}}
-	batch, err := svc.Rediscover(ctx, 1, "netease", 3)
+	batch, err := svc.Rediscover(ctx, 1, "netease", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(batch.Tracks) != 3 || batch.Tracks[0].Title != "HistHigh" || batch.Tracks[1].Title != "HistMid" || batch.Tracks[2].Title != "FavHigh" {
-		t.Fatalf("history should take the odd slot: %+v", batch.Tracks)
-	}
-	shortHistory := history[:1]
-	svc.History = func(context.Context) ([]Track, error) { return shortHistory, nil }
-	svc.historyReady = false
-	batch, err = svc.Rediscover(ctx, 1, "netease", 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(batch.Tracks) != 3 || batch.Tracks[0].Title != "HistHigh" || batch.Tracks[1].Title != "FavHigh" || batch.Tracks[2].Title != "FavMid" {
-		t.Fatalf("short history should be filled from favorites: %+v", batch.Tracks)
+	if len(batch.Tracks) != 1 || batch.Tracks[0].Title != track.Title || batch.SkippedPending != 0 {
+		t.Fatalf("pending upload disappeared from rediscover: %+v", batch)
 	}
 }
 
-func TestRediscoverHistoryBudgetDoesNotStarveFavorites(t *testing.T) {
+func TestRediscoverFindsOneMissingSong(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
-	favorite := testTrack("fav", "仍想听", "收藏歌手")
+	favorite := testTrack("f1", "Fav", "FA")
 	if _, _, err := store.Apply(ctx, 1, 1, snapshot("account", favorite), true); err != nil {
 		t.Fatal(err)
 	}
-	history := make([]Track, 0, 20)
-	for i := 0; i < 20; i++ {
-		history = append(history, testTrack(fmt.Sprintf("h%d", i), fmt.Sprintf("历史%d", i), fmt.Sprintf("歌手%d", i)))
-	}
-	provider := &countingProvider{}
-	provider.resolveOn = func(track Track, platform string) (Track, error) {
-		if strings.HasPrefix(track.Title, "历史") {
-			return Track{}, ErrNoUniqueRecording
-		}
-		track.Platform = platform
-		track.Verified = true
-		return track, nil
-	}
-	svc := Service{Store: store, Provider: provider, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
+	history := []Track{testTrack("h1", "Hist", "HA")}
+	svc := Service{Store: store, Provider: stubProvider{}, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
 		return history, nil
 	}}
-	batch, err := svc.Rediscover(ctx, 1, "netease", 3)
+	batch, err := svc.Rediscover(ctx, 1, "netease", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(batch.Tracks) != 1 || batch.Tracks[0].Title != "仍想听" {
-		t.Fatalf("favorite was starved: %+v", batch.Tracks)
+	if len(batch.Tracks) != 1 || batch.Tracks[0].Title != "Fav" {
+		t.Fatalf("batch = %+v", batch.Tracks)
+	}
+	if _, err = svc.Rediscover(ctx, 1, "netease", 3); err == nil || !strings.Contains(err.Error(), "1 首") {
+		t.Fatalf("legacy batch size accepted: %v", err)
+	}
+}
+
+func TestRediscoverPrefersALongMissedFavorite(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	fav := testTrack("fav", "久未听的收藏", "甲")
+	fav.Plays = 8
+	fav.LastPlayed = time.Now().AddDate(-3, 0, 0)
+	history := []Track{testTrack("hist", "最近常听", "乙")}
+	history[0].Plays = 100
+	history[0].LastPlayed = time.Now()
+	if _, _, err := store.Apply(ctx, 1, 1, snapshot("account", fav), true); err != nil {
+		t.Fatal(err)
+	}
+	svc := Service{Store: store, Provider: stubProvider{}, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
+		return history, nil
+	}}
+	batch, err := svc.Rediscover(ctx, 1, "netease", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Tracks) != 1 || batch.Tracks[0].Title != fav.Title {
+		t.Fatalf("did not choose the missed favorite: %+v", batch.Tracks)
 	}
 }
 
@@ -622,7 +631,7 @@ func TestRediscoverIgnoresInactiveFavorites(t *testing.T) {
 	svc := Service{Store: store, Provider: stubProvider{}, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
 		return []Track{testTrack("h", "听过", "丙")}, nil
 	}}
-	batch, err := svc.Rediscover(ctx, 1, "netease", 3)
+	batch, err := svc.Rediscover(ctx, 1, "netease", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +640,7 @@ func TestRediscoverIgnoresInactiveFavorites(t *testing.T) {
 			t.Fatalf("unliked song used a history slot: %+v", batch.Tracks)
 		}
 	}
-	if len(batch.Tracks) != 2 || batch.Tracks[0].Title != "听过" || batch.Tracks[1].Title != "仍收藏" {
+	if len(batch.Tracks) != 1 || batch.Tracks[0].Title != "仍收藏" {
 		t.Fatalf("batch = %+v", batch.Tracks)
 	}
 }
@@ -760,14 +769,14 @@ func TestRediscoverSplitsDismissedQueuedAndArtistCapReasons(t *testing.T) {
 	svc := Service{Store: s, Provider: stubProvider{}, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
 		return []Track{dismissed, queued, artist1, artist2, artist3}, nil
 	}}
-	batch, err := svc.Rediscover(ctx, 1, "netease", 3)
+	batch, err := svc.Rediscover(ctx, 1, "netease", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if batch.SkippedDismissed != 1 || batch.SkippedQueued != 1 || batch.SkippedArtistCap != 1 {
+	if batch.SkippedDismissed != 1 || batch.SkippedQueued != 1 {
 		t.Fatalf("reason counts = %+v", batch)
 	}
-	if len(batch.Tracks) != 2 {
+	if len(batch.Tracks) != 1 {
 		t.Fatalf("tracks = %+v", batch.Tracks)
 	}
 }
@@ -780,7 +789,7 @@ func TestRediscoverCountsVersionsThePlatformCannotConfirm(t *testing.T) {
 		testTrack("3", "Missing", "C"),
 		testTrack("4", "Also", "D"),
 	}
-	tracks[0].Plays, tracks[1].Plays, tracks[2].Plays, tracks[3].Plays = 40, 30, 20, 10
+	tracks[0].Plays, tracks[1].Plays, tracks[2].Plays, tracks[3].Plays = 10, 40, 30, 20
 	provider := &countingProvider{}
 	provider.resolveOn = func(track Track, platform string) (Track, error) {
 		switch track.Title {
@@ -798,11 +807,11 @@ func TestRediscoverCountsVersionsThePlatformCannotConfirm(t *testing.T) {
 	svc := Service{Store: s, Provider: provider, Library: stubLibrary{}, History: func(context.Context) ([]Track, error) {
 		return tracks, nil
 	}}
-	batch, err := svc.Rediscover(context.Background(), 1, "netease", 3)
+	batch, err := svc.Rediscover(context.Background(), 1, "netease", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(batch.Tracks) != 2 || batch.Unconfirmed != 2 || batch.SkippedOwned != 0 {
+	if len(batch.Tracks) != 1 || batch.Unconfirmed == 0 || batch.SkippedOwned != 0 {
 		t.Fatalf("batch=%+v", batch)
 	}
 }
@@ -831,12 +840,12 @@ func TestRecommendLimitedUsesOnePlatformAndReusesCachedHistory(t *testing.T) {
 		historyCalls++
 		return tracks, nil
 	}}
-	out, err := svc.RecommendLimited(ctx, 1, "netease", 3)
-	if err != nil || len(out) != 3 || resolveCalls != 3 || historyCalls != 1 {
+	out, err := svc.RecommendLimited(ctx, 1, "netease", 1)
+	if err != nil || len(out) != 1 || resolveCalls != 1 || historyCalls != 1 {
 		t.Fatalf("first limited result=%d resolve=%d history=%d err=%v", len(out), resolveCalls, historyCalls, err)
 	}
-	out, err = svc.RecommendLimited(ctx, 1, "netease", 3)
-	if err != nil || len(out) != 3 || resolveCalls != 3 || historyCalls != 1 {
+	out, err = svc.RecommendLimited(ctx, 1, "netease", 1)
+	if err != nil || len(out) != 1 || resolveCalls != 1 || historyCalls != 1 {
 		t.Fatalf("cache missed result=%d resolve=%d history=%d err=%v", len(out), resolveCalls, historyCalls, err)
 	}
 }

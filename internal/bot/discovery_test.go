@@ -279,9 +279,9 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	if strings.Contains(skipped, "已避开") || strings.Contains(skipped, "点歌名") {
 		t.Fatalf("owned skips or listen hint returned to the song card: %s", skipped)
 	}
-	short, shortMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks[:1], SkippedOwned: 1, Unconfirmed: 2, Requested: 3}, 0)
-	if !strings.Contains(short, "1 首曲库已有，2 首无法确认唯一版本；本次找到 1/3 首。") || strings.Contains(short, " / ") {
-		t.Fatalf("shortfall was not explained: %s", short)
+	short, shortMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks[:1], SkippedOwned: 1, Unconfirmed: 2, Requested: 1}, 0)
+	if !strings.Contains(short, "1 首曲库已有，2 首版本无法确认") || !strings.Contains(short, "本次先找到 1 首") {
+		t.Fatalf("candidate pool was not explained: %s", short)
 	}
 	if buttonTexts(shortMarkup)["未处理的全部入库"] || buttonTexts(shortMarkup)["下一首"] || !buttonTexts(shortMarkup)["入库"] {
 		t.Fatalf("single song grew a pager: %#v", buttonTexts(shortMarkup))
@@ -318,15 +318,15 @@ func TestRediscoverEmptyCopyExplainsSeparateSkipReasons(t *testing.T) {
 		t.Fatal(owned)
 	}
 	both := rediscoverEmptyCopy("qq", discovery.RediscoverBatch{SkippedOwned: 1, Unconfirmed: 3})
-	if !strings.Contains(both, "1 首曲库已有") || !strings.Contains(both, "3 首无法确认唯一版本") {
+	if !strings.Contains(both, "1 首曲库已有") || !strings.Contains(both, "3 首版本无法确认") {
 		t.Fatal(both)
 	}
 	only := rediscoverEmptyCopy("youtube", discovery.RediscoverBatch{Unconfirmed: 4})
-	if !strings.Contains(only, "4 首无法确认唯一版本") {
+	if !strings.Contains(only, "4 首版本无法确认") {
 		t.Fatal(only)
 	}
 	reasons := rediscoverEmptyCopy("netease", discovery.RediscoverBatch{SkippedDismissed: 1, SkippedQueued: 2, SkippedArtistCap: 3, SkippedDuplicate: 4})
-	for _, want := range []string{"1 首已设为不再推荐", "2 首已在队列或处理过", "3 首因同艺人已达上限", "4 首为本批重复候选"} {
+	for _, want := range []string{"1 首不再推荐或已处理", "2 首已在队列或待上传", "7 首本次去重或同艺人限流"} {
 		if !strings.Contains(reasons, want) {
 			t.Fatalf("missing %q: %s", want, reasons)
 		}
@@ -360,7 +360,7 @@ func TestFavoritesActionsRewriteTheSameCard(t *testing.T) {
 		}
 		return ctx
 	}
-	if edited := click("history", "menu").edited; !strings.Contains(edited, "先选平台") {
+	if edited := click("history", "menu").edited; !strings.Contains(edited, "选择平台") {
 		t.Fatalf("history did not become the platform menu: %s", edited)
 	}
 	if edited := click("pause", "netease").edited; !strings.Contains(edited, "收藏") {
@@ -546,17 +546,17 @@ func TestRediscoverAllSettledOffersTheSameBatchAgain(t *testing.T) {
 		{Platform: "netease", ID: "1", Title: "一", Artist: "甲", CardAction: discovery.Completed},
 		{Platform: "netease", ID: "2", Title: "二", Artist: "乙", CardAction: "dismissed"},
 	}
-	_, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks, Requested: 9}, 0)
-	if markup.InlineKeyboard[len(markup.InlineKeyboard)-1][0].Data != "find|netease|9" {
+	_, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks, Requested: 1}, 0)
+	if markup.InlineKeyboard[len(markup.InlineKeyboard)-1][0].Data != "find|netease|1" {
 		t.Fatalf("settled card did not offer the same batch: %#v", markup.InlineKeyboard)
 	}
 }
 
-func TestRediscoverShortfallExplainsOwnedSongs(t *testing.T) {
+func TestRediscoverShortfallExplainsTheCandidatePool(t *testing.T) {
 	tracks := []discovery.Track{{Platform: "netease", Title: "一首", Artist: "甲"}}
-	text, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks, SkippedOwned: 2, Unconfirmed: 1, Requested: 3}, 0)
-	if !strings.Contains(text, "2 首曲库已有，1 首无法确认唯一版本；本次找到 1/3 首。") {
-		t.Fatalf("owned skips were hidden from the shortfall: %s", text)
+	text, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks, SkippedOwned: 2, Unconfirmed: 1, Requested: 1}, 0)
+	if !strings.Contains(text, "本次先找到 1 首") || !strings.Contains(text, "2 首曲库已有，1 首版本无法确认") {
+		t.Fatalf("candidate pool was not explained: %s", text)
 	}
 }
 
@@ -591,6 +591,42 @@ func TestFavoritesCardSeparatesSourceAndIngestFailures(t *testing.T) {
 	}
 	if strings.Contains(text, "同步异常") {
 		t.Fatalf("ingest failure leaked into source status: %s", text)
+	}
+}
+
+func TestFavoritesCardOpensPendingUploadsAndShowsRecoveryHint(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app := &BotApp{discovery: &discovery.Service{Store: store}}
+	ctx := context.Background()
+	id, err := store.Enqueue(ctx, 7, 7, discovery.Track{Platform: "netease", ID: "pending-1", Title: "待上传歌", Artist: "甲", URL: "https://music.163.com/song?id=pending-1", Verified: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.Job(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Finish(ctx, job, discovery.PendingUpload, "WebDAV 423", "saved locally", 0); err != nil {
+		t.Fatal(err)
+	}
+	text, markup, err := app.renderFavorites(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "1 待上传") || !buttonTexts(markup)["待上传"] || !buttonTexts(markup)["检查上传"] {
+		t.Fatalf("favorites pending entry = %s %#v", text, buttonTexts(markup))
+	}
+	jobs, err := store.PendingJobs(ctx, 7)
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("pending jobs = %+v err=%v", jobs, err)
+	}
+	cardText, cardMarkup := discoveryPendingUploadCard(jobs[0], 0, 1)
+	if !strings.Contains(cardText, "不会重新下载") || !buttonTexts(cardMarkup)["检查上传"] {
+		t.Fatalf("pending upload card = %s %#v", cardText, buttonTexts(cardMarkup))
 	}
 }
 
@@ -730,32 +766,32 @@ func buttonRowTexts(markup *tb.ReplyMarkup) [][]string {
 	return rows
 }
 
-func TestRediscoverMenusAskForPlatformThenCount(t *testing.T) {
+func TestRediscoverMenuAsksOnlyForPlatform(t *testing.T) {
 	text, markup := discoveryPlatformMenu()
-	if !strings.Contains(text, "先选平台") || buttonTexts(markup)["下载前 3 首"] {
+	if !strings.Contains(text, "选择平台") || !strings.Contains(text, "1 首") || buttonTexts(markup)["下载前 3 首"] {
 		t.Fatalf("platform menu = %s", text)
 	}
-	countText, countMarkup := discoveryCountMenu("netease")
-	if !strings.Contains(countText, "网易云") || !buttonTexts(countMarkup)["3 首"] || !buttonTexts(countMarkup)["9 首"] {
-		t.Fatalf("count menu = %s", countText)
+	labels := buttonTexts(markup)
+	for _, unwanted := range []string{"3 首", "6 首", "9 首"} {
+		if labels[unwanted] {
+			t.Fatalf("count selector still present: %s", unwanted)
+		}
 	}
-	for _, markup := range []*tb.ReplyMarkup{markup, countMarkup} {
-		for _, row := range markup.InlineKeyboard {
-			for _, button := range row {
-				raw, err := json.Marshal(button)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var wire struct {
-					Text string `json:"text"`
-					Data string `json:"callback_data"`
-				}
-				if err = json.Unmarshal(raw, &wire); err != nil {
-					t.Fatal(err)
-				}
-				if len(wire.Data) > 64 || wire.Text == "" || len([]rune(wire.Text)) > 64 {
-					t.Fatalf("button does not fit Telegram: %s", raw)
-				}
+	for _, row := range markup.InlineKeyboard {
+		for _, button := range row {
+			raw, err := json.Marshal(button)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire struct {
+				Text string `json:"text"`
+				Data string `json:"callback_data"`
+			}
+			if err = json.Unmarshal(raw, &wire); err != nil {
+				t.Fatal(err)
+			}
+			if len(wire.Data) > 64 || wire.Text == "" || len([]rune(wire.Text)) > 64 {
+				t.Fatalf("button does not fit Telegram: %s", raw)
 			}
 		}
 	}

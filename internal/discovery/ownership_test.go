@@ -60,7 +60,7 @@ func TestRecommendSkipsWorksTheLibraryAlreadyHas(t *testing.T) {
 	svc := Service{Store: store, Provider: stubProvider{}, Library: library, History: func(context.Context) ([]Track, error) {
 		return []Track{owned, missing}, nil
 	}}
-	batch, err := svc.Rediscover(ctx, 1, "netease", 3)
+	batch, err := svc.Rediscover(ctx, 1, "netease", 1)
 	if err != nil {
 		t.Fatal(err)
 	}

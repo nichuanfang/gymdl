@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -372,7 +373,8 @@ type RediscoverBatch struct {
 }
 
 // RecommendLimited searches one download platform and stops after limit songs.
-// limit is 3, 6, or 9. History, library identity, and search results are cached.
+// Discovery currently requests one song per batch. History, library identity,
+// and search results are cached.
 func (s *Service) RecommendLimited(ctx context.Context, user int64, platform string, limit int) ([]Track, error) {
 	batch, err := s.Rediscover(ctx, user, platform, limit)
 	if err != nil {
@@ -388,9 +390,9 @@ func (s *Service) Rediscover(ctx context.Context, user int64, platform string, l
 		return RediscoverBatch{}, fmt.Errorf("请选择网易云、QQ 音乐或 YouTube")
 	}
 	switch limit {
-	case 3, 6, 9:
+	case 1:
 	default:
-		return RediscoverBatch{}, fmt.Errorf("数量只能是 3、6 或 9")
+		return RediscoverBatch{}, fmt.Errorf("每次只能找回 1 首")
 	}
 	return s.recommend(ctx, user, platform, limit)
 }
@@ -486,8 +488,13 @@ func (s *Service) recommend(ctx context.Context, user int64, platform string, li
 		if a.Favorite != b.Favorite {
 			return a.Favorite
 		}
-		if a.Plays != b.Plays {
-			return a.Plays > b.Plays
+		// A rediscovery candidate should feel like something the user liked
+		// enough to keep but has not heard for a long time. Compare a
+		// log-shaped play score so one heavily repeated song does not crowd out
+		// every other favorite.
+		aScore, bScore := rediscoverScore(a), rediscoverScore(b)
+		if aScore != bScore {
+			return aScore > bScore
 		}
 		if !a.LastPlayed.Equal(b.LastPlayed) {
 			return a.LastPlayed.Before(b.LastPlayed)
@@ -507,38 +514,35 @@ func (s *Service) recommend(ctx context.Context, user int64, platform string, li
 		}
 		return finish(err)
 	}
-	var historyRows, favoriteRows []Track
-	for _, track := range ranked {
-		if track.Favorite {
-			favoriteRows = append(favoriteRows, track)
-			continue
-		}
-		historyRows = append(historyRows, track)
-	}
-	historyQuota, favoriteQuota := discoveryQuotas(limit)
-	// Each side has its own resolve budget. Burning the history budget must
-	// still leave the favorite pass, and a cancelled request still stops both.
-	restHistory, stop, err := s.pickTracks(ctx, state, historyRows, historyQuota, platform, resolveAttemptBudget(historyQuota))
-	if err != nil || stop {
-		if stop {
-			err = nil
-		}
-		return finish(err)
-	}
-	restFavorites, stop, err := s.pickTracks(ctx, state, favoriteRows, favoriteQuota, platform, resolveAttemptBudget(favoriteQuota))
-	if err != nil || stop {
-		if stop {
-			err = nil
-		}
-		return finish(err)
-	}
-	if len(state.out) < limit {
-		_, stop, err = s.pickTracks(ctx, state, append(restHistory, restFavorites...), limit-len(state.out), platform, resolveAttemptBudget(limit-len(state.out)))
-		if stop {
-			err = nil
-		}
+	// One ranked pool lets a long-missed favorite compete with a frequently
+	// played history row. Separate history/favorite quotas made the first item
+	// of a one-song batch almost always come from history.
+	_, stop, err := s.pickTracks(ctx, state, ranked, limit, platform, resolveAttemptBudget(limit))
+	if stop {
+		err = nil
 	}
 	return finish(err)
+}
+
+// rediscoverScore favours repeatedly played songs that have been away for a
+// while. The logarithm keeps 100 plays from dwarfing a deeply missed song with
+// 20 plays, while the time component lets old favorites rise again.
+func rediscoverScore(t Track) float64 {
+	plays := float64(t.Plays)
+	if plays < 1 {
+		plays = 1
+	}
+	score := math.Log1p(plays)
+	if !t.LastPlayed.IsZero() {
+		days := time.Since(t.LastPlayed).Hours() / 24
+		if days > 0 {
+			score += math.Log1p(days) * 0.75
+		}
+	}
+	if t.Favorite {
+		score += 1
+	}
+	return score
 }
 
 func resolveAttemptBudget(want int) int {
@@ -546,16 +550,6 @@ func resolveAttemptBudget(want int) int {
 		return 0
 	}
 	return want * 8
-}
-
-// discoveryQuotas keeps listening history on the card when favorites are much
-// larger. The extra song on an odd limit goes to history.
-func discoveryQuotas(limit int) (history int, favorite int) {
-	if limit <= 0 {
-		return 0, 0
-	}
-	history = limit/2 + limit%2
-	return history, limit - history
 }
 
 type recommendPick struct {

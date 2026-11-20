@@ -250,7 +250,7 @@ func TestRediscoverPreviewRejectsBadInputAndDoesNotRecordShown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(badLimit, "数量只能是 3、6 或 9") || strings.Contains(badLimit, "晴天") {
+	if !strings.Contains(badLimit, "每次只能找回 1 首") || strings.Contains(badLimit, "晴天") {
 		t.Fatalf("bad limit = %s", badLimit)
 	}
 	if _, ok := rediscoverLimitArg(map[string]any{"limit": float64(4)}); ok {
@@ -270,7 +270,7 @@ func TestRediscoverPreviewRejectsBadInputAndDoesNotRecordShown(t *testing.T) {
 	if err = json.Unmarshal([]byte(result), &payload); err != nil {
 		t.Fatalf("decode %s: %v", result, err)
 	}
-	if !payload.Available || payload.Requested != 3 || payload.Count != 1 || len(payload.Tracks) != 1 {
+	if !payload.Available || payload.Requested != 1 || payload.Count != 1 || len(payload.Tracks) != 1 {
 		t.Fatalf("payload = %+v", payload)
 	}
 	if payload.Tracks[0].Title != "晴天" || payload.Tracks[0].Artist != "周杰伦" {

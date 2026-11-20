@@ -5,20 +5,9 @@
     <n-card size="small" :bordered="false" class="studio-card">
       <div class="control-row">
         <n-select v-model:value="platform" :options="platformOptions" class="platform-select" :disabled="searching" />
-        <div class="count-row" role="group" aria-label="数量">
-          <button
-            v-for="count in counts"
-            :key="count"
-            type="button"
-            class="count-chip"
-            :class="{ active: limit === count }"
-            :disabled="searching"
-            @click="limit = count"
-          >{{ count }} 首</button>
-        </div>
-        <n-button type="primary" :loading="searching" :disabled="acting" @click="search">找回</n-button>
+        <n-button type="primary" :loading="searching" :disabled="acting" @click="search">精挑 1 首</n-button>
       </div>
-      <p class="studio-help">从听过和收藏过的歌里，找出曲库还没有的版本。先在这里看，试听后再入库。入库只是排队，这页会跟着显示进度。</p>
+      <p class="studio-help">每次从听过和收藏里精挑 1 首曲库还没有的歌，优先收藏和很久没听的高频歌。试听后再决定是否入库。</p>
     </n-card>
 
     <n-alert v-if="notice && tracks.length" type="info" :show-icon="false">{{ notice }}</n-alert>
@@ -31,9 +20,9 @@
       </n-button>
     </div>
 
-    <div v-if="!searched && !searching" class="empty-well">选好平台和数量后点找回。歌曲会列在这里，可以试听，再决定单首或整组入库。</div>
+    <div v-if="!searched && !searching" class="empty-well">选好平台后点精挑 1 首。可以试听，再决定是否入库。</div>
     <div v-else-if="searching" class="result-list" aria-hidden="true">
-      <div v-for="n in limit" :key="n" class="track-card skeleton"><span class="skel" /><span class="skel short" /></div>
+      <div class="track-card skeleton"><span class="skel" /><span class="skel short" /></div>
     </div>
 
     <article v-for="track in tracks" :key="trackKey(track)" class="track-card">
@@ -61,7 +50,7 @@
       </div>
     </article>
 
-    <div v-if="searched && !searching && !tracks.length && !error" class="empty-well">{{ notice || '这批没有可入库的新歌。可以换个平台或数量。' }}</div>
+    <div v-if="searched && !searching && !tracks.length && !error" class="empty-well">{{ notice || '这次没有可入库的新歌。可以换个平台再试。' }}</div>
   </section>
 </template>
 
@@ -80,8 +69,7 @@ type TagType = 'default' | 'success' | 'error' | 'warning' | 'info'
 const message = useMessage()
 const dialog = useDialog()
 const platform = ref('netease')
-const limit = ref(6)
-const counts = [3, 6, 9]
+const limit = 1
 const platformOptions = [
   { label: '网易云', value: 'netease' },
   { label: 'QQ 音乐', value: 'qq' },
@@ -208,7 +196,7 @@ async function search() {
   notes.value = {}
   stopPoll()
   try {
-    const response = await rediscoverTracks(platform.value, limit.value)
+    const response = await rediscoverTracks(platform.value, limit)
     if (seq !== searchSeq) return
     if (response.code !== 200 || !response.data) throw new Error(response.message || '找回失败')
     tracks.value = response.data.tracks || []
@@ -354,13 +342,6 @@ onUnmounted(stopPoll)
 .empty-well { padding: 22px 16px; border: 1px dashed rgba(125,150,141,.24); border-radius: 16px; color: #8ea39b; line-height: 1.6; }
 .skel { display: block; height: 12px; margin-bottom: 8px; border-radius: 999px; background: rgba(255,255,255,.06); }
 .skel.short { width: 55%; margin-bottom: 0; }
-.count-row { display: flex; gap: 6px; }
-.count-chip {
-  min-height: 30px; padding: 4px 12px; border: 1px solid rgba(171, 190, 184, .16); border-radius: 999px;
-  color: #8c9a94; background: rgba(16, 22, 26, .4); cursor: pointer;
-  transition: color .22s var(--ease, ease), border-color .22s var(--ease, ease), background .22s var(--ease, ease);
-}
-.count-chip.active { color: #06140f; border-color: #63e2b7; background: #63e2b7; }
 .result-head, .track-card { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .result-head { color: #8ea39b; font-size: 13px; }
 .track-card { padding: 14px 16px; border: 1px solid rgba(125, 150, 141, .16); border-radius: 16px; }
@@ -373,8 +354,5 @@ a.track-title:hover { color: #63e2b7; }
 @media (max-width: 700px) {
   .track-card, .result-head { align-items: flex-start; flex-direction: column; }
   .platform-select { width: 100%; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .count-chip { transition: none; }
 }
 </style>
