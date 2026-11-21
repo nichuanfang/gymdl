@@ -210,24 +210,23 @@ func TestDiscoveryPendingCardShowsOneSong(t *testing.T) {
 		Error: "对不上唯一版本 <原版>",
 	}
 	text, markup := discoveryPendingCard(job, 0, 3)
-	if strings.Contains(text, "确认 1") || strings.Contains(text, "https://music.163.com/song?id=1") && !strings.Contains(text, `<a href=`) || !strings.Contains(text, "1 / 3") {
-		t.Fatalf("pending card dumped the old list: %s", text)
+	for _, want := range []string{"⚠️ <b>待确认</b> · 1/3", "歌曲: <a href=\"https://music.163.com/song?id=1\">至少还有你</a>", "艺人: 林忆莲", "原因: 对不上唯一版本 &lt;原版&gt;"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q: %s", want, text)
+		}
 	}
-	if !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">至少还有你</a></b>`) || !strings.Contains(text, "林忆莲") || !strings.Contains(text, "对不上唯一版本 &lt;原版&gt;") {
-		t.Fatalf("pending card = %s", text)
-	}
-	if got := buttonRowTexts(markup); len(got) != 4 || got[0][0] != "确认" || got[1][0] != "下一首" || got[2][0] != "不再处理" || got[3][0] != "收藏同步" {
+	if got := buttonRowTexts(markup); len(got) != 3 || len(got[0]) != 2 || got[0][0] != "确认入库" || got[0][1] != "不再处理" || got[1][0] != "下一首" || got[2][0] != "返回收藏" {
 		t.Fatalf("pending rows = %#v", got)
 	}
-	if markup.InlineKeyboard[0][0].Data != "accept|job-1|0" || markup.InlineKeyboard[2][0].Data != "reject|job-1|0" {
-		t.Fatalf("pending callbacks = %s / %s", markup.InlineKeyboard[0][0].Data, markup.InlineKeyboard[2][0].Data)
+	if markup.InlineKeyboard[0][0].Data != "accept|job-1|0" || markup.InlineKeyboard[0][1].Data != "reject|job-1|0" {
+		t.Fatalf("pending callbacks = %s / %s", markup.InlineKeyboard[0][0].Data, markup.InlineKeyboard[0][1].Data)
 	}
 	last, lastMarkup := discoveryPendingCard(job, 2, 3)
-	if !strings.Contains(last, "3 / 3") || buttonTexts(lastMarkup)["下一首"] || !buttonTexts(lastMarkup)["上一首"] {
+	if !strings.Contains(last, "3/3") || buttonTexts(lastMarkup)["下一首"] || !buttonTexts(lastMarkup)["上一首"] {
 		t.Fatalf("last pending card = %s %#v", last, buttonTexts(lastMarkup))
 	}
 	only, onlyMarkup := discoveryPendingCard(job, 0, 1)
-	if strings.Contains(only, " / ") || buttonTexts(onlyMarkup)["下一首"] || !buttonTexts(onlyMarkup)["确认"] || !buttonTexts(onlyMarkup)["不再处理"] {
+	if strings.Contains(only, "1/1") || buttonTexts(onlyMarkup)["下一首"] || !buttonTexts(onlyMarkup)["确认入库"] || !buttonTexts(onlyMarkup)["不再处理"] {
 		t.Fatalf("single pending card = %s %#v", only, buttonTexts(onlyMarkup))
 	}
 }
@@ -246,7 +245,7 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	if !strings.Contains(text, "🎵 <b>遗珠</b>\n──────────────────\n") {
 		t.Fatalf("heading lost the shared card frame: %s", text)
 	}
-	if !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">第一首</a></b>`) || !strings.Contains(text, "甲") || !strings.Contains(text, "《专辑甲》") || strings.Contains(text, "听过") || strings.Contains(text, "收藏过") {
+	if !strings.Contains(text, `歌曲: <a href="https://music.163.com/song?id=1">第一首</a>`) || !strings.Contains(text, "艺人: 甲") || !strings.Contains(text, "专辑: 专辑甲") || strings.Contains(text, "听过") || strings.Contains(text, "收藏过") {
 		t.Fatalf("card should show only title, artist and album: %s", text)
 	}
 	labels := buttonTexts(markup)
@@ -309,6 +308,45 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	}
 	if shortMarkup == nil {
 		t.Fatal("short card lost its keyboard")
+	}
+}
+
+func TestRediscoverCardKeepsTheOriginalFrameAndAddsCompactFacts(t *testing.T) {
+	track := discovery.Track{
+		Platform: "netease", ID: "1", Title: "东方之珠 (Live)", Artist: "罗大佑", Album: "北京-香港演唱会",
+		URL: "https://music.163.com/song?id=1", Duration: 201, Favorite: true, Plays: 12,
+		LastPlayed: time.Now().AddDate(0, 0, -40), CardAction: discovery.Running,
+	}
+	text, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: []discovery.Track{track}}, 0)
+	want := "🎵 <b>遗珠 · 网易云</b>\n──────────────────\n\n歌曲: <a href=\"https://music.163.com/song?id=1\">东方之珠 (Live)</a>\n艺人: 罗大佑\n专辑: 北京-香港演唱会\n时长: 3:21\n次数: 12次\n\n⏳ 正在整理入库..."
+	if text != want {
+		t.Fatalf("card = %q, want %q", text, want)
+	}
+	if got := buttonRowTexts(markup); len(got) != 1 || len(got[0]) != 2 || got[0][0] != "重新拾遗" || got[0][1] != "取消" {
+		t.Fatalf("button rows = %#v", got)
+	}
+}
+
+func TestRediscoverCardTruncatesAndEscapesLongArtistAlbum(t *testing.T) {
+	track := discovery.Track{
+		Platform: "qq", ID: "1", Title: "标题", Artist: strings.Repeat("歌", 30) + "<&>",
+		Album: strings.Repeat("专", 40) + `"`, URL: "https://y.qq.com/n/ryqq/songDetail/1",
+	}
+	text, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: []discovery.Track{track}}, 0)
+	if strings.Contains(text, "<&>") || !strings.Contains(text, "艺人: "+strings.Repeat("歌", 29)+"...") || !strings.Contains(text, "专辑: "+strings.Repeat("专", 29)+"...") {
+		t.Fatalf("long artist or album was not escaped and truncated: %s", text)
+	}
+	if strings.Contains(text, "时长:") || strings.Contains(text, "次数:") || strings.Contains(text, "⏳") {
+		t.Fatalf("missing facts left extra fields: %s", text)
+	}
+}
+
+func TestRediscoverCardOmitsMissingFields(t *testing.T) {
+	track := discovery.Track{Platform: "youtube", ID: "1", Title: "只有歌名", URL: "https://music.youtube.com/watch?v=1"}
+	text, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: []discovery.Track{track}}, 0)
+	want := "🎵 <b>遗珠 · YouTube</b>\n──────────────────\n\n歌曲: <a href=\"https://music.youtube.com/watch?v=1\">只有歌名</a>"
+	if text != want {
+		t.Fatalf("card = %q, want %q", text, want)
 	}
 }
 
@@ -612,7 +650,7 @@ func TestFavoritesCardSeparatesSourceAndIngestFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, "2 入库异常") || !buttonTexts(markup)["重试入库异常"] {
+	if !strings.Contains(text, "2 异常") || !buttonTexts(markup)["重试"] || !buttonTexts(markup)["查看异常"] {
 		t.Fatalf("ingest failures = %s %#v", text, buttonTexts(markup))
 	}
 	if strings.Contains(text, "同步异常") {
@@ -643,7 +681,7 @@ func TestFavoritesCardOpensPendingUploadsAndShowsRecoveryHint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(text, "1 待上传") || !buttonTexts(markup)["待上传"] || !buttonTexts(markup)["检查上传"] {
+	if !strings.Contains(text, "1 待上传") || !buttonTexts(markup)["查看待上传"] || !buttonTexts(markup)["检查上传"] {
 		t.Fatalf("favorites pending entry = %s %#v", text, buttonTexts(markup))
 	}
 	jobs, err := store.PendingJobs(ctx, 7)
@@ -651,8 +689,60 @@ func TestFavoritesCardOpensPendingUploadsAndShowsRecoveryHint(t *testing.T) {
 		t.Fatalf("pending jobs = %+v err=%v", jobs, err)
 	}
 	cardText, cardMarkup := discoveryPendingUploadCard(jobs[0], 0, 1)
-	if !strings.Contains(cardText, "不用重新下载") || !buttonTexts(cardMarkup)["检查上传"] {
+	if !strings.Contains(cardText, "NAS 恢复后自动上传") || !buttonTexts(cardMarkup)["检查上传"] {
 		t.Fatalf("pending upload card = %s %#v", cardText, buttonTexts(cardMarkup))
+	}
+}
+
+func TestFavoritesCardKeepsPlatformRowsCompact(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if _, _, err = store.Apply(ctx, 7, 7, discovery.Snapshot{Platform: "qq", Account: "99887766", Complete: true, Tracks: []discovery.Track{{Platform: "qq", ID: "1", Title: "歌", Artist: "甲", Verified: true}}}, true); err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{discovery: &discovery.Service{Store: store, Enabled: true}}
+	text, markup, err := app.renderFavorites(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<b>QQ 音乐</b> · 已开启 · 998…766", "<b>网易云</b> · 未绑定", "<b>YouTube</b> · 未绑定", "入库：暂无任务"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "\n\n\n") {
+		t.Fatalf("favorites card has extra blank spacing: %s", text)
+	}
+	if got := buttonRowTexts(markup); len(got) < 4 || len(got[1]) != 2 || got[1][0] != "重绑" || got[1][1] != "暂停" || got[len(got)-1][0] != "找回遗珠" || got[len(got)-1][1] != "同步全部" {
+		t.Fatalf("favorites buttons = %#v", got)
+	}
+}
+
+func TestDiscoveryPendingUploadAndFailedCardsUseTrackFields(t *testing.T) {
+	job := discovery.Job{Track: discovery.Track{
+		Platform: "netease", Title: "待上传歌", Artist: "甲", Album: "专辑", URL: "https://music.163.com/song?id=pending-1",
+	}, Error: "WebDAV 423 <锁定>"}
+	upload, uploadMarkup := discoveryPendingUploadCard(job, 0, 2)
+	for _, want := range []string{"☁️ <b>待上传</b> · 1/2", "歌曲: <a href=\"https://music.163.com/song?id=pending-1\">待上传歌</a>", "艺人: 甲", "专辑: 专辑", "平台: 网易云", "NAS 恢复后自动上传", "原因: WebDAV 423 &lt;锁定&gt;"} {
+		if !strings.Contains(upload, want) {
+			t.Fatalf("upload card missing %q: %s", want, upload)
+		}
+	}
+	if got := buttonRowTexts(uploadMarkup); len(got) != 2 || got[0][0] != "检查上传" || got[0][1] != "返回收藏" || got[1][0] != "下一首" {
+		t.Fatalf("upload buttons = %#v", got)
+	}
+	failed, failedMarkup := discoveryFailedCard(discovery.Job{Track: job.Track, Error: "下载失败"}, 1, 2)
+	for _, want := range []string{"⚠️ <b>入库异常</b> · 2/2", "歌曲: <a href=", "原因: 下载失败"} {
+		if !strings.Contains(failed, want) {
+			t.Fatalf("failed card missing %q: %s", want, failed)
+		}
+	}
+	if got := buttonRowTexts(failedMarkup); len(got) != 2 || got[0][0] != "重试" || got[0][1] != "返回收藏" || got[1][0] != "上一首" {
+		t.Fatalf("failed buttons = %#v", got)
 	}
 }
 
@@ -690,7 +780,7 @@ func TestFavoritesCardShowsNamedSyncState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"<b>收藏同步</b>", "<b>网易云</b> · 已开启", "账号：112…170", "上次同步：", "同步异常：网易云收藏暂时读不到，本轮跳过", "<b>QQ 音乐</b> · 未绑定", "入库：暂无待处理任务"} {
+	for _, want := range []string{"<b>收藏同步</b>", "<b>网易云</b> · 已开启 · 112…170", "上次同步：", "异常：网易云收藏暂时读不到，本轮跳过", "<b>QQ 音乐</b> · 未绑定", "入库：暂无任务"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q\n%s", want, text)
 		}
@@ -699,7 +789,7 @@ func TestFavoritesCardShowsNamedSyncState(t *testing.T) {
 		t.Fatal(text)
 	}
 	labels := buttonTexts(markup)
-	if !labels["重绑网易云"] || !labels["暂停网易云"] || !labels["绑定 QQ 音乐"] || !labels["绑定 YouTube"] || labels["重新绑定"] || labels["暂停"] {
+	if !labels["重绑"] || !labels["暂停"] || !labels["绑定QQ音乐"] || !labels["绑定YouTube"] || labels["重新绑定"] {
 		t.Fatalf("buttons = %#v", labels)
 	}
 }
@@ -715,7 +805,7 @@ func TestFavoritesCardNamesTheAllPlatformSyncAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !buttonTexts(markup)["同步全部平台"] || buttonTexts(markup)["现在同步"] {
+	if !buttonTexts(markup)["同步全部"] || buttonTexts(markup)["现在同步"] {
 		t.Fatalf("sync action = %#v", buttonTexts(markup))
 	}
 }
@@ -732,10 +822,10 @@ func TestFavoritesCardOmitsActionsThatHaveNothingToDo(t *testing.T) {
 		t.Fatal(err)
 	}
 	labels := buttonTexts(markup)
-	if labels["同步全部平台"] || labels["重试入库异常"] || labels["待确认"] || labels["刷新状态"] {
+	if labels["同步全部"] || labels["重试"] || labels["处理待确认"] || labels["刷新状态"] {
 		t.Fatalf("idle favorites card offered empty actions: %#v\n%s", labels, text)
 	}
-	if !labels["绑定 网易云"] || !labels["找回遗珠"] {
+	if !labels["绑定网易云"] || !labels["找回遗珠"] {
 		t.Fatalf("useful actions missing: %#v", labels)
 	}
 	if _, err = store.Enqueue(context.Background(), 7, 7, discovery.Track{Platform: "netease", ID: "9", Title: "失败的歌", Artist: "甲", URL: "https://music.163.com/song?id=9", Verified: true}); err != nil {
@@ -752,7 +842,7 @@ func TestFavoritesCardOmitsActionsThatHaveNothingToDo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !buttonTexts(markup)["重试入库异常"] || !buttonTexts(markup)["查看入库异常"] {
+	if !buttonTexts(markup)["重试"] || !buttonTexts(markup)["查看异常"] {
 		t.Fatal("failed job did not offer retry and inspection")
 	}
 }
@@ -853,14 +943,14 @@ func TestRediscoverSongNameOpensTheListenLink(t *testing.T) {
 	}
 	for index, track := range tracks[:2] {
 		text, markup := discoveryRecommendationCard(discovery.Card{Token: "test-card", Tracks: tracks}, index)
-		want := fmt.Sprintf(`<b><a href="%s">%s</a></b>`, track.URL, track.Title)
+		want := fmt.Sprintf(`歌曲: <a href="%s">%s</a>`, track.URL, track.Title)
 		if !strings.Contains(text, want) || strings.Contains(text, "试听·") {
 			t.Fatalf("title is not the listen link: %s", text)
 		}
 		assertNoListenButton(t, markup)
 	}
 	youtube, youtubeMarkup := discoveryRecommendationCard(discovery.Card{Token: "test-card", Tracks: tracks}, 2)
-	if !strings.Contains(youtube, `<b><a href="https://music.youtube.com/watch?v=dQw4w9WgXcQ&amp;list=1">A &amp; B</a></b>`) || !strings.Contains(youtube, "X &lt;Y&gt;") || strings.Contains(youtube, "网易云歌曲") {
+	if !strings.Contains(youtube, `歌曲: <a href="https://music.youtube.com/watch?v=dQw4w9WgXcQ&amp;list=1">A &amp; B</a>`) || !strings.Contains(youtube, "X &lt;Y&gt;") || strings.Contains(youtube, "网易云歌曲") {
 		t.Fatalf("link or artist was not escaped: %s", youtube)
 	}
 	assertNoListenButton(t, youtubeMarkup)
@@ -912,7 +1002,7 @@ func TestRediscoverProgressFollowsTheDownload(t *testing.T) {
 		t.Fatalf("running progress = %#v changed=%t pending=%t err=%v", updated.Tracks, changed, pending, err)
 	}
 	runningText, _ := discoveryRecommendationCard(updated, 0)
-	if !strings.Contains(runningText, "下载中") {
+	if !strings.Contains(runningText, "正在整理入库") {
 		t.Fatal(runningText)
 	}
 	job, err = store.Job(context.Background(), id)

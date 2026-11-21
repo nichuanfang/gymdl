@@ -222,15 +222,22 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 		fmt.Fprintf(&text, "本批 %d 首 · 第 %d 首\n", len(card.Tracks), page+1)
 	}
 	text.WriteByte('\n')
-	fmt.Fprintf(&text, "<b>%s</b>\n", discoveryListenTitle(track.Title, track.URL))
+	fmt.Fprintf(&text, "歌曲: %s\n", discoveryListenTitle(track.Title, track.URL))
 	if artist := strings.TrimSpace(track.Artist); artist != "" {
-		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
+		fmt.Fprintf(&text, "艺人: %s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
 	}
 	if album := strings.TrimSpace(track.Album); album != "" {
-		fmt.Fprintf(&text, "《%s》\n", utils.EscapeHTML(utils.TruncateString(album, 32)))
+		fmt.Fprintf(&text, "专辑: %s\n", utils.EscapeHTML(utils.TruncateString(album, 32)))
 	}
-	if decision := rediscoverDecision(track); decision != "" {
-		fmt.Fprintf(&text, "%s\n", decision)
+	if duration := rediscoverDuration(track.Duration); duration != "" {
+		fmt.Fprintf(&text, "时长: %s\n", duration)
+	}
+	if track.Plays > 0 {
+		fmt.Fprintf(&text, "次数: %d次\n", track.Plays)
+	}
+	if status := rediscoverDecision(track); status != "" {
+		text.WriteByte('\n')
+		fmt.Fprintf(&text, "%s\n", status)
 	}
 	discoverySongButtons(markup, card, page)
 	return strings.TrimRight(text.String(), "\n"), markup
@@ -311,18 +318,11 @@ func rediscoverHeading(tracks []discovery.Track) string {
 	return "遗珠 · " + aichat.PlatformLabel(platform)
 }
 
-func rediscoverFactLine(track discovery.Track) string {
-	reason := "听过"
-	if track.Favorite {
-		reason = "收藏"
+func rediscoverDuration(seconds int) string {
+	if seconds <= 0 {
+		return ""
 	}
-	if track.Plays > 0 {
-		reason += fmt.Sprintf(" %d 次", track.Plays)
-	}
-	if decision := rediscoverDecision(track); decision != "" {
-		return reason + " · " + decision
-	}
-	return reason
+	return fmt.Sprintf("%d:%02d", seconds/60, seconds%60)
 }
 
 func rediscoverDecision(track discovery.Track) string {
@@ -330,30 +330,45 @@ func rediscoverDecision(track discovery.Track) string {
 	case "":
 		return ""
 	case "dismissed":
-		return "不再推荐"
+		return "🚫 不再推荐"
 	case discovery.Queued:
-		return "排队"
+		return "🕒 排队中..."
 	case discovery.Running:
-		return "下载中"
+		return "⏳ 正在整理入库..."
 	case discovery.PendingUpload:
-		return "待上传"
+		return "☁️ 等待上传..."
 	case discovery.Completed:
-		return "已入库"
+		return "✅ 已入库"
 	case discovery.Owned:
-		return "曲库已有"
+		return "✅ 曲库已有"
 	case discovery.NeedsConfirmation:
-		return "待确认"
+		return "⚠️ 待确认"
 	case discovery.Ignored:
 		return "已跳过"
 	case discovery.Failed:
 		note := strings.Join(strings.Fields(track.IngestNote), " ")
 		if note == "" {
-			return "失败"
+			return "⚠️ 入库失败"
 		}
-		return "失败 · " + utils.EscapeHTML(utils.TruncateString(note, 80))
+		return "⚠️ 入库失败 · " + utils.EscapeHTML(utils.TruncateString(note, 50))
 	default:
 		return ""
 	}
+}
+
+func rediscoverTrackFields(track discovery.Track) string {
+	var text strings.Builder
+	fmt.Fprintf(&text, "歌曲: %s\n", discoveryListenTitle(track.Title, track.URL))
+	if artist := strings.TrimSpace(track.Artist); artist != "" {
+		fmt.Fprintf(&text, "艺人: %s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
+	}
+	if album := strings.TrimSpace(track.Album); album != "" {
+		fmt.Fprintf(&text, "专辑: %s\n", utils.EscapeHTML(utils.TruncateString(album, 32)))
+	}
+	if platform := strings.TrimSpace(track.Platform); platform != "" {
+		fmt.Fprintf(&text, "平台: %s\n", utils.EscapeHTML(aichat.PlatformLabel(platform)))
+	}
+	return text.String()
 }
 
 func rediscoverNeedsConfirmation(tracks []discovery.Track) bool {
@@ -550,9 +565,9 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 	}
 	var text strings.Builder
 	text.WriteString("🎵 <b>收藏同步</b>\n")
-	text.WriteString("──────────────────")
+	text.WriteString("──────────────────\n")
 	if !app.discovery.Enabled {
-		text.WriteString("\n自动同步未启用。绑定账号后，新增收藏也不会自动入库")
+		text.WriteString("自动同步：未启用\n")
 	}
 	byPlatform := map[string]discovery.Binding{}
 	for _, binding := range bindings {
@@ -563,69 +578,81 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 		binding, ok := byPlatform[platform]
 		name := aichat.PlatformLabel(platform)
 		if !ok {
-			fmt.Fprintf(&text, "\n\n<b>%s</b> · 未绑定", utils.EscapeHTML(name))
-			appendDiscoveryRows(markup, markup.Row(markup.Data("绑定 "+name, discoveryCallbackUnique, "probe", platform)))
+			fmt.Fprintf(&text, "<b>%s</b> · 未绑定\n", utils.EscapeHTML(name))
+			appendDiscoveryRows(markup, markup.Row(markup.Data("绑定"+strings.ReplaceAll(name, " ", ""), discoveryCallbackUnique, "probe", platform)))
 			continue
 		}
-		fmt.Fprintf(&text, "\n\n<b>%s</b> · %s", utils.EscapeHTML(name), utils.EscapeHTML(favoriteCardState(app.discovery.Enabled, binding.PausedByUser)))
+		fmt.Fprintf(&text, "<b>%s</b> · %s", utils.EscapeHTML(name), utils.EscapeHTML(favoriteCardState(app.discovery.Enabled, binding.PausedByUser)))
 		if account := maskedDiscoveryAccount(binding.Account); account != "" {
-			fmt.Fprintf(&text, "\n账号：%s", utils.EscapeHTML(account))
+			fmt.Fprintf(&text, " · %s", utils.EscapeHTML(account))
 		}
+		text.WriteByte('\n')
 		if binding.LastSync > 0 {
-			fmt.Fprintf(&text, "\n上次同步：%s", time.Unix(binding.LastSync, 0).Local().Format("01-02 15:04"))
+			fmt.Fprintf(&text, "上次同步：%s\n", time.Unix(binding.LastSync, 0).Local().Format("01-02 15:04"))
 		}
 		if reason := favoritePlatformError(platform, binding.Error); reason != "" {
-			fmt.Fprintf(&text, "\n同步异常：%s", utils.EscapeHTML(utils.TruncateString(reason, 80)))
+			fmt.Fprintf(&text, "异常：%s\n", utils.EscapeHTML(utils.TruncateString(reason, 60)))
 		}
 		action, verb := "pause", "暂停"
 		if binding.PausedByUser {
 			action, verb = "resume", "恢复"
 		}
-		compact := strings.ReplaceAll(name, " ", "")
 		appendDiscoveryRows(markup, markup.Row(
-			markup.Data("重绑"+compact, discoveryCallbackUnique, "probe", platform),
-			markup.Data(verb+compact, discoveryCallbackUnique, action, platform),
+			markup.Data("重绑", discoveryCallbackUnique, "probe", platform),
+			markup.Data(verb, discoveryCallbackUnique, action, platform),
 		))
 	}
 	var queue []string
 	for _, state := range []string{discovery.Queued, discovery.Running, discovery.PendingUpload, discovery.NeedsConfirmation, discovery.Failed} {
 		if counts[state] > 0 {
-			label := discovery.StateLabel(state)
-			if state == discovery.PendingUpload {
-				label = "待上传"
-			}
-			if state == discovery.Failed {
-				label = "入库异常"
-			}
+			label := discoveryStateShortLabel(state)
 			queue = append(queue, fmt.Sprintf("%d %s", counts[state], label))
 		}
 	}
+	text.WriteByte('\n')
 	if len(queue) > 0 {
-		fmt.Fprintf(&text, "\n\n入库：%s", utils.EscapeHTML(strings.Join(queue, " · ")))
+		fmt.Fprintf(&text, "入库：%s\n", utils.EscapeHTML(strings.Join(queue, " · ")))
 	} else {
-		text.WriteString("\n\n入库：暂无待处理任务")
+		text.WriteString("入库：暂无任务\n")
 	}
 	actions := tb.Row{markup.Data("找回遗珠", discoveryCallbackUnique, "history", "menu")}
 	if app.discovery.Enabled {
-		actions = append(actions, markup.Data("同步全部平台", discoveryCallbackUnique, "sync", "menu"))
+		actions = append(actions, markup.Data("同步全部", discoveryCallbackUnique, "sync", "menu"))
 	}
 	appendDiscoveryRows(markup, actions)
-	extra := tb.Row{}
 	if counts[discovery.NeedsConfirmation] > 0 {
-		extra = append(extra, markup.Data("待确认", discoveryCallbackUnique, "pending", "0"))
+		appendDiscoveryRows(markup, markup.Row(markup.Data("处理待确认", discoveryCallbackUnique, "pending", "0")))
 	}
 	if counts[discovery.Failed] > 0 {
-		extra = append(extra, markup.Data("查看入库异常", discoveryCallbackUnique, "failed", "0"))
-		extra = append(extra, markup.Data("重试入库异常", discoveryCallbackUnique, "retry", "menu"))
+		appendDiscoveryRows(markup, markup.Row(
+			markup.Data("查看异常", discoveryCallbackUnique, "failed", "0"),
+			markup.Data("重试", discoveryCallbackUnique, "retry", "menu"),
+		))
 	}
 	if counts[discovery.PendingUpload] > 0 {
-		extra = append(extra, markup.Data("待上传", discoveryCallbackUnique, "pending_upload", "0"))
-		extra = append(extra, markup.Data("检查上传", discoveryCallbackUnique, "status", "menu"))
-	}
-	if len(extra) > 0 {
-		appendDiscoveryRows(markup, extra)
+		appendDiscoveryRows(markup, markup.Row(
+			markup.Data("查看待上传", discoveryCallbackUnique, "pending_upload", "0"),
+			markup.Data("检查上传", discoveryCallbackUnique, "status", "menu"),
+		))
 	}
 	return text.String(), markup, nil
+}
+
+func discoveryStateShortLabel(state string) string {
+	switch state {
+	case discovery.Queued:
+		return "排队"
+	case discovery.Running:
+		return "下载中"
+	case discovery.PendingUpload:
+		return "待上传"
+	case discovery.NeedsConfirmation:
+		return "待确认"
+	case discovery.Failed:
+		return "异常"
+	default:
+		return discovery.StateLabel(state)
+	}
 }
 
 func discoveryFavoritesShortcut() *tb.ReplyMarkup {
@@ -1429,24 +1456,19 @@ func (app *BotApp) showDiscoveryPending(c tb.Context, page int) error {
 
 func discoveryPendingCard(job discovery.Job, index, total int) (string, *tb.ReplyMarkup) {
 	var text strings.Builder
-	text.WriteString("待确认\n")
+	text.WriteString("⚠️ <b>待确认</b>")
 	if total > 1 {
-		fmt.Fprintf(&text, "%d / %d\n", index+1, total)
+		fmt.Fprintf(&text, " · %d/%d", index+1, total)
 	}
-	text.WriteString("\n")
-	fmt.Fprintf(&text, "<b>%s</b>\n", discoveryListenTitle(job.Track.Title, job.Track.URL))
-	if artist := strings.TrimSpace(job.Track.Artist); artist != "" {
-		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
-	}
+	text.WriteString("\n──────────────────\n")
+	text.WriteString(rediscoverTrackFields(job.Track))
 	if note := strings.TrimSpace(job.Error); note != "" {
-		text.WriteByte('\n')
-		text.WriteString(utils.EscapeHTML(utils.TruncateString(note, 180)))
-		text.WriteByte('\n')
+		fmt.Fprintf(&text, "\n原因: %s", utils.EscapeHTML(utils.TruncateString(note, 120)))
 	}
-	text.WriteString("\n确认后就入库。不要的话点“不再处理”，以后不再给你推这首。")
 	markup := &tb.ReplyMarkup{}
 	appendDiscoveryRows(markup, markup.Row(
-		markup.Data("确认", discoveryCallbackUnique, "accept", job.ID, strconv.Itoa(index)),
+		markup.Data("确认入库", discoveryCallbackUnique, "accept", job.ID, strconv.Itoa(index)),
+		markup.Data("不再处理", discoveryCallbackUnique, "reject", job.ID, strconv.Itoa(index)),
 	))
 	nav := tb.Row{}
 	if index > 0 {
@@ -1458,10 +1480,7 @@ func discoveryPendingCard(job discovery.Job, index, total int) (string, *tb.Repl
 	if len(nav) > 0 {
 		appendDiscoveryRows(markup, nav)
 	}
-	appendDiscoveryRows(markup, markup.Row(
-		markup.Data("不再处理", discoveryCallbackUnique, "reject", job.ID, strconv.Itoa(index)),
-	))
-	appendDiscoveryRows(markup, markup.Row(markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")))
+	appendDiscoveryRows(markup, markup.Row(markup.Data("返回收藏", discoveryCallbackUnique, "favorites", "menu")))
 	return strings.TrimRight(text.String(), "\n"), markup
 }
 
@@ -1485,20 +1504,21 @@ func (app *BotApp) showDiscoveryPendingUpload(c tb.Context, page int) error {
 
 func discoveryPendingUploadCard(job discovery.Job, index, total int) (string, *tb.ReplyMarkup) {
 	var text strings.Builder
-	text.WriteString("待上传\n")
+	text.WriteString("☁️ <b>待上传</b>")
 	if total > 1 {
-		fmt.Fprintf(&text, "%d / %d\n", index+1, total)
+		fmt.Fprintf(&text, " · %d/%d", index+1, total)
 	}
-	text.WriteString("\n")
-	fmt.Fprintf(&text, "<b>%s</b>\n", discoveryListenTitle(job.Track.Title, job.Track.URL))
-	if artist := strings.TrimSpace(job.Track.Artist); artist != "" {
-		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
-	}
-	text.WriteString("\n下载好了，NAS 恢复后会自动传过去，不用重新下载。\n")
+	text.WriteString("\n──────────────────\n")
+	text.WriteString(rediscoverTrackFields(job.Track))
+	text.WriteString("\nNAS 恢复后自动上传。")
 	if note := strings.TrimSpace(job.Error); note != "" {
-		fmt.Fprintf(&text, "刚才没传上去：%s\n", utils.EscapeHTML(utils.TruncateString(note, 140)))
+		fmt.Fprintf(&text, "\n原因: %s", utils.EscapeHTML(utils.TruncateString(note, 120)))
 	}
 	markup := &tb.ReplyMarkup{}
+	appendDiscoveryRows(markup, markup.Row(
+		markup.Data("检查上传", discoveryCallbackUnique, "status", "menu"),
+		markup.Data("返回收藏", discoveryCallbackUnique, "favorites", "menu"),
+	))
 	nav := tb.Row{}
 	if index > 0 {
 		nav = append(nav, markup.Data("上一首", discoveryCallbackUnique, "pending_upload", strconv.Itoa(index-1)))
@@ -1509,10 +1529,6 @@ func discoveryPendingUploadCard(job discovery.Job, index, total int) (string, *t
 	if len(nav) > 0 {
 		appendDiscoveryRows(markup, nav)
 	}
-	appendDiscoveryRows(markup,
-		markup.Row(markup.Data("检查上传", discoveryCallbackUnique, "status", "menu")),
-		markup.Row(markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
-	)
 	return strings.TrimRight(text.String(), "\n"), markup
 }
 
@@ -1565,25 +1581,22 @@ func (app *BotApp) showDiscoveryFailed(c tb.Context, page int) error {
 
 func discoveryFailedCard(job discovery.Job, index, total int) (string, *tb.ReplyMarkup) {
 	var text strings.Builder
-	text.WriteString("入库异常\n")
+	text.WriteString("⚠️ <b>入库异常</b>")
 	if total > 1 {
-		fmt.Fprintf(&text, "%d / %d\n", index+1, total)
+		fmt.Fprintf(&text, " · %d/%d", index+1, total)
 	}
-	text.WriteString("\n")
-	fmt.Fprintf(&text, "<b>%s</b>\n", discoveryListenTitle(job.Track.Title, job.Track.URL))
-	if artist := strings.TrimSpace(job.Track.Artist); artist != "" {
-		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
-	}
-	if platform := strings.TrimSpace(job.Track.Platform); platform != "" {
-		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(aichat.PlatformLabel(platform)))
-	}
+	text.WriteString("\n──────────────────\n")
+	text.WriteString(rediscoverTrackFields(job.Track))
 	if note := strings.TrimSpace(job.Error); note != "" {
-		text.WriteByte('\n')
-		text.WriteString(utils.EscapeHTML(utils.TruncateString(note, 180)))
+		fmt.Fprintf(&text, "\n原因: %s", utils.EscapeHTML(utils.TruncateString(note, 160)))
 	} else {
-		text.WriteString("\n没有留下失败原因。")
+		text.WriteString("\n原因: 未记录")
 	}
 	markup := &tb.ReplyMarkup{}
+	appendDiscoveryRows(markup, markup.Row(
+		markup.Data("重试", discoveryCallbackUnique, "retry", "menu"),
+		markup.Data("返回收藏", discoveryCallbackUnique, "favorites", "menu"),
+	))
 	nav := tb.Row{}
 	if index > 0 {
 		nav = append(nav, markup.Data("上一首", discoveryCallbackUnique, "failed", strconv.Itoa(index-1)))
@@ -1594,9 +1607,5 @@ func discoveryFailedCard(job discovery.Job, index, total int) (string, *tb.Reply
 	if len(nav) > 0 {
 		appendDiscoveryRows(markup, nav)
 	}
-	appendDiscoveryRows(markup,
-		markup.Row(markup.Data("全部重新排队", discoveryCallbackUnique, "retry", "menu")),
-		markup.Row(markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
-	)
 	return strings.TrimRight(text.String(), "\n"), markup
 }
