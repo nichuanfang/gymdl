@@ -24,22 +24,23 @@ const (
 var musicActionCallbackEndpoint = tb.InlineButton{Unique: musicActionCallbackUnique}
 
 type pendingMusicAction struct {
-	userID    int64
-	chatID    int64
-	path      string
-	title     string
-	artist    string
-	album     string
-	extension string
-	size      int64
-	sourceURL string
-	busy      bool
-	choice    string
-	storage   string
-	expiresAt time.Time
-	origin    *tb.Message
-	markup    *tb.ReplyMarkup
-	deleting  bool
+	userID        int64
+	chatID        int64
+	path          string
+	title         string
+	artist        string
+	album         string
+	extension     string
+	size          int64
+	sourceURL     string
+	busy          bool
+	choice        string
+	confirmSource bool
+	storage       string
+	expiresAt     time.Time
+	origin        *tb.Message
+	markup        *tb.ReplyMarkup
+	deleting      bool
 }
 
 func (app *BotApp) musicActionMarkup(song *music.SongInfo, sourceURL string) (string, *tb.ReplyMarkup) {
@@ -208,6 +209,10 @@ func (app *BotApp) HandleMusicActionCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "已提交，请查看下载进度。"})
 		}
 		defer app.setMusicActionBusy(token, false)
+		if action.confirmSource {
+			_ = c.Respond()
+			return app.confirmMusicSourceChoice(c, action)
+		}
 		_ = c.Respond(&tb.CallbackResponse{Text: "正在提交下载…"})
 		return app.downloadOtherMusicSource(c, action)
 	case "play":

@@ -30,7 +30,9 @@ func (app *BotApp) registerHandlers() {
 
 	app.bot.Handle("/rediscover", app.RediscoverCommand)
 	app.bot.Handle("/favorites", app.FavoritesCommand)
+	app.bot.Handle("/audio_check", app.AudioCheckCommand)
 	app.bot.Handle(&discoveryEndpoint, app.HandleDiscoveryCallback)
+	app.bot.Handle(&audioCheckEndpoint, app.HandleAudioCheckCallback)
 
 	// AI 模式切换
 	app.bot.Handle("/mode", app.AIModeCommand)

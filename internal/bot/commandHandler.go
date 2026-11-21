@@ -64,6 +64,7 @@ func helpText() string {
 /ai_playlist 预览后创建或更新 AI 歌单
 /rediscover 从历史和收藏找曲库缺少的歌曲
 /favorites 管理账号、同步收藏并查看入库队列
+/audio_check 检查低码率、损坏和疑似缺尾的歌曲
 /empty_trash 预览后清空回收站
 删除歌曲文件，并清理 MusicRAG 状态与 Pinecone 向量
 
@@ -332,6 +333,7 @@ func botCommands() []tb.Command {
 		{Text: "ai_playlist", Description: "生成歌单"},
 		{Text: "rediscover", Description: "找回遗珠"},
 		{Text: "favorites", Description: "收藏同步"},
+		{Text: "audio_check", Description: "曲库体检"},
 		{Text: "empty_trash", Description: "清空回收站"},
 		{Text: "status", Description: "服务状态"},
 		{Text: "help", Description: "使用帮助"},

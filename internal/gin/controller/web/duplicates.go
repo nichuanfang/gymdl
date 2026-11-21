@@ -174,22 +174,36 @@ func persistDuplicateReport(report audiodupe.Report) {
 }
 
 func collectLibraryAudio(cfg *config.Config) ([]FileEntry, error) {
+	files, _, err := ListLibraryAudio(context.Background(), cfg)
+	return files, err
+}
+
+func ListLibraryAudio(ctx context.Context, cfg *config.Config) ([]FileEntry, bool, error) {
+	if cfg == nil || cfg.Tidy == nil {
+		return nil, false, fmt.Errorf("整理目录还没准备好")
+	}
 	if cfg.Tidy.Mode == 2 {
 		if core.GlobalWebDAV == nil || core.GlobalWebDAV.Client == nil {
-			return nil, fmt.Errorf("WebDAV 未初始化")
+			return nil, false, fmt.Errorf("WebDAV 未初始化")
 		}
-		entries, _, err := scanWebDAVFileIndex(webDAVDirectory(cfg), "/", core.GlobalWebDAV.Client)
+		entries, truncated, err := scanWebDAVFileIndexContext(ctx, webDAVDirectory(cfg), "/", core.GlobalWebDAV.Client)
 		if err != nil {
-			return nil, fmt.Errorf("读取曲库失败")
+			return nil, false, fmt.Errorf("读取 WebDAV 曲库失败")
 		}
-		return audioOnly(entries), nil
+		return audioOnly(entries), truncated, nil
 	}
 	root := cfg.Tidy.DistDir
 	if strings.TrimSpace(root) == "" {
-		return nil, fmt.Errorf("还没有配置整理目录")
+		return nil, false, fmt.Errorf("还没有配置整理目录")
 	}
 	var entries []FileEntry
 	err := filepath.WalkDir(root, func(full string, item os.DirEntry, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if full == root && err != nil {
+			return err
+		}
 		if err != nil || item.IsDir() || !audioExtension(item.Name()) {
 			return nil
 		}
@@ -210,9 +224,9 @@ func collectLibraryAudio(cfg *config.Config) ([]FileEntry, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("读取曲库失败")
+		return nil, false, fmt.Errorf("读取本地曲库失败")
 	}
-	return entries, nil
+	return entries, false, nil
 }
 
 func audioOnly(entries []FileEntry) []FileEntry {
@@ -226,8 +240,7 @@ func audioOnly(entries []FileEntry) []FileEntry {
 }
 
 func fingerprintLibraryFile(ctx context.Context, cfg *config.Config, store *audiodupe.Store, file FileEntry) (audiodupe.Track, error) {
-	const maxBytes = 512 << 20
-	if file.Size > maxBytes {
+	if file.Size > MaxLibraryAudioBytes {
 		return audiodupe.Track{}, fmt.Errorf("文件过大")
 	}
 	mod := file.ModTime.UnixNano()
@@ -236,7 +249,7 @@ func fingerprintLibraryFile(ctx context.Context, cfg *config.Config, store *audi
 	} else if ok {
 		return libraryTrack(file, mod, fp), nil
 	}
-	localPath, cleanup, err := materializeLibraryFile(ctx, cfg, file)
+	localPath, cleanup, err := MaterializeLibraryAudio(ctx, cfg, file)
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -263,7 +276,9 @@ func libraryTrack(file FileEntry, mod int64, fp audiodupe.Fingerprint) audiodupe
 	return audiodupe.Track{Path: file.Path, Name: file.Name, Ext: file.Ext, Size: file.Size, ModTimeUnix: mod, Fingerprint: fp}
 }
 
-func materializeLibraryFile(ctx context.Context, cfg *config.Config, file FileEntry) (string, func(), error) {
+const MaxLibraryAudioBytes = 512 << 20
+
+func MaterializeLibraryAudio(ctx context.Context, cfg *config.Config, file FileEntry) (string, func(), error) {
 	if cfg.Tidy.Mode != 2 {
 		full, err := localSafePath(cfg.Tidy.DistDir, file.Path)
 		return full, nil, err
@@ -287,18 +302,11 @@ func materializeLibraryFile(ctx context.Context, cfg *config.Config, file FileEn
 	cleanup := func() {
 		_ = os.Remove(temp.Name())
 	}
-	done := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = temp.Close()
-		case <-done:
-		}
-	}()
-	_, copyErr := io.Copy(temp, reader)
-	close(done)
+	stop := context.AfterFunc(ctx, func() { _ = reader.Close() })
+	defer stop()
+	written, copyErr := io.Copy(temp, io.LimitReader(reader, MaxLibraryAudioBytes+1))
 	closeErr := temp.Close()
-	if copyErr != nil {
+	if copyErr != nil || ctx.Err() != nil || written > MaxLibraryAudioBytes || (file.Size >= 0 && written != file.Size) {
 		cleanup()
 		return "", nil, fmt.Errorf("读取音频失败")
 	}
@@ -307,4 +315,39 @@ func materializeLibraryFile(ctx context.Context, cfg *config.Config, file FileEn
 		return "", nil, closeErr
 	}
 	return temp.Name(), cleanup, nil
+}
+
+// CurrentLibraryAudioPath verifies the recorded version before issuing any
+// Telegram action. The WebDAV path returned is relative to the library root.
+func CurrentLibraryAudioPath(cfg *config.Config, file FileEntry) (string, error) {
+	var source string
+	var info os.FileInfo
+	var err error
+	if cfg.Tidy.Mode == 2 {
+		if core.GlobalWebDAV == nil || core.GlobalWebDAV.Client == nil {
+			return "", fmt.Errorf("WebDAV 未初始化")
+		}
+		remote, err := remoteSafePath(webDAVDirectory(cfg), file.Path)
+		if err != nil {
+			return "", err
+		}
+		source = strings.TrimLeft(file.Path, "/")
+		info, err = core.GlobalWebDAV.Client.Stat(remote)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		source, err = localSafePath(cfg.Tidy.DistDir, file.Path)
+		if err != nil {
+			return "", err
+		}
+		info, err = os.Stat(source)
+		if err != nil {
+			return "", err
+		}
+	}
+	if !info.Mode().IsRegular() || info.Size() != file.Size || !info.ModTime().Equal(file.ModTime) {
+		return "", fmt.Errorf("文件版本已变化")
+	}
+	return source, nil
 }

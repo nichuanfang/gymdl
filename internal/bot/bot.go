@@ -37,6 +37,11 @@ type BotApp struct {
 	activeMusicKeys            map[string]struct{}
 	musicActionMu              sync.Mutex
 	musicActions               map[string]pendingMusicAction
+	audioCheckMu               sync.Mutex
+	audioCheckSessions         map[int64]audioCheckSession
+	audioCheckDone             chan struct{}
+	audioCheckCancel           context.CancelFunc
+	audioCheckStopping         bool
 	playlistAssignmentMu       sync.Mutex
 	playlistAssignmentRenderMu sync.Mutex
 	playlistAssignments        map[string]pendingPlaylistAssignment
@@ -228,6 +233,7 @@ func (app *BotApp) syncCommandMenu() {
 
 // Stop 关闭机器人
 func (app *BotApp) Stop() {
+	app.stopAudioCheck()
 	if app.discoveryCancel != nil {
 		app.discoveryCancel()
 		<-app.discoveryDone

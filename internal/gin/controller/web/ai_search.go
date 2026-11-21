@@ -13,6 +13,15 @@ import (
 // frequently rejected. QQ and Bilibili are the most reliable pair here.
 var defaultAgentPlatforms = []string{"qq", "netease", "bilibili"}
 
+// SearchAudioReference uses the existing metadata adapters without letting an
+// automatic quality scan update the configured QQ credentials.
+func SearchAudioReference(ctx context.Context, keyword, platform string) ([]SearchResultItem, error) {
+	if platform == "qq" {
+		return searchQQWithCredentialRefresh(ctx, keyword, 12, 0, false)
+	}
+	return SearchForAgent(ctx, keyword, []string{platform}, 12)
+}
+
 // EnsureAgentRuntime installs the config snapshot that provider searches read
 // from. The Telegram bot can run without the Web server, so it must publish the
 // same runtime config here instead of relying on SetupWebRoutes.

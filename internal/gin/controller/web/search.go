@@ -533,6 +533,10 @@ func searchQQ(keyword string, limit, offset int) ([]SearchResultItem, error) {
 }
 
 func searchQQWithContext(ctx context.Context, keyword string, limit, offset int) ([]SearchResultItem, error) {
+	return searchQQWithCredentialRefresh(ctx, keyword, limit, offset, true)
+}
+
+func searchQQWithCredentialRefresh(ctx context.Context, keyword string, limit, offset int, refresh bool) ([]SearchResultItem, error) {
 	cfg := GetWebConfig()
 	if cfg == nil || cfg.QQMusicApiConfig == nil || !cfg.QQMusicApiConfig.Enable {
 		return nil, fmt.Errorf("QQ Music API 未启用")
@@ -552,7 +556,7 @@ func searchQQWithContext(ctx context.Context, keyword string, limit, offset int)
 	cookie := qqSearchCredentialCookie(credential, cfg.QQMusicApiConfig)
 	client := &http.Client{Timeout: searchProviderTimeout}
 	searchResp, err := requestQQSearchWith429Retry(ctx, client, cfg.QQMusicApiConfig.Endpoint, keyword, limit, page, cookie)
-	if err != nil && isQQRiskControlError(err.Error()) {
+	if err != nil && refresh && isQQRiskControlError(err.Error()) {
 		if utils.Logger() != nil {
 			utils.WarnWithFormat("[WebSearch] QQ 搜索触发风控，尝试刷新凭证并重试一次")
 		}

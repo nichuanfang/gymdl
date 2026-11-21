@@ -78,7 +78,7 @@ func TestEveryMenuCommandHasHandler(t *testing.T) {
 	registered := map[string]bool{
 		"rediscover": true, "favorites": true, "start": true, "help": true, "mode": true, "ai": true,
 		"clear": true, "new": true, "assign_playlist": true, "playlist_desc": true,
-		"ai_playlist": true, "empty_trash": true, "qq_login": true, "status": true,
+		"ai_playlist": true, "empty_trash": true, "qq_login": true, "status": true, "audio_check": true,
 	}
 	for _, cmd := range botCommands() {
 		if !registered[cmd.Text] {
@@ -89,7 +89,7 @@ func TestEveryMenuCommandHasHandler(t *testing.T) {
 
 // Preserve the user's chosen menu order and all daily control actions.
 func TestBotCommandsKeepUserPreferredOrder(t *testing.T) {
-	want := []string{"ai", "mode", "clear", "assign_playlist", "playlist_desc", "ai_playlist", "rediscover", "favorites", "empty_trash", "status", "help"}
+	want := []string{"ai", "mode", "clear", "assign_playlist", "playlist_desc", "ai_playlist", "rediscover", "favorites", "audio_check", "empty_trash", "status", "help"}
 	commands := botCommands()
 	if len(commands) != len(want) {
 		t.Fatalf("got %d commands, want %d", len(commands), len(want))

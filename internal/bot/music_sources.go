@@ -23,6 +23,10 @@ var musicSourceEditionSuffix = regexp.MustCompile(`\s*(?:\([^()]+\)|（[^（）]
 var musicSourceEditionLabel = regexp.MustCompile(`(?i)\b(?:live|remix|remaster(?:ed)?|acoustic|instrumental|demo|version)\b|现场|現場|演唱会|演唱會|混音|伴奏|重制|重製|不插电|不插電`)
 
 func (app *BotApp) presentOtherMusicSources(ctx context.Context, c tb.Context, message *tb.Message, action pendingMusicAction) error {
+	return app.presentMusicSourceChoices(ctx, c, message, action, false)
+}
+
+func (app *BotApp) presentMusicSourceChoices(ctx context.Context, c tb.Context, message *tb.Message, action pendingMusicAction, confirm bool) error {
 	web.EnsureAgentRuntime(app.cfg)
 	query := strings.TrimSpace(action.artist + " " + musicSourceBaseTitle(action.title))
 	items, err := web.SearchForAgent(ctx, query, []string{"qq", "netease", "youtube", "bilibili"}, 32)
@@ -57,7 +61,7 @@ func (app *BotApp) presentOtherMusicSources(ctx context.Context, c tb.Context, m
 		token := strings.ReplaceAll(uuid.NewString(), "-", "")
 		tokens = append(tokens, token)
 		app.storeMusicAction(token, pendingMusicAction{
-			title: item.Name, choice: item.URL, expiresAt: time.Now().Add(musicActionTTL),
+			title: item.Name, choice: item.URL, confirmSource: confirm, expiresAt: time.Now().Add(musicActionTTL),
 		})
 		rows = append(rows, markup.Row(
 			markup.URL(fmt.Sprintf("打开 %d", i+1), item.URL),
@@ -69,6 +73,22 @@ func (app *BotApp) presentOtherMusicSources(ctx context.Context, c tb.Context, m
 	app.setMusicActionMessages(tokens, message, nil, c.Sender().ID, c.Chat().ID)
 	_, err = c.Bot().Edit(message, text.String(), tb.ModeHTML, markup)
 	return err
+}
+
+func (app *BotApp) confirmMusicSourceChoice(c tb.Context, action pendingMusicAction) error {
+	token := strings.ReplaceAll(uuid.NewString(), "-", "")
+	markup := &tb.ReplyMarkup{}
+	markup.Inline(markup.Row(markup.Data("确认下载", musicActionCallbackUnique, "download", token)))
+	message, err := c.Bot().Send(c.Chat(),
+		"下载《"+utils.TruncateString(displaySongValue(action.title), 100)+"》？如果新音源与原文件同名同格式，原文件可能被覆盖。", markup)
+	if err != nil {
+		return err
+	}
+	app.storeMusicAction(token, pendingMusicAction{
+		title: action.title, choice: action.choice, expiresAt: time.Now().Add(10 * time.Minute),
+	})
+	app.setMusicActionMessages([]string{token}, message, markup, c.Sender().ID, c.Chat().ID)
+	return nil
 }
 
 func otherMusicSourceMatches(action pendingMusicAction, items []web.SearchResultItem) []web.SearchResultItem {

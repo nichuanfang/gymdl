@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -438,6 +439,10 @@ func invalidateWebDAVFileIndexes() {
 }
 
 func scanWebDAVFileIndex(baseDir, relPath string, client fileLibraryRemote) ([]FileEntry, bool, error) {
+	return scanWebDAVFileIndexContext(context.Background(), baseDir, relPath, client)
+}
+
+func scanWebDAVFileIndexContext(ctx context.Context, baseDir, relPath string, client fileLibraryRemote) ([]FileEntry, bool, error) {
 	root, err := remoteSafePath(baseDir, relPath)
 	if err != nil {
 		return nil, false, err
@@ -450,6 +455,9 @@ func scanWebDAVFileIndex(baseDir, relPath string, client fileLibraryRemote) ([]F
 
 	stopAtFileLimit := false
 	for len(current) > 0 {
+		if ctx.Err() != nil {
+			return nil, truncated, ctx.Err()
+		}
 		results := make([]webDAVDirResult, len(current))
 		workers := webDAVFileSearchConcurrency
 		if workers > len(current) {
@@ -462,7 +470,16 @@ func scanWebDAVFileIndex(baseDir, relPath string, client fileLibraryRemote) ([]F
 			go func() {
 				defer wg.Done()
 				for index := range jobs {
-					webDAVFileSearchSlots <- struct{}{}
+					if ctx.Err() != nil {
+						results[index].err = ctx.Err()
+						continue
+					}
+					select {
+					case webDAVFileSearchSlots <- struct{}{}:
+					case <-ctx.Done():
+						results[index].err = ctx.Err()
+						continue
+					}
 					task := current[index]
 					items, err := client.ReadDir(task.remoteDir)
 					<-webDAVFileSearchSlots
