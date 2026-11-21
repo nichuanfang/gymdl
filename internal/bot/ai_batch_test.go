@@ -23,7 +23,7 @@ func TestCandidateSongCardShowsOneTrack(t *testing.T) {
 	if strings.Contains(text, "A &amp; B") || strings.Contains(text, "第三首") || !strings.Contains(text, "1 / 3") {
 		t.Fatalf("first song was not alone: %s", text)
 	}
-	if !strings.Contains(text, "🎵 <b>推荐 · 网易云</b>\n──────────────────\n1 / 3\n\n") || !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">第一首</a></b>`) {
+	if !strings.Contains(text, "🎵 <b>推荐 · 网易云</b>\n──────────────────\n1 / 3\n") || !strings.Contains(text, `<b><a href="https://music.163.com/song?id=1">第一首</a></b>`) {
 		t.Fatalf("title was not the listen link: %s", text)
 	}
 	labels := buttonTexts(markup)

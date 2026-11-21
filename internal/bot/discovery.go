@@ -221,7 +221,6 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	if len(card.Tracks) > 1 {
 		fmt.Fprintf(&text, "本批 %d 首 · 第 %d 首\n", len(card.Tracks), page+1)
 	}
-	text.WriteByte('\n')
 	fmt.Fprintf(&text, "歌曲: %s\n", discoveryListenTitle(track.Title, track.URL))
 	if artist := strings.TrimSpace(track.Artist); artist != "" {
 		fmt.Fprintf(&text, "艺人: %s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
@@ -567,32 +566,42 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 	text.WriteString("🎵 <b>收藏同步</b>\n")
 	text.WriteString("──────────────────\n")
 	if !app.discovery.Enabled {
-		text.WriteString("自动同步：未启用\n")
+		text.WriteString("<i>自动同步未启用</i>\n")
 	}
 	byPlatform := map[string]discovery.Binding{}
 	for _, binding := range bindings {
 		byPlatform[binding.Platform] = binding
 	}
 	markup := &tb.ReplyMarkup{}
+	var sections []string
 	for _, platform := range []string{"netease", "qq", "youtube"} {
 		binding, ok := byPlatform[platform]
 		name := aichat.PlatformLabel(platform)
 		if !ok {
-			fmt.Fprintf(&text, "<b>%s</b> · 未绑定\n", utils.EscapeHTML(name))
+			sections = append(sections, fmt.Sprintf("<b>%s</b> · 未绑定", utils.EscapeHTML(name)))
 			appendDiscoveryRows(markup, markup.Row(markup.Data("绑定"+strings.ReplaceAll(name, " ", ""), discoveryCallbackUnique, "probe", platform)))
 			continue
 		}
-		fmt.Fprintf(&text, "<b>%s</b> · %s", utils.EscapeHTML(name), utils.EscapeHTML(favoriteCardState(app.discovery.Enabled, binding.PausedByUser)))
+		var block strings.Builder
+		fmt.Fprintf(&block, "<b>%s</b> · %s", utils.EscapeHTML(name), utils.EscapeHTML(favoriteCardState(app.discovery.Enabled, binding.PausedByUser)))
+		var details []string
 		if account := maskedDiscoveryAccount(binding.Account); account != "" {
-			fmt.Fprintf(&text, " · %s", utils.EscapeHTML(account))
+			details = append(details, "账号 "+utils.EscapeHTML(account))
 		}
-		text.WriteByte('\n')
 		if binding.LastSync > 0 {
-			fmt.Fprintf(&text, "上次同步：%s\n", time.Unix(binding.LastSync, 0).Local().Format("01-02 15:04"))
+			details = append(details, "同步 "+time.Unix(binding.LastSync, 0).Local().Format("01-02 15:04"))
+		}
+		if len(details) > 0 {
+			fmt.Fprintf(&block, "\n<i>%s</i>", strings.Join(details, " · "))
 		}
 		if reason := favoritePlatformError(platform, binding.Error); reason != "" {
-			fmt.Fprintf(&text, "异常：%s\n", utils.EscapeHTML(utils.TruncateString(reason, 60)))
+			summary, next := favoriteErrorParts(reason)
+			fmt.Fprintf(&block, "\n⚠️ %s", utils.EscapeHTML(summary))
+			if next != "" {
+				fmt.Fprintf(&block, "\n    %s", utils.EscapeHTML(next))
+			}
 		}
+		sections = append(sections, block.String())
 		action, verb := "pause", "暂停"
 		if binding.PausedByUser {
 			action, verb = "resume", "恢复"
@@ -602,19 +611,22 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 			markup.Data(verb, discoveryCallbackUnique, action, platform),
 		))
 	}
+	if len(sections) > 0 {
+		text.WriteString(strings.Join(sections, "\n\n"))
+	}
+	text.WriteString("\n\n<b>入库</b>\n")
 	var queue []string
 	for _, state := range []string{discovery.Queued, discovery.Running, discovery.PendingUpload, discovery.NeedsConfirmation, discovery.Failed} {
 		if counts[state] > 0 {
-			label := discoveryStateShortLabel(state)
-			queue = append(queue, fmt.Sprintf("%d %s", counts[state], label))
+			queue = append(queue, fmt.Sprintf("%d %s", counts[state], discoveryStateShortLabel(state)))
 		}
 	}
-	text.WriteByte('\n')
 	if len(queue) > 0 {
-		fmt.Fprintf(&text, "入库：%s\n", utils.EscapeHTML(strings.Join(queue, " · ")))
+		text.WriteString(utils.EscapeHTML(strings.Join(queue, " · ")))
 	} else {
-		text.WriteString("入库：暂无任务\n")
+		text.WriteString("暂无任务")
 	}
+	text.WriteByte('\n')
 	actions := tb.Row{markup.Data("找回遗珠", discoveryCallbackUnique, "history", "menu")}
 	if app.discovery.Enabled {
 		actions = append(actions, markup.Data("同步全部", discoveryCallbackUnique, "sync", "menu"))
@@ -636,6 +648,16 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 		))
 	}
 	return text.String(), markup, nil
+}
+
+func favoriteErrorParts(reason string) (string, string) {
+	reason = strings.TrimSpace(reason)
+	for _, sep := range []string{"，", ","} {
+		if before, after, ok := strings.Cut(reason, sep); ok {
+			return utils.TruncateString(strings.TrimSpace(before), 34), utils.TruncateString(strings.TrimSpace(after), 44)
+		}
+	}
+	return utils.TruncateString(reason, 52), ""
 }
 
 func discoveryStateShortLabel(state string) string {

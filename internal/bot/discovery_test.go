@@ -318,7 +318,7 @@ func TestRediscoverCardKeepsTheOriginalFrameAndAddsCompactFacts(t *testing.T) {
 		LastPlayed: time.Now().AddDate(0, 0, -40), CardAction: discovery.Running,
 	}
 	text, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: []discovery.Track{track}}, 0)
-	want := "🎵 <b>遗珠 · 网易云</b>\n──────────────────\n\n歌曲: <a href=\"https://music.163.com/song?id=1\">东方之珠 (Live)</a>\n艺人: 罗大佑\n专辑: 北京-香港演唱会\n时长: 3:21\n次数: 12次\n\n⏳ 正在整理入库..."
+	want := "🎵 <b>遗珠 · 网易云</b>\n──────────────────\n歌曲: <a href=\"https://music.163.com/song?id=1\">东方之珠 (Live)</a>\n艺人: 罗大佑\n专辑: 北京-香港演唱会\n时长: 3:21\n次数: 12次\n\n⏳ 正在整理入库..."
 	if text != want {
 		t.Fatalf("card = %q, want %q", text, want)
 	}
@@ -344,7 +344,7 @@ func TestRediscoverCardTruncatesAndEscapesLongArtistAlbum(t *testing.T) {
 func TestRediscoverCardOmitsMissingFields(t *testing.T) {
 	track := discovery.Track{Platform: "youtube", ID: "1", Title: "只有歌名", URL: "https://music.youtube.com/watch?v=1"}
 	text, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: []discovery.Track{track}}, 0)
-	want := "🎵 <b>遗珠 · YouTube</b>\n──────────────────\n\n歌曲: <a href=\"https://music.youtube.com/watch?v=1\">只有歌名</a>"
+	want := "🎵 <b>遗珠 · YouTube</b>\n──────────────────\n歌曲: <a href=\"https://music.youtube.com/watch?v=1\">只有歌名</a>"
 	if text != want {
 		t.Fatalf("card = %q, want %q", text, want)
 	}
@@ -709,7 +709,7 @@ func TestFavoritesCardKeepsPlatformRowsCompact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"<b>QQ 音乐</b> · 已开启 · 998…766", "<b>网易云</b> · 未绑定", "<b>YouTube</b> · 未绑定", "入库：暂无任务"} {
+	for _, want := range []string{"<b>QQ 音乐</b> · 已开启", "账号 998…766", "同步 ", "<b>网易云</b> · 未绑定", "<b>YouTube</b> · 未绑定", "<b>入库</b>", "暂无任务"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q: %s", want, text)
 		}
@@ -780,7 +780,7 @@ func TestFavoritesCardShowsNamedSyncState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"<b>收藏同步</b>", "<b>网易云</b> · 已开启 · 112…170", "上次同步：", "异常：网易云收藏暂时读不到，本轮跳过", "<b>QQ 音乐</b> · 未绑定", "入库：暂无任务"} {
+	for _, want := range []string{"<b>收藏同步</b>", "<b>网易云</b> · 已开启", "账号 112…170", "同步 ", "⚠️ 网易云收藏暂时读不到", "<b>QQ 音乐</b> · 未绑定", "<b>入库</b>", "暂无任务"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q\n%s", want, text)
 		}

@@ -290,7 +290,6 @@ func candidateSongCard(items []aichat.Candidate, index int, allowBatch bool) (st
 	if len(items) > 1 {
 		fmt.Fprintf(&text, "%d / %d\n", index+1, len(items))
 	}
-	text.WriteByte('\n')
 	title := item.Name
 	if strings.TrimSpace(item.Title) != "" {
 		title = item.Title
