@@ -90,6 +90,9 @@ func RunNow(name string) error {
 	}
 	for _, item := range s.Jobs() {
 		if item.Name() == name {
+			if name == emptyTrashJobName {
+				return fmt.Errorf("立即清空请在 Telegram 使用 /empty_trash 确认")
+			}
 			if err := item.RunNow(); err != nil {
 				return fmt.Errorf("无法立即执行 %s", jobLabel(name))
 			}
@@ -109,6 +112,8 @@ func jobLabel(name string) string {
 		return "同步 CookieCloud"
 	case "syncPlaylists":
 		return "同步歌单"
+	case emptyTrashJobName:
+		return "清空回收站"
 	case "importMusicRAG":
 		return "导入曲库状态"
 	case "indexMusicLibrary":

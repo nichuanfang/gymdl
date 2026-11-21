@@ -229,6 +229,11 @@ func (w *WebDAV) Delete(remotePath string) error {
 	return nil
 }
 
+// Stat reads metadata for a path relative to the configured WebDAV directory.
+func (w *WebDAV) Stat(remotePath string) (os.FileInfo, error) {
+	return w.Client.Stat(w.makeRemotePath(remotePath))
+}
+
 func (w *WebDAV) List(remoteDir string) ([]string, error) {
 	dir := w.makeRemotePath(remoteDir)
 	files, err := w.Client.ReadDir(dir)

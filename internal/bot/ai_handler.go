@@ -603,6 +603,10 @@ func (app *BotApp) runAIBatch(c tb.Context, status *tb.Message, batch []aichat.C
 // downloadCandidate runs one candidate through the shared download path. It is
 // the same code the single-button flow uses, so duplicate checks cannot drift.
 func (app *BotApp) downloadCandidate(c tb.Context, candidate aichat.Candidate) error {
+	return app.downloadMusicCandidate(c, candidate, config.WithLiveTaskOverrides(app.cfg))
+}
+
+func (app *BotApp) downloadMusicCandidate(c tb.Context, candidate aichat.Candidate, taskConfig *config.Config) error {
 	msg, err := c.Bot().Send(c.Chat(), fmt.Sprintf("⬇️ 开始下载《%s》", candidate.Name))
 	if err != nil {
 		return err
@@ -611,7 +615,6 @@ func (app *BotApp) downloadCandidate(c tb.Context, candidate aichat.Candidate) e
 		_, _ = c.Bot().Edit(msg, "❌ 查重数据库不可用，已取消下载。")
 		return errMusicDedupeUnavailable
 	}
-	taskConfig := config.WithLiveTaskOverrides(app.cfg)
 	link, executor := linkparser.ParseLinkWithConfig(taskConfig, candidate.URL)
 	processor, ok := executor.(music.Processor)
 	if link == "" || !ok {

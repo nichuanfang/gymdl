@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -14,7 +15,9 @@ import (
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/internal/audiodupe"
+	"github.com/studio-b12/gowebdav"
 )
 
 func testStore(t *testing.T) *Store {
@@ -1029,6 +1032,142 @@ func TestEnrichedVideoMergesCrossPlatformAndDigestDelivery(t *testing.T) {
 	jobs, _ = s.Jobs(ctx, 1, true)
 	if len(jobs) != 0 {
 		t.Fatal("digest did not acknowledge")
+	}
+}
+
+func TestManualQueueCompletionRetriesActionCardWithoutRedownloading(t *testing.T) {
+	store := testStore(t)
+	ctx := t.Context()
+	track := testTrack("1", "遗珠", "歌手")
+	id, err := store.Enqueue(ctx, 1, 1, track)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := IngestedFile{Path: "music/artist/song.flac", Storage: "LOCAL", Extension: "flac", Size: 1000}
+	downloads, notifications := 0, 0
+	svc := Service{Store: store, Provider: stubProvider{}, Library: stubLibrary{},
+		Download: func(context.Context, Track) (DownloadResult, error) {
+			downloads++
+			return DownloadResult{File: &file}, nil
+		},
+		NotifyIngested: func(j Job) error {
+			notifications++
+			if j.State != Completed || j.User != 1 || j.Chat != 1 || j.File == nil || *j.File != file {
+				t.Errorf("invalid completion receipt: %#v", j)
+			}
+			if notifications == 1 {
+				return errors.New("Telegram unavailable")
+			}
+			return nil
+		},
+	}
+	if err := svc.ProcessOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.Job(ctx, id)
+	if err != nil || saved.State != Completed || saved.File == nil || *saved.File != file || notifications != 1 {
+		t.Fatalf("completion wasn't saved before notice: job=%#v notifications=%d err=%v", saved, notifications, err)
+	}
+	for range 2 {
+		if err := svc.Digest(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if downloads != 1 || notifications != 2 {
+		t.Fatalf("expected one download and one notification retry, got %d downloads and %d notifications", downloads, notifications)
+	}
+}
+
+func TestStoredFileMigrationPreservesOldQueueJobs(t *testing.T) {
+	ctx := t.Context()
+	filename := filepath.Join(t.TempDir(), "legacy.sqlite3")
+	store, err := Open(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	track := testTrack("1", "旧任务", "歌手")
+	id, err := store.Enqueue(ctx, 1, 1, track)
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	_, err = store.db.ExecContext(ctx, "ALTER TABLE discovery_jobs DROP COLUMN stored_file_json")
+	store.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	job, err := store.Job(ctx, id)
+	if err != nil || job.State != Queued || job.Track.Title != track.Title || job.File != nil {
+		t.Fatalf("legacy queue job changed on migration: %#v, err=%v", job, err)
+	}
+}
+
+func TestDeferredDiscoveryActionCardWaitsForExactWebDAVFile(t *testing.T) {
+	ctx := t.Context()
+	track := testTrack("1", "遗珠", "歌手")
+	store := testStore(t)
+	id, err := store.Enqueue(ctx, 1, 1, track)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var uploaded atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "PROPFIND" || r.URL.Path != "/music/artist/song.flac" {
+			t.Errorf("unexpected WebDAV stat %s %s", r.Method, r.URL.Path)
+		}
+		if !uploaded.Load() {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusMultiStatus)
+		fmt.Fprint(w, `<d:multistatus xmlns:d="DAV:"><d:response><d:href>/music/artist/song.flac</d:href><d:propstat><d:prop><d:getcontentlength>4</d:getcontentlength><d:resourcetype/></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>`)
+	}))
+	defer server.Close()
+	previous := core.GlobalWebDAV
+	t.Cleanup(func() { core.GlobalWebDAV = previous })
+	outbox := core.NewWebDAVOutbox(t.TempDir())
+	core.GlobalWebDAV = &core.WebDAV{
+		Config: &config.WebDAVConfig{WebDAVDir: "music"}, Client: gowebdav.NewClient(server.URL, "", ""), Outbox: outbox,
+	}
+	source := filepath.Join(t.TempDir(), "song.flac")
+	if err := os.WriteFile(source, []byte("test"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := outbox.Enqueue(source, "artist"); err != nil {
+		t.Fatal(err)
+	}
+	cards := 0
+	svc := Service{Store: store, Provider: stubProvider{}, Library: stubLibrary{},
+		Download: func(context.Context, Track) (DownloadResult, error) {
+			return DownloadResult{Pending: true, File: &IngestedFile{Path: "artist/song.flac", Storage: "WEBDAV", Size: 4}}, nil
+		},
+		NotifyIngested: func(Job) error { cards++; return nil },
+	}
+	if err := svc.ProcessOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	svc.Library = stubLibrary{owned: map[string]bool{Identity(track): true}}
+	if err := svc.Digest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.Job(ctx, id)
+	if err != nil || pending.State != PendingUpload || cards != 0 {
+		t.Fatalf("staged file was treated as uploaded: %#v, cards=%d err=%v", pending, cards, err)
+	}
+	if _, err := outbox.ProcessOnce(func(string, string) error { uploaded.Store(true); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Digest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	complete, err := store.Job(ctx, id)
+	if err != nil || complete.State != Completed || cards != 1 {
+		t.Fatalf("confirmed upload did not get a card: %#v, cards=%d err=%v", complete, cards, err)
 	}
 }
 

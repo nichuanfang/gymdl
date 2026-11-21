@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -16,8 +17,10 @@ import (
 
 var logger *zap.Logger
 
+const emptyTrashJobName = "emptyTrash"
+
 // registerTasks 注册定时任务
-func registerTasks(c *config.Config, scheduler gocron.Scheduler) {
+func registerTasks(c *config.Config, scheduler gocron.Scheduler, emptyTrash func(context.Context) error) {
 	//请求池
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -36,6 +39,10 @@ func registerTasks(c *config.Config, scheduler gocron.Scheduler) {
 
 	if c.PlaylistOrganizer != nil && strings.TrimSpace(c.PlaylistOrganizer.NavidromeURL) != "" && strings.TrimSpace(c.PlaylistOrganizer.NavidromeUsername) != "" && c.PlaylistOrganizer.NavidromePassword != "" {
 		newTask("syncPlaylists", "每天 04:10", scheduler, gocron.DailyJob(1, gocron.NewAtTimes(gocron.NewAtTime(4, 10, 0))), gocron.NewTask(syncPlaylists, c))
+	}
+	if emptyTrash != nil {
+		newTask(emptyTrashJobName, "每 30 分钟", scheduler, gocron.DurationJob(30*time.Minute),
+			gocron.NewTask(emptyTrash), gocron.WithSingletonMode(gocron.LimitModeReschedule))
 	}
 	if musicRAGImportConfigured(c) {
 		newTask("importMusicRAG", "启动时一次", scheduler, gocron.OneTimeJob(gocron.OneTimeJobStartImmediately()), gocron.NewTask(importMusicRAG, c))
@@ -58,7 +65,7 @@ func registerTasks(c *config.Config, scheduler gocron.Scheduler) {
 }
 
 // InitScheduler 日志初始化
-func InitScheduler(c *config.Config) gocron.Scheduler {
+func InitScheduler(c *config.Config, emptyTrash func(context.Context) error) gocron.Scheduler {
 	logger = utils.Logger()
 	var startTimes sync.Map
 
@@ -94,15 +101,18 @@ func InitScheduler(c *config.Config) gocron.Scheduler {
 		return nil
 	}
 
-	registerTasks(c, newScheduler)
+	registerTasks(c, newScheduler, emptyTrash)
 	setActive(newScheduler)
 	return newScheduler
 }
 
 // newTask 日志任务创建信息
-func newTask(jobName, schedule string, scheduler gocron.Scheduler, jobDefinition gocron.JobDefinition, task gocron.Task) {
+func newTask(jobName, schedule string, scheduler gocron.Scheduler, jobDefinition gocron.JobDefinition, task gocron.Task, options ...gocron.JobOption) {
 	logger.Info("[Job Added]", zap.String("jobName", jobName), zap.String("schedule", schedule))
-	_, _ = scheduler.NewJob(jobDefinition, task, gocron.WithName(jobName), gocron.WithTags(schedule))
+	options = append(options, gocron.WithName(jobName), gocron.WithTags(schedule))
+	if _, err := scheduler.NewJob(jobDefinition, task, options...); err != nil {
+		logger.Error("[Job Add Failed]", zap.String("jobName", jobName), zap.Error(err))
+	}
 }
 
 // logJobEvent 日志任务执行信息

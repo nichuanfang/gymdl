@@ -22,6 +22,6 @@ type Session struct {
 	AcceptSimilarAudio      bool
 	AskSimilar              func(error) error
 	OnMusicDownloaded       func([]*music.SongInfo)
-	CreateMusicActionMarkup func(*music.SongInfo) (string, *tb.ReplyMarkup)
+	CreateMusicActionMarkup func(*music.SongInfo, string) (string, *tb.ReplyMarkup)
 	SetMusicActionMessages  func([]string, *tb.Message, *tb.ReplyMarkup, int64, int64)
 }

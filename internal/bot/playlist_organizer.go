@@ -50,6 +50,7 @@ type pendingPlaylistAssignment struct {
 	chatID                  int64
 	message                 *tb.Message
 	song                    unplaylistSong
+	targetSong              *pendingMusicAction
 	playlists               []config.PlaylistInfo
 	selectedPlaylists       []string
 	webAppBaseURL           string
@@ -1307,6 +1308,10 @@ func (app *BotApp) playlistAssignmentAISuggestions(ctx context.Context, song unp
 }
 
 func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
+	return app.startPlaylistAssignmentForSong(c, nil)
+}
+
+func (app *BotApp) startPlaylistAssignmentForSong(c tb.Context, target *pendingMusicAction) error {
 	if app.cfg == nil {
 		return c.Send("歌单整理配置不可用。")
 	}
@@ -1316,13 +1321,16 @@ func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
 	if c.Chat().Type != tb.ChatPrivate {
 		return c.Send("歌单选择页面仅支持与机器人私聊，请在私聊中发送 /assign_playlist。")
 	}
-	if hold, blocked := app.beginMaintenanceCommand(c, "a"); blocked {
-		return app.presentMaintenanceHold(c, hold, "a", nil)
+	if target == nil {
+		if hold, blocked := app.beginMaintenanceCommand(c, "a"); blocked {
+			return app.presentMaintenanceHold(c, hold, "a", nil)
+		}
 	}
 	organizer, err := newPlaylistOrganizerService(app.cfg.PlaylistOrganizer)
 	if err != nil {
 		return c.Send("歌单整理服务尚未配置，请填写 playlist_organizer 中的 OliveTin 和 Navidrome 连接信息。")
 	}
+	defer organizer.client.CloseIdleConnections()
 	if err := organizer.requireNavidromeCredentials(); err != nil {
 		return c.Send("歌单整理服务尚未配置：" + err.Error())
 	}
@@ -1347,30 +1355,37 @@ func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
 	if len(options) > maxPlaylistOptions {
 		return c.Send("可选歌单超过 100 个，暂时无法打开歌单选择页面。")
 	}
-	if hold, blocked := app.beginMaintenanceCommand(c, "a"); blocked {
-		return app.presentMaintenanceHold(c, hold, "a", nil)
+	if target == nil {
+		if hold, blocked := app.beginMaintenanceCommand(c, "a"); blocked {
+			return app.presentMaintenanceHold(c, hold, "a", nil)
+		}
 	}
 	app.playlistMaintenanceStartMu.Lock()
 	hold, ended, blocked := app.clearIdleMaintenanceConflictsLocked(c.Chat().ID, "a")
 	if blocked {
 		app.playlistMaintenanceStartMu.Unlock()
 		app.editEndedMaintenanceCards(c, ended)
-		organizer.client.CloseIdleConnections()
+		if target != nil {
+			return c.Send(hold.busyText)
+		}
 		return app.presentMaintenanceHold(c, hold, "a", nil)
 	}
-	message, err := c.Bot().Send(c.Chat(), "⌛ 正在读取第一首待归档歌曲…")
+	loading := "⌛ 正在读取第一首待归档歌曲…"
+	if target != nil {
+		loading = "⌛ 正在曲库中查找《" + displaySongValue(target.title) + "》…"
+	}
+	message, err := c.Bot().Send(c.Chat(), loading)
 	if err != nil {
 		app.playlistMaintenanceStartMu.Unlock()
 		app.editEndedMaintenanceCards(c, ended)
-		organizer.client.CloseIdleConnections()
 		return err
 	}
-	organizer.client.CloseIdleConnections()
 	assignment := pendingPlaylistAssignment{
 		token:               strings.ReplaceAll(uuid.NewString(), "-", ""),
 		userID:              c.Sender().ID,
 		chatID:              c.Chat().ID,
 		message:             message,
+		targetSong:          target,
 		playlists:           append([]config.PlaylistInfo(nil), options...),
 		webAppBaseURL:       webAppBaseURL.String(),
 		playlistAssist:      playlistAssist,
@@ -1383,6 +1398,9 @@ func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
 	app.playlistMaintenanceStartMu.Unlock()
 	app.editEndedMaintenanceCards(c, ended)
 	if !registered {
+		if target != nil {
+			return app.editPlaylistAssignmentMessage(message, "歌单整理正在处理，请稍后再试。", &tb.ReplyMarkup{})
+		}
 		if again, ok := app.chatMaintenanceHold(assignment.chatID, ""); ok {
 			hold = again
 		} else {
@@ -1407,14 +1425,26 @@ func (app *BotApp) preparePlaylistAssignment(token string) {
 		return
 	}
 	defer service.client.CloseIdleConnections()
-	song, err := service.nextUnassignedSong(ctx, assignment.handledSongIDs)
+	var song unplaylistSong
+	if assignment.targetSong != nil {
+		song, err = service.findIngestedSong(ctx, *assignment.targetSong)
+		if errors.Is(err, errIngestedSongNotFound) {
+			app.failPlaylistAssignment(token, "曲库中还没找到这份文件。Navidrome 扫描后可以重试。", nil)
+			return
+		}
+		if errors.Is(err, errIngestedSongAmbiguous) {
+			app.failPlaylistAssignment(token, "曲库中有多份匹配的文件，暂时无法确定要整理的版本。", nil)
+			return
+		}
+	} else {
+		song, err = service.nextUnassignedSong(ctx, assignment.handledSongIDs)
+	}
 	if errors.Is(err, errNoPendingPlaylistSong) {
 		app.finishPlaylistAssignment(token)
 		return
 	}
 	if err != nil {
-		logger.Warn("[Telegram] 读取待整理歌曲失败", zap.Error(err))
-		app.failPlaylistAssignment(token, "❌ 读取待整理歌曲失败，可重试查询下一首。", err)
+		app.failPlaylistAssignment(token, "❌ 读取待整理歌曲失败，请重试。", err)
 		return
 	}
 	assignment.song = song
@@ -1549,6 +1579,9 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 		return nil
 
 	case "skip":
+		if assignment.targetSong != nil {
+			return c.Respond(&tb.CallbackResponse{Text: "请使用「结束整理」关闭这次整理。"})
+		}
 		updated, ok := app.skipPlaylistAssignmentSong(token)
 		if !ok {
 			return c.Respond(&tb.CallbackResponse{Text: "当前歌曲无法跳过，请稍后重试", ShowAlert: true})
@@ -1566,7 +1599,11 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "整理会话已过期或正在处理", ShowAlert: true})
 		}
 		_ = c.Respond()
-		if err := c.Edit("⌛ 正在继续读取待归档歌曲…", &tb.ReplyMarkup{}); err != nil {
+		loading := "⌛ 正在继续读取待归档歌曲…"
+		if assignment.targetSong != nil {
+			loading = "⌛ 正在重新查找这首歌…"
+		}
+		if err := c.Edit(loading, &tb.ReplyMarkup{}); err != nil {
 			app.markPlaylistAssignmentProcessing(token, false)
 			return err
 		}
@@ -1658,6 +1695,10 @@ func (app *BotApp) completePlaylistAssignment(token string) {
 		}
 	}
 	app.markPlaylistAssignmentProcessed(token, assignment.addedAny)
+	if assignment.targetSong != nil {
+		app.finishPlaylistAssignment(token)
+		return
+	}
 	app.advancePlaylistAssignment(token)
 }
 
@@ -1773,7 +1814,7 @@ func (app *BotApp) playlistAssignmentSuggestion(assignment pendingPlaylistAssign
 }
 
 func playlistAssignmentProgress(assignment pendingPlaylistAssignment) string {
-	if assignment.song.ID == "" {
+	if assignment.song.ID == "" || assignment.targetSong != nil {
 		return ""
 	}
 	parts := []string{fmt.Sprintf("第 %d 首", assignment.processedCount+assignment.skippedCount+1)}
@@ -1921,10 +1962,12 @@ func playlistAssignmentMarkup(assignment pendingPlaylistAssignment) *tb.ReplyMar
 				rows = append(rows, markup.Row(choose))
 			}
 		}
-		rows = append(rows, markup.Row(
-			markup.Data("跳过本首", playlistAssignmentCallbackUnique, "skip", assignment.token),
-			markup.Data("结束整理", playlistAssignmentCallbackUnique, "stop", assignment.token),
-		))
+		stop := markup.Data("结束整理", playlistAssignmentCallbackUnique, "stop", assignment.token)
+		if assignment.targetSong == nil {
+			rows = append(rows, markup.Row(markup.Data("跳过本首", playlistAssignmentCallbackUnique, "skip", assignment.token), stop))
+		} else {
+			rows = append(rows, markup.Row(stop))
+		}
 	} else {
 		rows = append(rows, markup.Row(markup.Data("结束整理", playlistAssignmentCallbackUnique, "stop", assignment.token)))
 	}

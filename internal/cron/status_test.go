@@ -1,10 +1,12 @@
 package cron
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/go-co-op/gocron/v2"
+	"github.com/nichuanfang/gymdl/config"
 )
 
 func TestJobsReportsDisabledWhenSchedulerIsNotRunning(t *testing.T) {
@@ -15,6 +17,39 @@ func TestJobsReportsDisabledWhenSchedulerIsNotRunning(t *testing.T) {
 	}
 	if err := RunNow("syncCookieCloud"); err == nil {
 		t.Fatal("run now succeeded while cron is off")
+	}
+}
+
+func TestTrashCleanupAppearsAsScheduledJobOnly(t *testing.T) {
+	for _, configured := range []bool{false, true} {
+		var cleanup func(context.Context) error
+		if configured {
+			cleanup = func(context.Context) error {
+				t.Error("cleanup should never run during this check")
+				return nil
+			}
+		}
+		scheduler := InitScheduler(&config.Config{}, cleanup)
+		_, jobs := Jobs()
+		var found bool
+		for _, job := range jobs {
+			if job.Name == emptyTrashJobName {
+				found = true
+				if job.Schedule != "每 30 分钟" || job.Label != "清空回收站" {
+					t.Errorf("unexpected cleanup job: %#v", job)
+				}
+			}
+		}
+		if found != configured {
+			t.Errorf("cleanup registration = %t, configured = %t", found, configured)
+		}
+		if err := RunNow(emptyTrashJobName); err == nil {
+			t.Error("Web job endpoint accepted an immediate destructive run")
+		}
+		setActive(nil)
+		if err := scheduler.Shutdown(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

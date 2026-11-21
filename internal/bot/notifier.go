@@ -60,7 +60,7 @@ func SendMusicMessage(msg string, song *music.SongInfo) {
 		instance.Send(msg)
 		return
 	}
-	token, markup := notifier.App.musicActionMarkup(song)
+	token, markup := notifier.App.musicActionMarkup(song, "")
 	go func() {
 		options := []interface{}{tb.ModeMarkdown}
 		if markup != nil {

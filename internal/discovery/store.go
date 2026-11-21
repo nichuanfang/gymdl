@@ -22,7 +22,7 @@ func Open(path string) (*Store, error) {
 	s := &Store{db: db}
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS discovery_bindings(user_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,platform TEXT NOT NULL,account TEXT NOT NULL,paused INTEGER NOT NULL DEFAULT 0,paused_by_user INTEGER NOT NULL DEFAULT 0,last_sync INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',PRIMARY KEY(user_id,platform));
  CREATE TABLE IF NOT EXISTS discovery_favorites(user_id INTEGER NOT NULL,platform TEXT NOT NULL,account TEXT NOT NULL,track_id TEXT NOT NULL,track_json TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(user_id,platform,account,track_id));
- CREATE TABLE IF NOT EXISTS discovery_jobs(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,identity TEXT NOT NULL,track_json TEXT NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_run INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',updated INTEGER NOT NULL,result TEXT NOT NULL DEFAULT '',source_platform TEXT NOT NULL DEFAULT '',source_account TEXT NOT NULL DEFAULT '',notified INTEGER NOT NULL DEFAULT 0,UNIQUE(user_id,identity));
+ CREATE TABLE IF NOT EXISTS discovery_jobs(id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,identity TEXT NOT NULL,track_json TEXT NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_run INTEGER NOT NULL DEFAULT 0,last_error TEXT NOT NULL DEFAULT '',updated INTEGER NOT NULL,result TEXT NOT NULL DEFAULT '',source_platform TEXT NOT NULL DEFAULT '',source_account TEXT NOT NULL DEFAULT '',notified INTEGER NOT NULL DEFAULT 0,stored_file_json TEXT NOT NULL DEFAULT 'null',UNIQUE(user_id,identity));
  CREATE INDEX IF NOT EXISTS discovery_job_ready ON discovery_jobs(state,next_run);
  CREATE TABLE IF NOT EXISTS discovery_preferences(user_id INTEGER NOT NULL,identity TEXT NOT NULL,shown INTEGER NOT NULL DEFAULT 0,dismissed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(user_id,identity));
  CREATE INDEX IF NOT EXISTS discovery_preference_user ON discovery_preferences(user_id,dismissed,shown);
@@ -34,6 +34,14 @@ func Open(path string) (*Store, error) {
 	if err = s.ensureBindingPauseColumn(); err != nil {
 		db.Close()
 		return nil, err
+	}
+	exists, err := s.hasColumn("discovery_jobs", "stored_file_json")
+	if err == nil && !exists {
+		_, err = db.Exec(`ALTER TABLE discovery_jobs ADD COLUMN stored_file_json TEXT NOT NULL DEFAULT 'null'`)
+	}
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("prepare stored discovery file metadata: %w", err)
 	}
 	return s, nil
 }
@@ -215,7 +223,7 @@ func enqueueTx(ctx context.Context, tx *sql.Tx, user, chat int64, t Track, now i
 	}
 	// A song that already finished can be liked again. Queued, running, failed,
 	// ignored, and owned rows stay as they are, and a bind never reaches here.
-	return tx.ExecContext(ctx, `INSERT INTO discovery_jobs(id,user_id,chat_id,identity,track_json,state,updated,source_platform,source_account) VALUES(?,?,?,?,?,'queued',?,?,?) ON CONFLICT(user_id,identity) DO UPDATE SET chat_id=excluded.chat_id,track_json=excluded.track_json,state='queued',attempts=0,next_run=0,last_error='',updated=excluded.updated,result='',source_platform=excluded.source_platform,source_account=excluded.source_account,notified=0 WHERE discovery_jobs.state='completed'`, token(), user, chat, Identity(t), string(data), now, t.Platform, account)
+	return tx.ExecContext(ctx, `INSERT INTO discovery_jobs(id,user_id,chat_id,identity,track_json,state,updated,source_platform,source_account) VALUES(?,?,?,?,?,'queued',?,?,?) ON CONFLICT(user_id,identity) DO UPDATE SET chat_id=excluded.chat_id,track_json=excluded.track_json,state='queued',attempts=0,next_run=0,last_error='',updated=excluded.updated,result='',source_platform=excluded.source_platform,source_account=excluded.source_account,notified=0,stored_file_json='null' WHERE discovery_jobs.state='completed'`, token(), user, chat, Identity(t), string(data), now, t.Platform, account)
 }
 
 func (s *Store) Enqueue(ctx context.Context, user, chat int64, t Track) (string, error) {
@@ -457,16 +465,18 @@ func (s *Store) Card(ctx context.Context, tok string, user, chat int64) (Card, e
 
 func scanJob(row interface{ Scan(...any) error }) (Job, error) {
 	var j Job
-	var raw string
-	err := row.Scan(&j.ID, &j.User, &j.Chat, &raw, &j.State, &j.Attempts, &j.Next, &j.Error, &j.Updated, &j.Result)
+	var raw, stored string
+	err := row.Scan(&j.ID, &j.User, &j.Chat, &raw, &j.State, &j.Attempts, &j.Next, &j.Error, &j.Updated, &j.Result, &stored, &j.SourceAccount)
 	if err != nil {
 		return j, err
 	}
-	err = json.Unmarshal([]byte(raw), &j.Track)
-	return j, err
+	if err = json.Unmarshal([]byte(raw), &j.Track); err != nil {
+		return j, err
+	}
+	return j, json.Unmarshal([]byte(stored), &j.File)
 }
 
-const jobColumns = `id,user_id,chat_id,track_json,state,attempts,next_run,last_error,updated,result`
+const jobColumns = `id,user_id,chat_id,track_json,state,attempts,next_run,last_error,updated,result,stored_file_json,source_account`
 
 func (s *Store) Job(ctx context.Context, id string) (Job, error) {
 	return scanJob(s.db.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM discovery_jobs WHERE id=?`, id))
@@ -542,8 +552,22 @@ func (s *Store) Finish(ctx context.Context, j Job, state, message, result string
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE discovery_jobs SET track_json=?,state=?,last_error=?,result=?,next_run=?,updated=?,notified=0 WHERE id=?`, string(data), state, message, result, next, time.Now().Unix(), j.ID)
+	stored, err := json.Marshal(j.File)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE discovery_jobs SET track_json=?,state=?,last_error=?,result=?,next_run=?,updated=?,notified=0,stored_file_json=? WHERE id=?`, string(data), state, message, result, next, time.Now().Unix(), string(stored), j.ID)
 	return err
+}
+
+func (s *Store) completePending(ctx context.Context, j Job) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE discovery_jobs SET state='completed',last_error='',next_run=0,updated=?,notified=0
+		WHERE id=? AND state='pending_upload' AND updated=?`, time.Now().Unix(), j.ID, j.Updated)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	return n == 1, err
 }
 
 func (s *Store) Recover(ctx context.Context) error {

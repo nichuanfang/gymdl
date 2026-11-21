@@ -150,8 +150,8 @@ func initServices(c *config.Config) {
 }
 
 // 启动定时任务
-func initCron(ctx context.Context, c *config.Config) {
-	s := cron.InitScheduler(c)
+func initCron(ctx context.Context, c *config.Config, emptyTrash func(context.Context) error) {
+	s := cron.InitScheduler(c, emptyTrash)
 	s.Start()
 	utils.Success("定时任务调度器已启动")
 	<-ctx.Done()
@@ -216,8 +216,8 @@ func initGin(ctx context.Context, c *config.Config) {
 }
 
 // 启动 Telegram Bot
-func initBot(ctx context.Context, c *config.Config) {
-	app, err := bot.NewBotApp(c)
+func initBot(ctx context.Context, c *config.Config, getApp func() (*bot.BotApp, error)) {
+	app, err := getApp()
 	if err != nil {
 		utils.Logger().Error("创建 Telegram Bot 应用失败", zap.Error(err))
 		return
@@ -281,10 +281,30 @@ func main() {
 
 	// 用 map 映射模块启动逻辑，更优雅地管理协程
 	services := map[string]func(context.Context, *config.Config){}
+	standaloneMaintenance := &bot.BotApp{}
+	getBotApp := sync.OnceValues(func() (*bot.BotApp, error) {
+		if !c.Telegram.Enable {
+			return standaloneMaintenance, nil
+		}
+		return bot.NewBotApp(c)
+	})
 
 	// 是否启用定时任务
 	if c.AdditionalConfig.EnableCron {
-		services["cron"] = initCron
+		var emptyTrash func(context.Context) error
+		if bot.ScheduledEmptyTrashConfigured(c) {
+			emptyTrash = func(ctx context.Context) error {
+				app, err := getBotApp()
+				if err != nil {
+					// Without a running Bot there are no interactive jobs to coordinate.
+					app = standaloneMaintenance
+				}
+				return app.RunScheduledEmptyTrash(ctx, c)
+			}
+		}
+		services["cron"] = func(ctx context.Context, c *config.Config) {
+			initCron(ctx, c, emptyTrash)
+		}
 	}
 
 	// 是否启用目录监控
@@ -299,7 +319,9 @@ func main() {
 
 	// 是否启用telegram
 	if c.Telegram.Enable {
-		services["telegram"] = initBot
+		services["telegram"] = func(ctx context.Context, c *config.Config) {
+			initBot(ctx, c, getBotApp)
+		}
 	}
 
 	// WebDAV 待上传队列需要在 web/monitor/bot 之前启动，

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -77,7 +79,13 @@ func Download(ctx context.Context, cfg *config.Config, store *musicdedupe.Store,
 		}
 		return nil
 	}, BeforeStore: func() error {
-		return reviewOneSong(ctx, p.Songs(), t.Approved)
+		songs := p.Songs()
+		if len(songs) == 1 && songs[0] != nil {
+			if file, err := os.Stat(songs[0].MusicPath); err == nil && file.Mode().IsRegular() {
+				songs[0].MusicSize = file.Size()
+			}
+		}
+		return reviewOneSong(ctx, songs, t.Approved)
 	}, After: func(songs []*music.SongInfo) error {
 		for _, song := range songs {
 			actual := t
@@ -89,6 +97,17 @@ func Download(ctx context.Context, cfg *config.Config, store *musicdedupe.Store,
 			result.Track = &actual
 			if strings.EqualFold(song.Tidy, "WEBDAV_PENDING") {
 				result.Pending = true
+			}
+			if len(songs) == 1 {
+				storage := strings.ToUpper(song.Tidy)
+				if result.Pending {
+					storage = "WEBDAV"
+				}
+				if storedPath := music.StoredFilePath(song, taskCfg.Tidy); storedPath != "" && (storage == "LOCAL" || storage == "WEBDAV") {
+					result.File = &IngestedFile{
+						Path: storedPath, Storage: storage, Extension: song.FileExt, Size: song.MusicSize, Bitrate: song.Bitrate,
+					}
+				}
 			}
 			record := identity
 			record.Title = song.SongName
@@ -104,6 +123,30 @@ func Download(ctx context.Context, cfg *config.Config, store *musicdedupe.Store,
 		return DownloadResult{Pending: true}, nil
 	}
 	return result, err
+}
+
+func uploadedDiscoveryFile(file *IngestedFile) (bool, error) {
+	webdav := core.GlobalWebDAV
+	if webdav == nil || webdav.Outbox == nil || file.Storage != "WEBDAV" {
+		return false, nil
+	}
+	items, err := webdav.Outbox.List()
+	if err != nil {
+		return false, err
+	}
+	for _, item := range items {
+		if path.Join(item.RemoteDir, item.FileName) == file.Path {
+			return false, nil
+		}
+	}
+	info, err := webdav.Stat(file.Path)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !info.IsDir() && (file.Size <= 0 || file.Size == info.Size()), nil
 }
 
 // PendingTrack excludes staged uploads and very recent successful manual

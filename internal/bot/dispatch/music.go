@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path"
-	"path/filepath"
+	"os"
 	"strings"
 
 	"github.com/nichuanfang/gymdl/internal/audiodupe"
+	"github.com/nichuanfang/gymdl/internal/musicdedupe"
 	"github.com/nichuanfang/gymdl/processor/music"
 	"github.com/nichuanfang/gymdl/utils"
 	tb "gopkg.in/telebot.v4"
@@ -35,6 +35,12 @@ func (s *Session) HandleMusic(p music.Processor) error {
 		}
 		return nil
 	}, BeforeStore: func() error {
+		for _, song := range nonNilMusicSongs(p.Songs()) {
+			// Provider-reported sizes can predate tag and cover writes.
+			if file, err := os.Stat(song.MusicPath); err == nil && file.Mode().IsRegular() {
+				song.MusicSize = file.Size()
+			}
+		}
 		err := reviewSessionAudio(s, p)
 		if err == nil {
 			return nil
@@ -102,7 +108,11 @@ func (s *Session) sendMusicFeedback(p music.Processor) {
 			utils.EscapeHTML(storageLabel),
 		)
 
-		s.editMusicSuccess(successMsg, songs)
+		var sourceURL string
+		if musicdedupe.IsSingleTrackLink(p.Name(), s.Link) {
+			sourceURL = s.Link
+		}
+		s.editMusicSuccess(successMsg, songs, sourceURL)
 		return
 	}
 
@@ -140,7 +150,7 @@ func (s *Session) sendMusicFeedback(p music.Processor) {
 		utils.EscapeHTML(tidyStorageLabel(songs[0].Tidy)),
 	)
 
-	s.editMusicSuccess(successMsg, songs)
+	s.editMusicSuccess(successMsg, songs, "")
 }
 
 func reviewSessionAudio(s *Session, p music.Processor) error {
@@ -168,13 +178,13 @@ func tidyStorageLabel(tidy string) string {
 	return strings.ToUpper(tidy)
 }
 
-func (s *Session) editMusicSuccess(text string, songs []*music.SongInfo) {
+func (s *Session) editMusicSuccess(text string, songs []*music.SongInfo, sourceURL string) {
 	options := []interface{}{tb.ModeHTML}
 	var actionTokens []string
 	var actionMarkup *tb.ReplyMarkup
 	if s.CreateMusicActionMarkup != nil {
 		for _, song := range songs {
-			token, markup := s.CreateMusicActionMarkup(song)
+			token, markup := s.CreateMusicActionMarkup(song, sourceURL)
 			if token == "" || markup == nil {
 				continue
 			}
@@ -217,22 +227,12 @@ func (s *Session) setStoredMusicPaths(songs []*music.SongInfo) {
 		if song == nil || song.MusicPath == "" {
 			continue
 		}
-		fileName := filepath.Base(song.MusicPath)
-		switch s.Cfg.Tidy.Mode {
-		case 1:
-			song.MusicPath = filepath.Join(s.Cfg.Tidy.DistDir, utils.SanitizeFileName(fileName))
-		case 2:
-			if strings.EqualFold(song.Tidy, "WEBDAV_PENDING") {
-				// 尚未上传成功时不能暴露一个 NAS 上不存在的路径，
-				// 否则播放/删除按钮会误操作。
-				song.MusicPath = ""
-				continue
-			}
-			song.MusicPath = path.Join(
-				utils.SanitizeFileName(song.SongArtists),
-				utils.SanitizeFileName(song.SongAlbum),
-				fileName,
-			)
+		if strings.EqualFold(song.Tidy, "WEBDAV_PENDING") {
+			song.MusicPath = ""
+			continue
+		}
+		if stored := music.StoredFilePath(song, s.Cfg.Tidy); stored != "" {
+			song.MusicPath = stored
 		}
 	}
 }

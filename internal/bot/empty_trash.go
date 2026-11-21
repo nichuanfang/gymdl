@@ -119,6 +119,16 @@ func (s *emptyTrashService) run(ctx context.Context, progress func(string)) empt
 		result.NoTracks = true
 		return result
 	}
+	current, err := s.readPlan(ctx)
+	if err != nil {
+		return emptyTrashResult{PreflightError: err}
+	}
+	if current.snapshot.TrackCount == 0 {
+		return emptyTrashResult{NoTracks: true}
+	}
+	if !sameEmptyTrashPlan(plan, current) {
+		return emptyTrashResult{PreflightError: errors.New("回收站内容已变化，等待下次定时检查")}
+	}
 	return s.execute(ctx, plan, progress)
 }
 
@@ -137,21 +147,22 @@ func (s *emptyTrashService) runConfirmed(ctx context.Context, approvedPlan empty
 }
 
 func (s *emptyTrashService) prepare(ctx context.Context) (emptyTrashPlan, error) {
-	snapshot, ids, paths, err := s.readTrashPlaylist(ctx)
-	if err != nil {
-		return emptyTrashPlan{}, err
+	plan, err := s.readPlan(ctx)
+	if err != nil || plan.snapshot.TrackCount == 0 {
+		return plan, err
 	}
-	plan := emptyTrashPlan{snapshot: snapshot, ids: ids, paths: paths}
-	if snapshot.TrackCount == 0 {
-		return plan, nil
-	}
-	if err := s.stateTable.deleteRows(ctx, ids, true); err != nil {
+	if err := s.stateTable.deleteRows(ctx, plan.ids, true); err != nil {
 		return emptyTrashPlan{}, fmt.Errorf("MusicRAG 状态表删除权限检查失败: %w", err)
 	}
 	if err := s.checkPinecone(ctx); err != nil {
 		return emptyTrashPlan{}, fmt.Errorf("Pinecone 连接检查失败: %w", err)
 	}
 	return plan, nil
+}
+
+func (s *emptyTrashService) readPlan(ctx context.Context) (emptyTrashPlan, error) {
+	snapshot, ids, paths, err := s.readTrashPlaylist(ctx)
+	return emptyTrashPlan{snapshot: snapshot, ids: ids, paths: paths}, err
 }
 
 func (s *emptyTrashService) execute(ctx context.Context, plan emptyTrashPlan, progress func(string)) emptyTrashResult {
@@ -674,6 +685,14 @@ func (app *BotApp) beginEmptyTrashRun(chatID int64) bool {
 	defer app.emptyTrashMu.Unlock()
 	if len(app.aiPlaylistRunning) != 0 || len(app.emptyTrashRunning) != 0 || len(app.playlistAssignmentRunning) != 0 {
 		return false
+	}
+	// The scheduled run has no Telegram chat. Leave any open manual
+	// confirmation available for the person who requested it.
+	if chatID == 0 {
+		app.purgePendingEmptyTrashLocked(time.Now())
+		if len(app.emptyTrashPending) != 0 {
+			return false
+		}
 	}
 	if app.emptyTrashRunning == nil {
 		app.emptyTrashRunning = make(map[int64]struct{})

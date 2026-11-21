@@ -113,6 +113,9 @@ func tidy(path string, cfg *config.Config) (*music.SongInfo, error) {
 	}
 	// 嵌入默认标签
 	music.FillDefaultTags(path, songInfo)
+	if file, err := os.Stat(path); err == nil {
+		songInfo.MusicSize = file.Size()
+	}
 	utils.InfoWithFormat("[Um] 开始整理文件: %s", path)
 	switch cfg.Tidy.Mode {
 	case 1:

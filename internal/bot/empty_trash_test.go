@@ -297,6 +297,55 @@ func TestEmptyTrashConfirmationStopsWhenQueueChanges(t *testing.T) {
 	}
 }
 
+func TestScheduledEmptyTrashRechecksMembershipBeforeDeletion(t *testing.T) {
+	lookups := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/StartActionAndWait":
+			var request oliveTinActionRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.ActionID != "playlist_tracks" {
+				t.Errorf("unexpected OliveTin mutation or invalid request: %#v", request)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			lookups++
+			out := fmt.Sprintf(`[{"playlist_name":"回收站","track_ids":["song%d"],"file_paths":["album/%d.flac"],"track_count":1}]`, lookups, lookups)
+			writeJSON(t, w, map[string]any{"logEntry": map[string]any{"exitCode": 0, "stdout": out}})
+		case "/describe_index_stats":
+			writeJSON(t, w, map[string]any{})
+		default:
+			t.Errorf("unexpected mutation: %s", r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+	result := testEmptyTrashService(t, server).run(t.Context(), nil)
+	if lookups != 2 || result.PreflightError == nil || !strings.Contains(result.PreflightError.Error(), "下次定时检查") ||
+		result.VectorsDeleted || result.StateRowsClean || result.FilesDeleted != 0 {
+		t.Fatalf("changed playlist should be skipped, got %#v after %d lookups", result, lookups)
+	}
+}
+
+func TestScheduledEmptyTrashDefersToInteractiveMaintenance(t *testing.T) {
+	app := &BotApp{}
+	app.registerPendingEmptyTrash(pendingEmptyTrash{token: "manual", chatID: 10, expiresAt: time.Now().Add(time.Minute)})
+	if err := app.RunScheduledEmptyTrash(t.Context(), nil); err != nil || !app.hasPendingEmptyTrash(10) {
+		t.Fatalf("scheduled check interrupted the manual confirmation: %v", err)
+	}
+	app.removePendingEmptyTrash("manual")
+	if !app.beginEmptyTrashRun(0) {
+		t.Fatal("schedule did not claim maintenance")
+	}
+	if app.beginEmptyTrashRun(10) || app.beginAIPlaylistRun(10) || app.beginPlaylistAssignmentRun(10) {
+		t.Fatal("interactive mutation overlapped the scheduled run")
+	}
+	app.finishEmptyTrashRun(0)
+	if !app.beginEmptyTrashRun(10) {
+		t.Fatal("manual maintenance stayed blocked after scheduled run")
+	}
+	app.finishEmptyTrashRun(10)
+}
+
 func TestEmptyTrashDoesNotDeleteFilesWhenStateTablePreflightFails(t *testing.T) {
 	fileDeleteCalls := 0
 	pineconePreflightCalls := 0

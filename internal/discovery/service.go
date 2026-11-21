@@ -19,6 +19,7 @@ type DownloadResult struct {
 	Pending bool
 	Detail  string
 	Track   *Track
+	File    *IngestedFile
 }
 type Service struct {
 	Store    *Store
@@ -30,6 +31,7 @@ type Service struct {
 	// Notify returns an error on delivery failure so digests remain unacknowledged.
 	// Sync failures are logged and are not sent through Notify.
 	Notify               func(int64, string) error
+	NotifyIngested       func(Job) error
 	OnError              func(error)
 	Authorized           func(int64, int64) bool
 	Enabled              bool
@@ -822,6 +824,7 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 	if err != nil {
 		return err
 	}
+	j.File = nil
 	utils.InfoWithFormat("[Discovery] 开始入库 %s", discoveryTrackLabel(j.Track))
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -921,11 +924,24 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 	if result.Track != nil {
 		j.Track = *result.Track
 	}
+	if j.SourceAccount == "" {
+		j.File = result.File
+	}
 	state := Completed
 	if result.Pending {
 		state = PendingUpload
 	}
-	return finish(state, "", result.Detail, 0)
+	if err := finish(state, "", result.Detail, 0); err != nil {
+		return err
+	}
+	if state == Completed && j.File != nil && s.NotifyIngested != nil {
+		stored, err := s.Store.Job(ctx, j.ID)
+		if err != nil {
+			return err
+		}
+		return s.notifyIngestedJob(ctx, stored)
+	}
+	return nil
 }
 
 func (s *Service) Reconcile(ctx context.Context, user int64) error {
@@ -942,11 +958,23 @@ func (s *Service) Reconcile(ctx context.Context, user int64) error {
 			return e
 		}
 		if owned {
-			if e = s.Store.Finish(ctx, j, Completed, "", j.Result, 0); e != nil {
+			if j.File != nil {
+				ready, verifyErr := uploadedDiscoveryFile(j.File)
+				if verifyErr != nil {
+					utils.WarnWithFormat("[Discovery] 无法核对待上传歌曲 %s: %v", discoveryTrackLabel(j.Track), verifyErr)
+				}
+				if !ready {
+					continue
+				}
+			}
+			completed, e := s.Store.completePending(ctx, j)
+			if e != nil {
 				utils.WarnWithFormat("[Discovery] 待上传歌曲没能标成已入库 %s: %v", discoveryTrackLabel(j.Track), e)
 				return e
 			}
-			utils.InfoWithFormat("[Discovery] 待上传歌曲已入库 %s", discoveryTrackLabel(j.Track))
+			if completed {
+				utils.InfoWithFormat("[Discovery] 待上传歌曲已入库 %s", discoveryTrackLabel(j.Track))
+			}
 		}
 	}
 	return nil
@@ -975,7 +1003,7 @@ func StateLabel(state string) string {
 }
 
 func (s *Service) Digest(ctx context.Context) error {
-	if s.Notify == nil {
+	if s.Notify == nil && s.NotifyIngested == nil {
 		return nil
 	}
 	_ = s.Reconcile(ctx, 0)
@@ -985,9 +1013,18 @@ func (s *Service) Digest(ctx context.Context) error {
 	}
 	groups := map[int64][]Job{}
 	for _, j := range jobs {
+		if j.State == Completed && j.File != nil && s.NotifyIngested != nil {
+			if err := s.notifyIngestedJob(ctx, j); err != nil {
+				return err
+			}
+			continue
+		}
 		if j.State != Queued && j.State != Running {
 			groups[j.Chat] = append(groups[j.Chat], j)
 		}
+	}
+	if s.Notify == nil {
+		return nil
 	}
 	for chat, list := range groups {
 		if s.Authorized != nil && !s.Authorized(list[0].User, chat) {
@@ -1020,6 +1057,17 @@ func (s *Service) Digest(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Service) notifyIngestedJob(ctx context.Context, j Job) error {
+	if j.State != Completed || (s.Authorized != nil && !s.Authorized(j.User, j.Chat)) {
+		return nil
+	}
+	if err := s.NotifyIngested(j); err != nil {
+		utils.WarnWithFormat("[Discovery] 入库操作卡片发送失败，将在汇总时重试: %v", err)
+		return nil
+	}
+	return s.Store.NotifyDone(ctx, j.ID, j.Updated, j.State)
 }
 
 func discoveryTrackLabel(track Track) string {

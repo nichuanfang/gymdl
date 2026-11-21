@@ -92,17 +92,27 @@ type Binding struct {
 	LastSync     int64
 	Error        string
 }
+type IngestedFile struct {
+	Path      string
+	Storage   string
+	Extension string
+	Size      int64
+	Bitrate   string
+}
+
 type Job struct {
-	ID       string
-	User     int64
-	Chat     int64
-	Track    Track
-	State    string
-	Attempts int
-	Next     int64
-	Error    string
-	Updated  int64
-	Result   string
+	ID            string
+	User          int64
+	Chat          int64
+	Track         Track
+	State         string
+	Attempts      int
+	Next          int64
+	Error         string
+	Updated       int64
+	Result        string
+	File          *IngestedFile `json:"-"`
+	SourceAccount string        `json:"-"`
 }
 type Card struct {
 	Token    string

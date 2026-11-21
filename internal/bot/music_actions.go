@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path"
@@ -28,6 +29,12 @@ type pendingMusicAction struct {
 	path      string
 	title     string
 	artist    string
+	album     string
+	extension string
+	size      int64
+	sourceURL string
+	busy      bool
+	choice    string
 	storage   string
 	expiresAt time.Time
 	origin    *tb.Message
@@ -35,7 +42,7 @@ type pendingMusicAction struct {
 	deleting  bool
 }
 
-func (app *BotApp) musicActionMarkup(song *music.SongInfo) (string, *tb.ReplyMarkup) {
+func (app *BotApp) musicActionMarkup(song *music.SongInfo, sourceURL string) (string, *tb.ReplyMarkup) {
 	if song == nil || song.MusicPath == "" {
 		return "", nil
 	}
@@ -49,23 +56,33 @@ func (app *BotApp) musicActionMarkup(song *music.SongInfo) (string, *tb.ReplyMar
 		path:      song.MusicPath,
 		title:     song.SongName,
 		artist:    song.SongArtists,
+		album:     song.SongAlbum,
+		extension: song.FileExt,
+		size:      song.MusicSize,
+		sourceURL: sourceURL,
 		storage:   storage,
 		expiresAt: time.Now().Add(musicActionTTL),
 	}
 
+	app.storeMusicAction(token, action)
+
+	markup := &tb.ReplyMarkup{}
+	play := markup.Data("▶️ 播放", musicActionCallbackUnique, "play", token)
+	remove := markup.Data("🗑 删除", musicActionCallbackUnique, "delete", token)
+	tidy := markup.Data("整理", musicActionCallbackUnique, "tidy", token)
+	sources := markup.Data("其他音源", musicActionCallbackUnique, "sources", token)
+	markup.Inline(markup.Row(play, remove, tidy, sources))
+	return token, markup
+}
+
+func (app *BotApp) storeMusicAction(token string, action pendingMusicAction) {
 	app.musicActionMu.Lock()
+	defer app.musicActionMu.Unlock()
 	app.purgeMusicActionsLocked(time.Now())
 	if app.musicActions == nil {
 		app.musicActions = make(map[string]pendingMusicAction)
 	}
 	app.musicActions[token] = action
-	app.musicActionMu.Unlock()
-
-	markup := &tb.ReplyMarkup{}
-	play := markup.Data("▶️ 播放", musicActionCallbackUnique, "play", token)
-	remove := markup.Data("🗑 删除", musicActionCallbackUnique, "delete", token)
-	markup.Inline(markup.Row(play, remove))
-	return token, markup
 }
 
 func (app *BotApp) setMusicActionMessages(tokens []string, message *tb.Message, markup *tb.ReplyMarkup, userID, chatID int64) {
@@ -173,11 +190,26 @@ func (app *BotApp) HandleMusicActionCallback(c tb.Context) error {
 	if callback := c.Callback(); callback != nil {
 		callbackMessage = callback.Message
 	}
-	if (actionName == "play" || actionName == "delete") && !sameMusicActionMessage(action.origin, callbackMessage) {
+	if actionName != "confirm_delete" && actionName != "cancel_delete" && !sameMusicActionMessage(action.origin, callbackMessage) {
 		return c.Respond(&tb.CallbackResponse{Text: "请使用入库成功消息中的按钮", ShowAlert: true})
+	}
+	if (actionName == "download") != (action.choice != "") {
+		return c.Respond(&tb.CallbackResponse{Text: "操作无效", ShowAlert: true})
 	}
 
 	switch actionName {
+	case "tidy":
+		_ = c.Respond(&tb.CallbackResponse{Text: "正在打开歌单整理…"})
+		return app.startPlaylistAssignmentForSong(c, &action)
+	case "sources":
+		return app.showOtherMusicSources(c, token, action)
+	case "download":
+		if !app.setMusicActionBusy(token, true) {
+			return c.Respond(&tb.CallbackResponse{Text: "已提交，请查看下载进度。"})
+		}
+		defer app.setMusicActionBusy(token, false)
+		_ = c.Respond(&tb.CallbackResponse{Text: "正在提交下载…"})
+		return app.downloadOtherMusicSource(c, action)
 	case "play":
 		if err := app.sendMusicActionAudio(c, action); err != nil {
 			utils.WarnWithFormat("[Telegram] 播放入库歌曲失败: %v", err)
@@ -203,6 +235,37 @@ func (app *BotApp) HandleMusicActionCallback(c tb.Context) error {
 	default:
 		return c.Respond(&tb.CallbackResponse{Text: "未知操作", ShowAlert: true})
 	}
+}
+
+func (app *BotApp) setMusicActionBusy(token string, busy bool) bool {
+	app.musicActionMu.Lock()
+	defer app.musicActionMu.Unlock()
+	app.purgeMusicActionsLocked(time.Now())
+	action, ok := app.musicActions[token]
+	if !ok || action.deleting || action.busy == busy {
+		return false
+	}
+	action.busy = busy
+	app.musicActions[token] = action
+	return true
+}
+
+func (app *BotApp) showOtherMusicSources(c tb.Context, token string, action pendingMusicAction) error {
+	if strings.TrimSpace(action.title) == "" {
+		return c.Respond(&tb.CallbackResponse{Text: "歌曲缺少标题，无法搜索音源。", ShowAlert: true})
+	}
+	if !app.setMusicActionBusy(token, true) {
+		return c.Respond(&tb.CallbackResponse{Text: "正在查找其他音源，请稍候。"})
+	}
+	defer app.setMusicActionBusy(token, false)
+	_ = c.Respond(&tb.CallbackResponse{Text: "正在搜索其他音源…"})
+	message, err := c.Bot().Send(c.Chat(), "🔎 正在搜索《"+displaySongValue(action.title)+"》的其他音源…")
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	return app.presentOtherMusicSources(ctx, c, message, action)
 }
 
 func (app *BotApp) sendMusicActionAudio(c tb.Context, action pendingMusicAction) error {

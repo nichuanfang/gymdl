@@ -14,6 +14,7 @@ import (
 	"github.com/nichuanfang/gymdl/internal/discovery"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
 	"github.com/nichuanfang/gymdl/internal/storage"
+	"github.com/nichuanfang/gymdl/processor/music"
 	"github.com/nichuanfang/gymdl/utils"
 	tb "gopkg.in/telebot.v4"
 )
@@ -62,7 +63,29 @@ func (app *BotApp) initDiscovery() {
 			_, err := app.bot.Send(tb.ChatID(chat), text, tb.ModeHTML)
 			return err
 		},
+		NotifyIngested: app.sendDiscoveryIngested,
 	}
+}
+
+func (app *BotApp) sendDiscoveryIngested(job discovery.Job) error {
+	song := &music.SongInfo{
+		SongName: job.Track.Title, SongArtists: job.Track.Artist, SongAlbum: job.Track.Album,
+		MusicPath: job.File.Path, Tidy: job.File.Storage, FileExt: job.File.Extension,
+		MusicSize: job.File.Size, Bitrate: job.File.Bitrate,
+	}
+	token, markup := app.musicActionMarkup(song, job.Track.URL)
+	text := fmt.Sprintf("🎉 <b>遗珠入库成功！</b>\n\n🎵 <b>%s</b>\n🎤 %s\n💿 %s\n🎧 %s",
+		musicSourceLabel(song.SongName), musicSourceLabel(song.SongArtists), musicSourceLabel(song.SongAlbum),
+		utils.EscapeHTML(strings.ToUpper(song.FileExt)))
+	if song.Bitrate != "" && song.Bitrate != "0" {
+		text += " · " + utils.EscapeHTML(song.Bitrate) + " kbps"
+	}
+	message, err := app.bot.Send(tb.ChatID(job.Chat), text, tb.ModeHTML, markup)
+	if err != nil {
+		return err
+	}
+	app.setMusicActionMessages([]string{token}, message, markup, job.User, job.Chat)
+	return nil
 }
 
 func (app *BotApp) discoveryAuthorized(c tb.Context) bool {
