@@ -1561,7 +1561,7 @@ func discoveryPendingUploadCard(job discovery.Job, index, total int) (string, *t
 	}
 	text.WriteString("\n──────────────────\n")
 	text.WriteString(rediscoverTrackFields(job.Track))
-	text.WriteString("\nNAS 恢复后自动上传。")
+	text.WriteString("\n等待曲库确认；不会再次下载。")
 	if note := strings.TrimSpace(job.Error); note != "" {
 		fmt.Fprintf(&text, "\n原因: %s", utils.EscapeHTML(utils.TruncateString(note, 120)))
 	}

@@ -244,7 +244,7 @@ func (s *Store) Pause(ctx context.Context, user int64, platform string, pause bo
 
 // SourceError records a read failure without changing a user's pause choice.
 // The bool return reports whether the message changed.
-func (s *Store) SourceError(ctx context.Context, b Binding, message string, pause bool) (bool, error) {
+func (s *Store) SourceError(ctx context.Context, b Binding, message string) (bool, error) {
 	var old string
 	if err := s.db.QueryRowContext(ctx, `SELECT last_error FROM discovery_bindings WHERE user_id=? AND platform=?`, b.User, b.Platform).Scan(&old); err != nil {
 		return false, err

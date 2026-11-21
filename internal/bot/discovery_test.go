@@ -706,7 +706,7 @@ func TestFavoritesCardOpensPendingUploadsAndShowsRecoveryHint(t *testing.T) {
 		t.Fatalf("pending jobs = %+v err=%v", jobs, err)
 	}
 	cardText, cardMarkup := discoveryPendingUploadCard(jobs[0], 0, 1)
-	if !strings.Contains(cardText, "NAS 恢复后自动上传") || !buttonTexts(cardMarkup)["检查上传"] {
+	if !strings.Contains(cardText, "等待曲库确认") || !buttonTexts(cardMarkup)["检查上传"] {
 		t.Fatalf("pending upload card = %s %#v", cardText, buttonTexts(cardMarkup))
 	}
 }
@@ -744,7 +744,7 @@ func TestDiscoveryPendingUploadAndFailedCardsUseTrackFields(t *testing.T) {
 		Platform: "netease", Title: "待上传歌", Artist: "甲", Album: "专辑", URL: "https://music.163.com/song?id=pending-1",
 	}, Error: "WebDAV 423 <锁定>"}
 	upload, uploadMarkup := discoveryPendingUploadCard(job, 0, 2)
-	for _, want := range []string{"☁️ <b>待上传</b> · 1/2", "歌曲: <a href=\"https://music.163.com/song?id=pending-1\">待上传歌</a>", "艺人: 甲", "专辑: 专辑", "平台: 网易云", "NAS 恢复后自动上传", "原因: WebDAV 423 &lt;锁定&gt;"} {
+	for _, want := range []string{"☁️ <b>待上传</b> · 1/2", "歌曲: <a href=\"https://music.163.com/song?id=pending-1\">待上传歌</a>", "艺人: 甲", "专辑: 专辑", "平台: 网易云", "等待曲库确认", "原因: WebDAV 423 &lt;锁定&gt;"} {
 		if !strings.Contains(upload, want) {
 			t.Fatalf("upload card missing %q: %s", want, upload)
 		}
@@ -948,7 +948,7 @@ func TestFavoritesCardShowsNamedSyncState(t *testing.T) {
 	if _, _, err = store.Apply(ctx, 7, 7, discovery.Snapshot{Platform: "netease", Account: "112345170", Complete: true, Tracks: []discovery.Track{{Platform: "netease", ID: "1", Title: "歌", Artist: "甲", Verified: true}}}, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.SourceError(ctx, discovery.Binding{User: 7, Platform: "netease"}, "netease：网易云收藏暂时读不到，本轮跳过", false); err != nil {
+	if _, err = store.SourceError(ctx, discovery.Binding{User: 7, Platform: "netease"}, "netease：网易云收藏暂时读不到，本轮跳过"); err != nil {
 		t.Fatal(err)
 	}
 	app := &BotApp{discovery: &discovery.Service{Store: store, Enabled: true, PollInterval: 10 * time.Minute}}

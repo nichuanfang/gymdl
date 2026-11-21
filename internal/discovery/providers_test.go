@@ -231,7 +231,7 @@ func TestPausedLoginRetriesWhenCookieWorksAgain(t *testing.T) {
 	if _, _, err := s.Apply(ctx, 1, 1, snapshot("account", testTrack("1", "Song", "Artist")), true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SourceError(ctx, Binding{User: 1, Platform: "netease"}, "netease：网易云登录失效，没有可用的登录态", true); err != nil {
+	if _, err := s.SourceError(ctx, Binding{User: 1, Platform: "netease"}, "netease：网易云登录失效，没有可用的登录态"); err != nil {
 		t.Fatal(err)
 	}
 	notices := []string{}
@@ -284,7 +284,7 @@ func TestUserPauseSurvivesSourceFailuresAndIsOnlyClearedByUser(t *testing.T) {
 	if err := s.Pause(ctx, 1, "netease", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SourceError(ctx, Binding{User: 1, Platform: "netease"}, "netease：旧的读取错误", true); err != nil {
+	if _, err := s.SourceError(ctx, Binding{User: 1, Platform: "netease"}, "netease：旧的读取错误"); err != nil {
 		t.Fatal(err)
 	}
 	bindings, err := s.Bindings(ctx, 1)
@@ -351,27 +351,27 @@ func TestManualSyncReturnsPerPlatformResultsForPartialFailure(t *testing.T) {
 	}
 }
 
-func TestManualSyncSuppressesTheImmediateBackgroundNotice(t *testing.T) {
+func TestManualSyncDoesNotRepeatAfterTheBaselineAdvances(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	if _, _, err := s.Apply(ctx, 1, 9, snapshot("account", testTrack("1", "Old", "Artist")), true); err != nil {
 		t.Fatal(err)
 	}
-	notices := 0
 	svc := Service{
 		Store: s, Enabled: true,
 		Provider: gatingProvider{fetch: func(context.Context, string) (Snapshot, error) {
 			return snapshot("account", testTrack("2", "New", "Artist")), nil
 		}},
-		Notify: func(int64, string) error { notices++; return nil },
 	}
-	fresh, err := svc.SyncQuietly(ctx, 1)
+	fresh, _, err := svc.SyncWithResults(ctx, 1)
 	if err != nil || len(fresh) != 1 {
 		t.Fatalf("fresh=%+v err=%v", fresh, err)
 	}
-	svc.notifyFresh(svc.suppressAfterManualSync(fresh))
-	if notices != 0 {
-		t.Fatalf("manual sync duplicated a background notice: %d", notices)
+	// A manual sync advances the baseline. The background poll therefore sees
+	// no new favourites and cannot send the same notice again.
+	fresh, err = svc.Sync(ctx, 1)
+	if err != nil || len(fresh) != 0 {
+		t.Fatalf("background poll repeated fresh favourites: %+v err=%v", fresh, err)
 	}
 }
 

@@ -43,7 +43,6 @@ type Service struct {
 	historyReady         bool
 	resolveCache         map[string]resolveCacheEntry
 	neteaseRefreshCursor map[string]int
-	manualSyncedAt       map[int64]time.Time
 }
 
 const (
@@ -79,85 +78,15 @@ type FavoriteSyncResult struct {
 	Error    string
 }
 
-// markManualSynced records the manual-sync boundary per chat. The next
-// background poll still updates the baseline, but must not repeat this
-// conversation's fresh-favorite notice.
-func (s *Service) markManualSynced(items []FreshFavorite) {
-	if len(items) == 0 {
-		return
-	}
-	seen := map[int64]struct{}{}
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-	if s.manualSyncedAt == nil {
-		s.manualSyncedAt = map[int64]time.Time{}
-	}
-	now := time.Now()
-	for _, item := range items {
-		if _, ok := seen[item.Chat]; ok {
-			continue
-		}
-		seen[item.Chat] = struct{}{}
-		s.manualSyncedAt[item.Chat] = now
-	}
-}
-
-func (s *Service) suppressAfterManualSync(items []FreshFavorite) []FreshFavorite {
-	if len(items) == 0 {
-		return items
-	}
-	s.cacheMu.Lock()
-	defer s.cacheMu.Unlock()
-	if len(s.manualSyncedAt) == 0 {
-		return items
-	}
-	for chat, boundary := range s.manualSyncedAt {
-		if time.Since(boundary) > 10*time.Minute {
-			delete(s.manualSyncedAt, chat)
-		}
-	}
-	out := make([]FreshFavorite, 0, len(items))
-	for _, item := range items {
-		boundary, ok := s.manualSyncedAt[item.Chat]
-		if !ok {
-			out = append(out, item)
-			continue
-		}
-		if time.Since(boundary) >= 2*time.Minute {
-			delete(s.manualSyncedAt, item.Chat)
-			out = append(out, item)
-		}
-	}
-	return out
-}
-
 func (s *Service) Sync(ctx context.Context, user int64) ([]FreshFavorite, error) {
-	return s.sync(ctx, user)
-}
-
-// SyncQuietly runs a user-requested sync. The caller reports the result.
-// A failed round is only logged; it does not pause the source or push an alert.
-func (s *Service) SyncQuietly(ctx context.Context, user int64) ([]FreshFavorite, error) {
 	fresh, _, err := s.syncWithResults(ctx, user)
-	if len(fresh) > 0 {
-		s.markManualSynced(fresh)
-	}
 	return fresh, err
 }
 
 // SyncWithResults is the user-facing sync path. It returns one result per
 // bound platform so a partial success is never described as a total failure.
 func (s *Service) SyncWithResults(ctx context.Context, user int64) ([]FreshFavorite, []FavoriteSyncResult, error) {
-	fresh, results, err := s.syncWithResults(ctx, user)
-	if len(fresh) > 0 {
-		s.markManualSynced(fresh)
-	}
-	return fresh, results, err
-}
-
-func (s *Service) sync(ctx context.Context, user int64) ([]FreshFavorite, error) {
-	fresh, _, err := s.syncWithResults(ctx, user)
-	return fresh, err
+	return s.syncWithResults(ctx, user)
 }
 
 func (s *Service) syncWithResults(ctx context.Context, user int64) (fresh []FreshFavorite, results []FavoriteSyncResult, err error) {
@@ -206,7 +135,7 @@ func (s *Service) syncWithResults(ctx context.Context, user int64) (fresh []Fres
 		}
 		if e != nil {
 			message := b.Platform + "：" + e.Error()
-			if _, serr := s.Store.SourceError(ctx, b, message, false); serr != nil {
+			if _, serr := s.Store.SourceError(ctx, b, message); serr != nil {
 				utils.WarnWithFormat("[Discovery] 记录收藏同步失败原因失败: %v", serr)
 			}
 			failures = append(failures, message)
@@ -879,7 +808,7 @@ func (s *Service) runFavoritePoll(ctx context.Context, poll time.Duration) {
 				if errors.Is(syncErr, context.DeadlineExceeded) {
 					utils.WarnWithFormat("[Discovery] 收藏读取本轮超时，已在 %s 停止并等待下一轮", favoriteSyncRoundTimeout)
 				}
-				s.notifyFresh(s.suppressAfterManualSync(fresh))
+				s.notifyFresh(fresh)
 			}
 			timer.Reset(poll)
 		}

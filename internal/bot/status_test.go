@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/internal/discovery"
 	"github.com/nichuanfang/gymdl/internal/gin/task"
 	"github.com/nichuanfang/gymdl/processor/music"
 )
@@ -32,5 +34,49 @@ func TestFormatServiceStatusKeepsTheQuietAndBusyShapes(t *testing.T) {
 	}
 	if strings.Contains(busy, "http") || strings.Contains(busy, "/data/") {
 		t.Fatalf("status leaked a url or path:\n%s", busy)
+	}
+}
+
+func TestFormatServiceStatusIncludesTheFavoritesQueue(t *testing.T) {
+	status := formatServiceStatus(serviceStatus{
+		PendingKnown:            true,
+		DiscoveryRunning:        1,
+		DiscoveryQueued:         2,
+		DiscoveryPendingConfirm: 1,
+		DiscoveryFailed:         3,
+	})
+	for _, want := range []string{
+		"下载：", "收藏入库：1 个下载中，2 个排队",
+		"失败：收藏入库异常 3 个", "入库：待曲库确认 1 个",
+	} {
+		if !strings.Contains(status, want) {
+			t.Errorf("favorites status missing %q:\n%s", want, status)
+		}
+	}
+	if strings.Contains(status, "下载：空闲") || strings.Contains(status, "失败：最近没有失败记录") {
+		t.Fatalf("favorites work was hidden behind an idle status:\n%s", status)
+	}
+
+	uploadOnly := formatServiceStatus(serviceStatus{
+		PendingKnown:            true,
+		PendingUploads:          2,
+		DiscoveryPendingConfirm: 1,
+	})
+	if !strings.Contains(uploadOnly, "入库：WebDAV 待上传 2 个；待曲库确认 1 个") {
+		t.Fatalf("both upload queues were not reported:\n%s", uploadOnly)
+	}
+}
+
+func TestPendingNeedsConfirmationDoesNotDoubleCountOutbox(t *testing.T) {
+	jobs := []discovery.Job{
+		{Track: discovery.Track{Title: "冬天剧终（The End）", Artist: "马旭东"}},
+		{Track: discovery.Track{Title: "另一首", Artist: "甲"}},
+	}
+	outbox := []*core.PendingUpload{{Title: "冬天剧终(The End)", Artist: "马旭东"}}
+	if got := pendingNeedsConfirmation(jobs, outbox); got != 1 {
+		t.Fatalf("pending without outbox = %d, want 1", got)
+	}
+	if got := pendingNeedsConfirmation(jobs, nil); got != 2 {
+		t.Fatalf("pending without WebDAV = %d, want 2", got)
 	}
 }

@@ -150,7 +150,7 @@ func TestFavoriteStatusMasksAccountAndStaysOnOneUser(t *testing.T) {
 	if err = store.Pause(ctx, 9, "netease", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.SourceError(ctx, bindings[0], "netease：登录已过期", false); err != nil {
+	if _, err = store.SourceError(ctx, bindings[0], "netease：登录已过期"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = store.Enqueue(ctx, 9, 9, discovery.Track{Platform: "netease", ID: "q1", Title: "排队歌", Artist: "甲", Verified: true}); err != nil {

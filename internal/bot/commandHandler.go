@@ -69,7 +69,7 @@ func helpText() string {
 
 <b>账号</b>
 /qq_login 扫码登录 QQ 音乐（仅限私聊）
-/status 查看下载、最近失败、待入库和 Cookie`
+/status 查看下载、收藏入库、最近失败、待入库和 Cookie`
 }
 
 /* ------------------------ /qq_login ------------------------ */
