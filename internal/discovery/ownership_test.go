@@ -34,7 +34,7 @@ func TestOwnedWorkMatchesLibraryDespiteMessyCredits(t *testing.T) {
 		{"瓦解", "南拳媽媽", "南拳媽媽的夏天", 222, true},
 		{"Price", "アトラスサウンドチーム", "PERSONA5 ORIGINAL SOUNDTRACK", 109, true},
 		{"Miçanga (feat. BaianaSystem) [with Alok, Kawz]", "Something Else • Stephan Jolk • Alok • Baianasystem • Kawz", "Miçanga (feat. BaianaSystem) [with Alok, Kawz]", 186, true},
-		{"竜の島", "永田権太", "The Legend of Zelda: The Wind Waker HD Sound Selection", 96, true},
+		{"竜の島", "永田権太", "The Legend of Zelda: The Wind Waker HD Sound Selection", 96, false},
 		{"Song Remix", "Artist A", "Album A", 200, false},
 		{"Song", "Artist C", "Other Album", 200, false},
 		{"Go", "Different Person", "Other", 90, false},
@@ -45,6 +45,49 @@ func TestOwnedWorkMatchesLibraryDespiteMessyCredits(t *testing.T) {
 		if err != nil || owned != tc.want {
 			t.Errorf("%s / %s owned=%v err=%v want %v", tc.title, tc.artist, owned, err, tc.want)
 		}
+	}
+}
+
+func TestRediscoverDoesNotHideSameTitleWithDifferentCredits(t *testing.T) {
+	store := testStore(t)
+	ctx := t.Context()
+	track := testTrack("1", "同名", "艺人甲")
+	track.Album = "专辑甲"
+	library := &NavidromeLibrary{
+		byTitle: map[string][]Track{ownershipTitle(track.Title): {{Title: track.Title, Artist: "艺人乙", Album: "专辑乙"}}},
+		expires: time.Now().Add(time.Minute),
+	}
+	calls := 0
+	svc := Service{Store: store, Library: library, Provider: stubProvider{},
+		History: func(context.Context) ([]Track, error) { return []Track{track}, nil },
+		Download: func(context.Context, Track) (DownloadResult, error) {
+			calls++
+			return DownloadResult{}, nil
+		},
+	}
+	batch, err := svc.Rediscover(ctx, 1, "netease", 1)
+	if err != nil || len(batch.Tracks) != 1 || batch.SkippedOwned != 0 {
+		t.Fatalf("same-title recommendation got dropped: %#v, %v", batch, err)
+	}
+	id, err := store.Enqueue(ctx, 1, 1, track)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ProcessOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.Job(ctx, id)
+	if err != nil || job.State != NeedsConfirmation || calls != 0 {
+		t.Fatalf("expected confirmation before download, got %#v calls=%d err=%v", job, calls, err)
+	}
+	if err := store.ResolveJob(ctx, id, 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ProcessOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if job, err = store.Job(ctx, id); err != nil || job.State != Completed || calls != 1 {
+		t.Fatalf("approval should allow this version: %#v calls=%d err=%v", job, calls, err)
 	}
 }
 

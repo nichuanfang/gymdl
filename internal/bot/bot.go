@@ -38,6 +38,7 @@ type BotApp struct {
 	musicActionMu              sync.Mutex
 	musicActions               map[string]pendingMusicAction
 	playlistAssignmentMu       sync.Mutex
+	playlistAssignmentRenderMu sync.Mutex
 	playlistAssignments        map[string]pendingPlaylistAssignment
 	playlistAssignmentByChat   map[int64]string
 	playlistMaintenanceStartMu sync.Mutex

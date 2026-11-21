@@ -1477,7 +1477,7 @@ func (app *BotApp) loadPlaylistAssignmentAISuggestions(token string, song unplay
 	ctx, cancel := context.WithTimeout(context.Background(), playlistAssignmentTimeout)
 	defer cancel()
 	assignment, ok := app.getPlaylistAssignment(token)
-	if !ok || assignment.song.ID != song.ID || assignment.aiSuggestionSeq != seq {
+	if !ok || assignment.song.ID != song.ID || assignment.aiSuggestionSeq != seq || !assignment.aiSuggestionLoading {
 		return
 	}
 	suggestions, unavailable := app.playlistAssignmentAISuggestions(ctx, song, assignment)
@@ -1485,7 +1485,7 @@ func (app *BotApp) loadPlaylistAssignmentAISuggestions(token string, song unplay
 	if !ok || updated.processing {
 		return
 	}
-	app.presentPlaylistAssignment(updated)
+	_ = app.editPlaylistAssignmentCard(updated.message, updated)
 }
 
 func (app *BotApp) storePlaylistAssignmentAISuggestions(token, songID string, seq int, suggestions []string, unavailable bool) (pendingPlaylistAssignment, bool) {
@@ -1494,7 +1494,7 @@ func (app *BotApp) storePlaylistAssignmentAISuggestions(token, songID string, se
 	app.ensurePlaylistAssignmentMapsLocked()
 	app.purgePlaylistAssignmentsLocked(time.Now())
 	assignment, ok := app.playlistAssignments[token]
-	if !ok || assignment.song.ID != songID || assignment.aiSuggestionSeq != seq {
+	if !ok || assignment.song.ID != songID || assignment.aiSuggestionSeq != seq || assignment.selectionComplete || !assignment.aiSuggestionLoading {
 		return pendingPlaylistAssignment{}, false
 	}
 	assignment.aiSuggestionManual = false
@@ -1553,7 +1553,7 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "另一项歌单维护正在运行，请稍后重试。"})
 		}
 		_ = c.Respond(&tb.CallbackResponse{Text: "已确认，正在归档…"})
-		if err := c.Edit("⏳ 正在核对歌曲并更新所选歌单…", &tb.ReplyMarkup{}); err != nil {
+		if err := app.editPlaylistAssignmentCallback(c, "⏳ 正在核对歌曲并更新所选歌单…", &tb.ReplyMarkup{}); err != nil {
 			app.finishPlaylistAssignmentRun(started.chatID)
 			app.markPlaylistAssignmentProcessing(token, false)
 			return err
@@ -1567,7 +1567,7 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "整理会话已过期", ShowAlert: true})
 		}
 		_ = c.Respond()
-		return c.Edit(formatPlaylistAssignment(updated), tb.ModeHTML, playlistAssignmentMarkup(updated))
+		return app.editPlaylistAssignmentCard(updated.message, updated)
 
 	case "redo":
 		updated, ok := app.beginPlaylistAssignmentReorganize(token)
@@ -1575,6 +1575,7 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "现在不能重新整理", ShowAlert: true})
 		}
 		_ = c.Respond(&tb.CallbackResponse{Text: "正在重新整理…"})
+		_ = app.editPlaylistAssignmentCard(updated.message, updated)
 		go app.loadPlaylistAssignmentAISuggestions(updated.token, updated.song, updated.aiSuggestionSeq)
 		return nil
 
@@ -1587,7 +1588,7 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "当前歌曲无法跳过，请稍后重试", ShowAlert: true})
 		}
 		_ = c.Respond(&tb.CallbackResponse{Text: "已跳过当前歌曲"})
-		if err := c.Edit("⌛ 正在读取下一首待归档歌曲…", &tb.ReplyMarkup{}); err != nil {
+		if err := app.editPlaylistAssignmentCallback(c, "⌛ 正在读取下一首待归档歌曲…", &tb.ReplyMarkup{}); err != nil {
 			logger.Warn("[Telegram] 跳过后更新整理消息失败，继续查找下一首", zap.Error(err))
 		}
 		go app.preparePlaylistAssignment(updated.token)
@@ -1603,7 +1604,7 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 		if assignment.targetSong != nil {
 			loading = "⌛ 正在重新查找这首歌…"
 		}
-		if err := c.Edit(loading, &tb.ReplyMarkup{}); err != nil {
+		if err := app.editPlaylistAssignmentCallback(c, loading, &tb.ReplyMarkup{}); err != nil {
 			app.markPlaylistAssignmentProcessing(token, false)
 			return err
 		}
@@ -1617,9 +1618,9 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 		}
 		_ = c.Respond()
 		if action == "stop" {
-			return c.Edit(playlistAssignmentSummary(finished, false), &tb.ReplyMarkup{})
+			return app.editPlaylistAssignmentCallback(c, playlistAssignmentSummary(finished, false), &tb.ReplyMarkup{})
 		}
-		return c.Edit(playlistAssignmentCancelText(finished), &tb.ReplyMarkup{})
+		return app.editPlaylistAssignmentCallback(c, playlistAssignmentCancelText(finished), &tb.ReplyMarkup{})
 
 	default:
 		return c.Respond(&tb.CallbackResponse{Text: "未知整理操作", ShowAlert: true})
@@ -1863,15 +1864,6 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 		text.WriteString(progress)
 		text.WriteString("\n")
 	}
-	if assignment.aiSuggestionLoading {
-		text.WriteString("\n")
-		if assignment.aiSuggestionManual {
-			text.WriteString("正在重新整理…")
-		} else {
-			text.WriteString("正在生成建议…")
-		}
-		return text.String()
-	}
 	text.WriteString("\n")
 	fmt.Fprintf(&text, "<b>%s</b>\n", playlistAssignmentTitle(assignment.song))
 	fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(displaySongValue(assignment.song.Artist)))
@@ -1893,6 +1885,12 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 	} else if note := strings.TrimSpace(assignment.statusNote); note != "" {
 		text.WriteString("\n\n")
 		text.WriteString(utils.EscapeHTML(note))
+	} else if assignment.aiSuggestionLoading {
+		if assignment.aiSuggestionManual {
+			text.WriteString("\n\n正在重新整理…")
+		} else {
+			text.WriteString("\n\n正在生成建议…")
+		}
 	}
 	if assignment.hiddenPlaylistCount > 0 {
 		fmt.Fprintf(&text, "\n⚠️ %d 个歌单未显示。", assignment.hiddenPlaylistCount)
@@ -1954,9 +1952,9 @@ func playlistAssignmentMarkup(assignment pendingPlaylistAssignment) *tb.ReplyMar
 				markup.Data(label, playlistAssignmentCallbackUnique, "add", assignment.token),
 				markup.Data("重新选择", playlistAssignmentCallbackUnique, "reselect", assignment.token),
 			))
-		} else if !assignment.aiSuggestionLoading && assignment.webAppButtonURL != "" {
+		} else if assignment.webAppButtonURL != "" {
 			choose := markup.WebApp("📂 选择歌单", &tb.WebApp{URL: assignment.webAppButtonURL})
-			if assignment.playlistAssist {
+			if assignment.playlistAssist && !assignment.aiSuggestionLoading {
 				rows = append(rows, markup.Row(choose, markup.Data("重新整理", playlistAssignmentCallbackUnique, "redo", assignment.token)))
 			} else {
 				rows = append(rows, markup.Row(choose))
@@ -2002,11 +2000,27 @@ func truncatePlaylistLabel(value string, limit int) string {
 }
 
 func (app *BotApp) editPlaylistAssignmentMessage(message *tb.Message, text string, markup *tb.ReplyMarkup) error {
+	app.playlistAssignmentRenderMu.Lock()
+	defer app.playlistAssignmentRenderMu.Unlock()
 	return app.editPlaylistAssignmentText(message, text, markup, "")
 }
 
+func (app *BotApp) editPlaylistAssignmentCallback(c tb.Context, text string, markup *tb.ReplyMarkup) error {
+	app.playlistAssignmentRenderMu.Lock()
+	defer app.playlistAssignmentRenderMu.Unlock()
+	return c.Edit(text, markup)
+}
+
 func (app *BotApp) editPlaylistAssignmentCard(message *tb.Message, assignment pendingPlaylistAssignment) error {
-	return app.editPlaylistAssignmentText(message, formatPlaylistAssignment(assignment), playlistAssignmentMarkup(assignment), tb.ModeHTML)
+	app.playlistAssignmentRenderMu.Lock()
+	defer app.playlistAssignmentRenderMu.Unlock()
+	current, ok := app.getPlaylistAssignment(assignment.token)
+	if !ok || current.processing || current.song.ID != assignment.song.ID ||
+		current.selectionToken != assignment.selectionToken || current.lastSelectionToken != assignment.lastSelectionToken ||
+		current.aiSuggestionSeq != assignment.aiSuggestionSeq {
+		return nil
+	}
+	return app.editPlaylistAssignmentText(message, formatPlaylistAssignment(current), playlistAssignmentMarkup(current), tb.ModeHTML)
 }
 
 func (app *BotApp) editPlaylistAssignmentText(message *tb.Message, text string, markup *tb.ReplyMarkup, mode tb.ParseMode) error {
@@ -2117,6 +2131,8 @@ func (app *BotApp) acceptPlaylistAssignmentSelection(token, selectionToken strin
 	}
 	assignment.selectedPlaylists = append([]string(nil), selected...)
 	assignment.selectionComplete = true
+	assignment.aiSuggestionLoading = false
+	assignment.aiSuggestionManual = false
 	assignment.lastSelectionToken = selectionToken
 	assignment.selectionToken = ""
 	assignment.webAppButtonURL = ""
@@ -2133,14 +2149,12 @@ func (app *BotApp) beginPlaylistAssignmentReorganize(token string) (pendingPlayl
 	app.ensurePlaylistAssignmentMapsLocked()
 	app.purgePlaylistAssignmentsLocked(time.Now())
 	assignment, ok := app.playlistAssignments[token]
-	if !ok || assignment.processing || assignment.song.ID == "" || assignment.selectionComplete || !assignment.playlistAssist {
+	if !ok || assignment.processing || assignment.song.ID == "" || assignment.selectionComplete || !assignment.playlistAssist || assignment.aiSuggestionLoading {
 		return pendingPlaylistAssignment{}, false
 	}
-	selectionToken := strings.ReplaceAll(uuid.NewString(), "-", "")
 	cleared := assignment
 	cleared.aiSuggestedPlaylists = nil
-	cleared.selectionToken = selectionToken
-	webAppURL, err := playlistAssignmentWebAppURL(cleared.webAppBaseURL, cleared, selectionToken)
+	webAppURL, err := playlistAssignmentWebAppURL(cleared.webAppBaseURL, cleared, cleared.selectionToken)
 	if err != nil {
 		return pendingPlaylistAssignment{}, false
 	}
@@ -2152,7 +2166,6 @@ func (app *BotApp) beginPlaylistAssignmentReorganize(token string) (pendingPlayl
 	assignment.aiSuggestionLoading = true
 	assignment.aiSuggestionUnavailable = false
 	assignment.aiSuggestedPlaylists = nil
-	assignment.selectionToken = selectionToken
 	assignment.lastSelectionToken = ""
 	assignment.selectionComplete = false
 	assignment.webAppButtonURL = webAppURL

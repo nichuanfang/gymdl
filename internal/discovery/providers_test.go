@@ -51,7 +51,7 @@ cat "$GYMDL_YT_TEST_FIXTURE"
 }
 
 func TestYouTubeFavoriteCompletenessAndAccountFallback(t *testing.T) {
-	for _, mode := range []string{"valid", "partial", "duplicate", "account_fallback", "logged_out", "inaccessible"} {
+	for _, mode := range []string{"valid", "partial", "duplicate", "account_fallback", "logged_out", "missing_account_marker", "inaccessible"} {
 		t.Run(mode, func(t *testing.T) {
 			list := map[string]any{"channel_id": "UCstable-account", "playlist_count": 1, "entries": []any{map[string]any{"id": "abc", "title": "Video title", "duration": 200}}}
 			switch mode {
@@ -60,14 +60,14 @@ func TestYouTubeFavoriteCompletenessAndAccountFallback(t *testing.T) {
 			case "duplicate":
 				list["playlist_count"] = 2
 				list["entries"] = []any{map[string]any{"id": "abc"}, map[string]any{"id": "abc"}}
-			case "account_fallback", "logged_out":
+			case "account_fallback", "logged_out", "missing_account_marker":
 				delete(list, "channel_id")
 			}
 			p := ytProvider(t, list)
 			if mode == "inaccessible" {
 				t.Setenv("GYMDL_YT_TEST_ERROR", "1")
 			}
-			if mode == "account_fallback" || mode == "logged_out" {
+			if mode == "account_fallback" || mode == "logged_out" || mode == "missing_account_marker" {
 				p.Client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 					if r.URL.Host != "www.youtube.com" {
 						t.Error("unexpected account probe host")
@@ -79,6 +79,8 @@ func TestYouTubeFavoriteCompletenessAndAccountFallback(t *testing.T) {
 					body := `{"LOGGED_IN":true,"DATASYNC_ID":"private-stable-account"}`
 					if mode == "logged_out" {
 						body = `{"LOGGED_IN":false}`
+					} else if mode == "missing_account_marker" {
+						body = `{"LOGGED_IN":true}`
 					}
 					return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
 				})}
@@ -97,7 +99,53 @@ func TestYouTubeFavoriteCompletenessAndAccountFallback(t *testing.T) {
 			if mode == "inaccessible" && !strings.Contains(err.Error(), "未更新基线") {
 				t.Fatal("unhelpful access error", err)
 			}
+			if mode == "logged_out" && !strings.Contains(err.Error(), "显示未登录") {
+				t.Fatal("explicit logout was not identified", err)
+			}
+			if mode == "missing_account_marker" && !strings.Contains(err.Error(), "缺少可验证的登录或账号标识") {
+				t.Fatal("missing marker was not distinguished from logout", err)
+			}
 		})
+	}
+}
+
+func TestFavoriteBackoffIsPerSourceAndManualSyncCanRetry(t *testing.T) {
+	store := testStore(t)
+	ctx := t.Context()
+	netease := snapshot("netease-account", testTrack("1", "网易云歌曲", "歌手"))
+	youtube := Snapshot{Platform: "youtube", Account: "youtube-account", Complete: true,
+		Tracks: []Track{{Platform: "youtube", ID: "one", URL: "https://music.youtube.com/watch?v=one", Title: "YouTube 歌曲"}},
+	}
+	for _, snap := range []Snapshot{netease, youtube} {
+		if _, _, err := store.Apply(ctx, 1, 1, snap, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := map[string]int{}
+	svc := Service{Store: store, Enabled: true,
+		Provider: gatingProvider{fetch: func(_ context.Context, platform string) (Snapshot, error) {
+			calls[platform]++
+			if platform == "youtube" && calls[platform] < 3 {
+				return Snapshot{}, fmt.Errorf("连接 YouTube 账号页面失败")
+			}
+			if platform == "youtube" {
+				return youtube, nil
+			}
+			return netease, nil
+		}},
+	}
+	for range 3 {
+		_, _ = svc.Sync(ctx, 0)
+	}
+	if calls["youtube"] != 2 || calls["netease"] != 3 {
+		t.Fatalf("failed source should back off independently, calls=%v", calls)
+	}
+	_, results, err := svc.SyncPlatformWithResults(ctx, 1, "youtube")
+	if err != nil || len(results) != 1 || results[0].Platform != "youtube" || results[0].Status != "synced" || calls["youtube"] != 3 || calls["netease"] != 3 {
+		t.Fatalf("manual retry should read only its selected platform: results=%#v calls=%v err=%v", results, calls, err)
+	}
+	if _, err := svc.Sync(ctx, 0); err != nil || calls["youtube"] != 4 {
+		t.Fatalf("successful retry should clear backoff: calls=%v err=%v", calls, err)
 	}
 }
 

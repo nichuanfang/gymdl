@@ -629,59 +629,68 @@ func (p *Providers) youtubeAccount(ctx context.Context) (string, error) {
 	}
 	cc := p.Config.CookieCloud
 	cookiePath := filepath.Join(cc.CookieFilePath, cc.CookieFile)
+	raw, err := os.ReadFile(cookiePath)
+	if err != nil {
+		return "", errors.New("YouTube 账号核验无法读取 Cookie 文件，请检查 CookieCloud")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.youtube.com/", nil)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Split(strings.TrimPrefix(strings.TrimSpace(line), "#HttpOnly_"), "\t")
+		if len(fields) < 7 {
+			continue
+		}
+		domain := strings.TrimPrefix(fields[0], ".")
+		if domain != "youtube.com" && domain != "www.youtube.com" {
+			continue
+		}
+		expiry, _ := strconv.ParseInt(fields[4], 10, 64)
+		if expiry > 0 && expiry < time.Now().Unix() {
+			continue
+		}
+		req.AddCookie(&http.Cookie{Name: fields[5], Value: fields[6]})
+	}
+	if len(req.Cookies()) == 0 {
+		return "", errors.New("Cookie 文件里没有可用的 YouTube Cookie，请重新同步")
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0")
 	loggedIn := regexp.MustCompile(`"LOGGED_IN"\s*:\s*true`)
+	loggedOut := regexp.MustCompile(`"LOGGED_IN"\s*:\s*false`)
 	datasync := regexp.MustCompile(`"DATASYNC_ID"\s*:\s*"([^"\\]+)"`)
 	var last error
 	for attempt := 0; attempt < 3; attempt++ {
 		if err := waitCtx(ctx, time.Duration(attempt)*400*time.Millisecond); err != nil {
 			return "", err
 		}
-		raw, err := os.ReadFile(cookiePath)
+		resp, err := p.client().Do(req.Clone(ctx))
 		if err != nil {
-			last = fmt.Errorf("YouTube 收藏暂时读不到账号，本轮跳过")
-			continue
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.youtube.com/", nil)
-		if err != nil {
-			return "", err
-		}
-		for _, line := range strings.Split(string(raw), "\n") {
-			fields := strings.Split(strings.TrimPrefix(strings.TrimSpace(line), "#HttpOnly_"), "\t")
-			if len(fields) < 7 {
-				continue
-			}
-			domain := strings.TrimPrefix(fields[0], ".")
-			if domain != "youtube.com" && domain != "www.youtube.com" {
-				continue
-			}
-			expiry, _ := strconv.ParseInt(fields[4], 10, 64)
-			if expiry > 0 && expiry < time.Now().Unix() {
-				continue
-			}
-			req.AddCookie(&http.Cookie{Name: fields[5], Value: fields[6]})
-		}
-		req.Header.Set("User-Agent", "Mozilla/5.0")
-		resp, err := p.client().Do(req)
-		if err != nil {
-			last = fmt.Errorf("YouTube 收藏暂时读不到账号，本轮跳过")
+			last = errors.New("连接 YouTube 账号页面失败，请检查网络")
 			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 		resp.Body.Close()
-		if readErr != nil || resp.StatusCode != 200 {
-			last = fmt.Errorf("YouTube 收藏暂时读不到账号，本轮跳过")
+		if resp.StatusCode != http.StatusOK {
+			last = fmt.Errorf("YouTube 账号页面返回 HTTP %d", resp.StatusCode)
 			continue
+		}
+		if readErr != nil {
+			last = errors.New("读取 YouTube 账号页面失败，请稍后重试")
+			continue
+		}
+		if loggedOut.Match(body) && !loggedIn.Match(body) {
+			return "", errors.New("YouTube 账号页面显示未登录，请重新登录并同步 Cookie")
 		}
 		id := datasync.FindSubmatch(body)
 		if !loggedIn.Match(body) || len(id) != 2 || len(id[1]) == 0 {
-			last = fmt.Errorf("YouTube 收藏暂时读不到账号，本轮跳过")
-			continue
+			return "", errors.New("YouTube 账号页面缺少可验证的登录或账号标识，原基线保留")
 		}
 		hash := sha256.Sum256(id[1])
 		return "account-" + hex.EncodeToString(hash[:]), nil
 	}
-	if last == nil {
-		last = fmt.Errorf("YouTube 收藏暂时读不到账号，本轮跳过")
+	if ctx.Err() != nil {
+		return "", ctx.Err()
 	}
 	return "", last
 }
@@ -707,7 +716,7 @@ func youtubeReadError(err error, diagnostic string) error {
 		return youtubeReadFailure{msg: "YouTube 喜欢列表暂时读不到，未更新基线"}
 	}
 	if strings.Contains(message, "cookies are no longer valid") || strings.Contains(message, "login required") || strings.Contains(message, "sign in") {
-		return youtubeReadFailure{msg: "YouTube 收藏暂时读不到，本轮跳过", retry: true}
+		return youtubeReadFailure{msg: "YouTube 喜欢列表需要有效登录，请重新登录并同步 Cookie", retry: true}
 	}
 	return youtubeReadFailure{msg: "YouTube 收藏或元数据读取失败，请检查网络、登录和 CookieCloud", retry: true}
 }

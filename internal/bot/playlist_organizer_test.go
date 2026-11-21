@@ -1017,14 +1017,14 @@ func TestPlaylistAssignmentSuggestionsUpdateChooserDefaultsWithoutLosingSession(
 			loadingButtons[button.Text] = true
 		}
 	}
-	if foundLoadingChooser || loadingButtons["📂 选择歌单"] || loadingButtons["重新整理"] {
-		t.Fatal("the unfinished suggestion card should not offer the chooser yet")
+	if !foundLoadingChooser || !loadingButtons["📂 选择歌单"] || loadingButtons["重新整理"] {
+		t.Fatal("the chooser should be available while suggestions load")
 	}
 	if !loadingButtons["跳过本首"] || !loadingButtons["结束整理"] {
 		t.Fatalf("skip and end controls should remain available while AI loads: %#v", loadingButtons)
 	}
-	if text := formatPlaylistAssignment(assignment); !strings.Contains(text, "第 1 首") || !strings.Contains(text, "正在生成建议…") || strings.Contains(text, "Song") || strings.Contains(text, "建议\n生成中") {
-		t.Fatalf("loading card should wait instead of showing a half-finished song: %s", text)
+	if text := formatPlaylistAssignment(assignment); !strings.Contains(text, "第 1 首") || !strings.Contains(text, "正在生成建议…") || !strings.Contains(text, "Song") {
+		t.Fatalf("loading card should show the song and background suggestion status: %s", text)
 	}
 	updated, ok := app.storePlaylistAssignmentAISuggestions(assignment.token, "song-1", 1, []string{"摇滚"}, false)
 	if !ok || updated.aiSuggestionLoading || len(updated.aiSuggestedPlaylists) != 1 || updated.aiSuggestedPlaylists[0] != "摇滚" {
@@ -1085,7 +1085,7 @@ func TestPlaylistAssignmentOffersAnotherAIPassBesideTheChooser(t *testing.T) {
 		t.Fatal("first pass should stay deterministic")
 	}
 	updated, ok := app.beginPlaylistAssignmentReorganize(assignment.token)
-	if !ok || !updated.aiSuggestionLoading || !updated.aiSuggestionManual || updated.aiSuggestionSeq != 2 || len(updated.aiSuggestedPlaylists) != 0 || updated.selectionToken == "selection-old" {
+	if !ok || !updated.aiSuggestionLoading || !updated.aiSuggestionManual || updated.aiSuggestionSeq != 2 || len(updated.aiSuggestedPlaylists) != 0 || updated.selectionToken != "selection-old" {
 		t.Fatalf("reorganize did not start a fresh pass: %#v", updated)
 	}
 	if playlistAssignmentTemperature(updated) != 0.6 {
@@ -1105,15 +1105,11 @@ func TestPlaylistAssignmentOffersAnotherAIPassBesideTheChooser(t *testing.T) {
 	if text := formatPlaylistAssignment(updated); !strings.Contains(text, "正在重新整理") {
 		t.Fatalf("retry copy = %q", text)
 	}
-	loading := playlistAssignmentMarkup(updated)
-	for _, buttons := range loading.InlineKeyboard {
-		for _, button := range buttons {
-			if button.Text == "重新整理" || button.WebApp != nil {
-				t.Fatalf("a second pass should not redraw the chooser while loading: %#v", button)
-			}
-		}
+	loading := buttonTexts(playlistAssignmentMarkup(updated))
+	if loading["重新整理"] || !loading["📂 选择歌单"] {
+		t.Fatalf("a second pass should leave the chooser available: %#v", loading)
 	}
-	if text := formatPlaylistAssignment(updated); !strings.Contains(text, "正在重新整理…") || strings.Contains(text, "雨下一整晚") || strings.Contains(text, "建议\n") {
+	if text := formatPlaylistAssignment(updated); !strings.Contains(text, "正在重新整理…") || !strings.Contains(text, "雨下一整晚") {
 		t.Fatalf("reorganize copy = %q", text)
 	}
 	finished := assignment
@@ -1127,6 +1123,28 @@ func TestPlaylistAssignmentOffersAnotherAIPassBesideTheChooser(t *testing.T) {
 	app.playlistAssignmentMu.Unlock()
 	if _, ok := app.beginPlaylistAssignmentReorganize(assignment.token); ok {
 		t.Fatal("a confirmed selection must not be wiped by reorganize")
+	}
+}
+
+func TestPlaylistAssignmentIgnoresSuggestionsAfterManualSelection(t *testing.T) {
+	app := &BotApp{}
+	assignment := pendingPlaylistAssignment{
+		token: "test", chatID: 10, song: unplaylistSong{ID: "song-1"},
+		selectionToken: "chooser", aiSuggestionSeq: 1, aiSuggestionLoading: true,
+		expiresAt: time.Now().Add(time.Minute),
+	}
+	if !app.registerPlaylistAssignment(assignment) {
+		t.Fatal("register assignment")
+	}
+	if _, err := app.acceptPlaylistAssignmentSelection("test", "chooser", []string{"华语"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := app.storePlaylistAssignmentAISuggestions("test", "song-1", 1, []string{"摇滚"}, false); ok {
+		t.Fatal("late AI result was accepted")
+	}
+	current, _ := app.getPlaylistAssignment("test")
+	if !current.selectionComplete || current.aiSuggestionLoading || !reflect.DeepEqual(current.selectedPlaylists, []string{"华语"}) {
+		t.Fatalf("manual selection changed: %#v", current)
 	}
 }
 

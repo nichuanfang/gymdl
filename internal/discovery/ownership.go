@@ -180,25 +180,3 @@ func sameOwnedWork(left, right Track) bool {
 	}
 	return albumsSameWork(left.Album, right.Album)
 }
-
-// specificOwnedTitle is long enough that one library copy is the same work.
-// Short titles such as "Price" or "Home" stay ambiguous unless artist or album agrees.
-func specificOwnedTitle(title string) bool {
-	if ownershipTitle(title) == "" {
-		return false
-	}
-	cjk := 0
-	letters := 0
-	for _, r := range title {
-		switch {
-		case unicode.Is(unicode.Han, r), unicode.Is(unicode.Hiragana, r), unicode.Is(unicode.Katakana, r):
-			cjk++
-		case unicode.IsLetter(r) && r < 128:
-			letters++
-		}
-	}
-	if cjk >= 2 {
-		return true
-	}
-	return len(strings.Fields(title)) >= 2 && letters >= 6
-}

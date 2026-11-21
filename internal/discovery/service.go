@@ -38,6 +38,7 @@ type Service struct {
 	PollInterval         time.Duration
 	SummaryInterval      time.Duration
 	syncMu               sync.Mutex
+	favoriteRetries      map[favoriteSourceKey]favoriteRetry
 	workMu               sync.Mutex
 	cacheMu              sync.Mutex
 	historyTracks        []Track
@@ -80,18 +81,38 @@ type FavoriteSyncResult struct {
 	Error    string
 }
 
+type favoriteSourceKey struct {
+	user     int64
+	platform string
+}
+
+type favoriteRetry struct {
+	account  string
+	failures int
+	next     time.Time
+}
+
 func (s *Service) Sync(ctx context.Context, user int64) ([]FreshFavorite, error) {
-	fresh, _, err := s.syncWithResults(ctx, user)
+	fresh, _, err := s.syncWithResults(ctx, user, "")
 	return fresh, err
 }
 
 // SyncWithResults is the user-facing sync path. It returns one result per
 // bound platform so a partial success is never described as a total failure.
 func (s *Service) SyncWithResults(ctx context.Context, user int64) ([]FreshFavorite, []FavoriteSyncResult, error) {
-	return s.syncWithResults(ctx, user)
+	return s.syncWithResults(ctx, user, "")
 }
 
-func (s *Service) syncWithResults(ctx context.Context, user int64) (fresh []FreshFavorite, results []FavoriteSyncResult, err error) {
+func (s *Service) SyncPlatformWithResults(ctx context.Context, user int64, platform string) ([]FreshFavorite, []FavoriteSyncResult, error) {
+	switch platform {
+	case "netease", "qq", "youtube":
+		return s.syncWithResults(ctx, user, platform)
+	default:
+		return nil, nil, errors.New("收藏平台无效")
+	}
+}
+
+func (s *Service) syncWithResults(ctx context.Context, user int64, platform string) (fresh []FreshFavorite, results []FavoriteSyncResult, err error) {
 	started := time.Now()
 	defer func() {
 		if ctx.Err() != nil {
@@ -111,6 +132,9 @@ func (s *Service) syncWithResults(ctx context.Context, user int64) (fresh []Fres
 	}
 	var failures []string
 	for _, b := range bindings {
+		if platform != "" && b.Platform != platform {
+			continue
+		}
 		if s.Authorized != nil && !s.Authorized(b.User, b.Chat) {
 			continue
 		}
@@ -118,6 +142,14 @@ func (s *Service) syncWithResults(ctx context.Context, user int64) (fresh []Fres
 		// error message but never turns an automatic retry into a pause.
 		if b.PausedByUser {
 			results = append(results, FavoriteSyncResult{Platform: b.Platform, Status: "paused"})
+			continue
+		}
+		retryKey := favoriteSourceKey{user: b.User, platform: b.Platform}
+		retry := s.favoriteRetries[retryKey]
+		if retry.account != b.Account {
+			retry = favoriteRetry{account: b.Account}
+		}
+		if user == 0 && time.Now().Before(retry.next) {
 			continue
 		}
 		if b.Paused {
@@ -136,6 +168,9 @@ func (s *Service) syncWithResults(ctx context.Context, user int64) (fresh []Fres
 			_, added, e = s.Store.Apply(ctx, b.User, b.Chat, snap, false)
 		}
 		if e != nil {
+			if ctx.Err() == nil {
+				s.noteFavoriteFailure(retryKey, retry)
+			}
 			message := b.Platform + "：" + e.Error()
 			if _, serr := s.Store.SourceError(ctx, b, message); serr != nil {
 				utils.WarnWithFormat("[Discovery] 记录收藏同步失败原因失败: %v", serr)
@@ -144,16 +179,36 @@ func (s *Service) syncWithResults(ctx context.Context, user int64) (fresh []Fres
 			results = append(results, FavoriteSyncResult{Platform: b.Platform, Status: "failed", Error: e.Error()})
 			continue
 		}
+		delete(s.favoriteRetries, retryKey)
 		results = append(results, FavoriteSyncResult{Platform: b.Platform, Status: "synced", Added: len(added)})
 		for _, track := range added {
 			fresh = append(fresh, FreshFavorite{User: b.User, Chat: b.Chat, Platform: b.Platform, Track: track})
 		}
+	}
+	if platform != "" && len(results) == 0 {
+		return nil, nil, errors.New("请先绑定该平台的收藏账号")
 	}
 	if len(failures) > 0 {
 		err = errors.New(strings.Join(failures, "\n"))
 		return fresh, results, err
 	}
 	return fresh, results, nil
+}
+
+func (s *Service) noteFavoriteFailure(key favoriteSourceKey, retry favoriteRetry) {
+	retry.failures = min(retry.failures+1, 6)
+	if retry.failures >= 2 {
+		interval := s.PollInterval
+		if interval <= 0 {
+			interval = 10 * time.Minute
+		}
+		interval = min(interval, time.Hour)
+		retry.next = time.Now().Add(min(interval*time.Duration(1<<(retry.failures-1)), 2*time.Hour))
+	}
+	if s.favoriteRetries == nil {
+		s.favoriteRetries = make(map[favoriteSourceKey]favoriteRetry)
+	}
+	s.favoriteRetries[key] = retry
 }
 
 func (s *Service) readSnapshot(ctx context.Context, b Binding) (Snapshot, error) {
@@ -868,7 +923,7 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 	if !t.Verified && !t.Approved {
 		return finish(NeedsConfirmation, "无法明确识别音乐单曲，需确认原链接音频", "", 0)
 	}
-	owned, err := s.Library.Contains(ctx, t)
+	owned, sameTitle, err := s.downloadOwnership(ctx, t)
 	if err != nil {
 		return retry(err)
 	}
@@ -883,6 +938,9 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 		if pending {
 			return finish(PendingUpload, "等待近期下载或上传完成", "", 0)
 		}
+	}
+	if sameTitle && !t.Approved {
+		return finish(NeedsConfirmation, "曲库里有同名歌曲，请确认是否下载这个版本", "", 0)
 	}
 	result, err := s.Download(ctx, t)
 	if err != nil {
@@ -909,12 +967,16 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 			return retry(fmt.Errorf("原平台下载失败，未找到明确同版替代；%w", err))
 		}
 		// Recheck against the actual library after resolving a cross-platform ID.
-		owned, e = s.Library.Contains(ctx, alternate)
+		owned, sameTitle, e = s.downloadOwnership(ctx, alternate)
 		if e != nil {
 			return retry(e)
 		}
 		if owned {
 			return finish(Owned, "曲库已有该版本", "", 0)
+		}
+		if sameTitle {
+			j.Track = alternate
+			return finish(NeedsConfirmation, "替代音源与曲库中的歌曲同名，请确认是否下载这个版本", "", 0)
 		}
 		result, err = s.Download(ctx, alternate)
 		if err != nil {
@@ -942,6 +1004,16 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 		return s.notifyIngestedJob(ctx, stored)
 	}
 	return nil
+}
+
+func (s *Service) downloadOwnership(ctx context.Context, t Track) (owned, sameTitle bool, err error) {
+	if library, ok := s.Library.(interface {
+		matchOwnership(context.Context, Track) (bool, bool, error)
+	}); ok {
+		return library.matchOwnership(ctx, t)
+	}
+	owned, err = s.Library.Contains(ctx, t)
+	return owned, false, err
 }
 
 func (s *Service) Reconcile(ctx context.Context, user int64) error {

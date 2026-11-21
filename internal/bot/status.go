@@ -17,13 +17,14 @@ import (
 )
 
 type serviceStatus struct {
-	Active         []string
-	LastFailure    string
-	PendingUploads int
-	PendingKnown   bool
-	CookieKnown    bool
-	CookieExists   bool
-	CookieModTime  time.Time
+	Active             []string
+	LastFailure        string
+	PendingUploads     int
+	PendingKnown       bool
+	PendingUnavailable bool
+	CookieKnown        bool
+	CookieExists       bool
+	CookieModTime      time.Time
 	// Favorites owns a separate durable import queue. Its downloading/to-upload
 	// rows still belong in /status instead of being hidden behind "空闲".
 	DiscoveryRunning        int
@@ -75,6 +76,13 @@ func (app *BotApp) collectServiceStatus(now time.Time, user int64) serviceStatus
 	app.purgeExpiredPendingLocked(now)
 	active := len(app.activeMusicKeys)
 	pending := len(app.pendingMusic)
+	pendingKeys := make(map[string]struct{}, pending)
+	for _, item := range app.pendingMusic {
+		if _, reserved := app.activeMusicKeys[item.reservationKey]; reserved && item.reservationKey != "" {
+			pendingKeys[item.reservationKey] = struct{}{}
+		}
+	}
+	active -= len(pendingKeys)
 	app.pendingMu.Unlock()
 	if active > 0 {
 		status.Active = append(status.Active, fmt.Sprintf("机器人正在下载 %d 个", active))
@@ -88,9 +96,11 @@ func (app *BotApp) collectServiceStatus(now time.Time, user int64) serviceStatus
 			status.PendingKnown = true
 			status.PendingUploads = len(items)
 			outbox = items
+		} else {
+			status.PendingUnavailable = true
 		}
 	}
-	if status.DiscoveryPendingUpload > 0 && app.discovery != nil && app.discovery.Store != nil {
+	if status.DiscoveryPendingUpload > 0 && !status.PendingUnavailable && app.discovery != nil && app.discovery.Store != nil {
 		jobs, err := app.discovery.Store.PendingJobs(context.Background(), user)
 		if err != nil {
 			utils.WarnWithFormat("[Status] 读取收藏待上传任务失败: %v", err)
@@ -221,6 +231,12 @@ func formatServiceStatus(status serviceStatus) string {
 	}
 
 	pending := make([]string, 0, 2)
+	if status.PendingUnavailable {
+		pending = append(pending, "WebDAV 待上传队列暂不可读")
+		if status.DiscoveryPendingUpload > 0 {
+			pending = append(pending, fmt.Sprintf("收藏待上传或曲库确认 %d 个", status.DiscoveryPendingUpload))
+		}
+	}
 	if status.PendingKnown {
 		if status.PendingUploads > 0 {
 			pending = append(pending, fmt.Sprintf("WebDAV 待上传 %d 个", status.PendingUploads))

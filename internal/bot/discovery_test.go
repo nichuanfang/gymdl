@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -734,7 +735,7 @@ func TestFavoritesCardKeepsPlatformRowsCompact(t *testing.T) {
 	if strings.Contains(text, "\n\n\n") {
 		t.Fatalf("favorites card has extra blank spacing: %s", text)
 	}
-	if got := buttonRowTexts(markup); len(got) < 4 || len(got[1]) != 2 || got[1][0] != "重绑" || got[1][1] != "暂停" || got[len(got)-1][0] != "找回遗珠" || got[len(got)-1][1] != "同步全部" {
+	if got := buttonRowTexts(markup); len(got) < 4 || !slices.Equal(got[1], []string{"重绑", "暂停", "同步 QQ 音乐"}) || got[len(got)-1][0] != "找回遗珠" || got[len(got)-1][1] != "同步全部" {
 		t.Fatalf("favorites buttons = %#v", got)
 	}
 }

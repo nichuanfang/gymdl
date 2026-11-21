@@ -629,10 +629,14 @@ func (app *BotApp) renderFavorites(ctx context.Context, user int64) (string, *tb
 		if binding.PausedByUser {
 			action, verb = "resume", "恢复"
 		}
-		appendDiscoveryRows(markup, markup.Row(
+		buttons := markup.Row(
 			markup.Data("重绑", discoveryCallbackUnique, "probe", platform),
 			markup.Data(verb, discoveryCallbackUnique, action, platform),
-		))
+		)
+		if app.discovery.Enabled && !binding.PausedByUser {
+			buttons = append(buttons, markup.Data("同步 "+name, discoveryCallbackUnique, "sync", platform))
+		}
+		appendDiscoveryRows(markup, buttons)
 	}
 	if len(sections) > 0 {
 		text.WriteString(strings.Join(sections, "\n\n"))
@@ -1085,10 +1089,17 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			}
 			return app.presentFavorites(c, "✅ 已恢复"+name+"的自动同步。")
 		case "sync":
+			if key != "menu" && !validRediscoverPlatform(key) {
+				return app.presentFavorites(c, "收藏平台无效。")
+			}
 			if !app.discoveryCommandMu.TryLock() {
 				return app.presentFavorites(c, "⏳ 已有请求正在处理，请稍后查看状态。")
 			}
-			if err := editDiscoveryMessage(c, "⌛ <b>正在同步全部平台…</b>\n会依次读取网易云、QQ 音乐、YouTube，完成后回到这张卡片。", nil, true); err != nil {
+			loading := "⌛ <b>正在同步全部平台…</b>"
+			if key != "menu" {
+				loading = "⌛ <b>正在同步 " + aichat.PlatformLabel(key) + " 收藏…</b>"
+			}
+			if err := editDiscoveryMessage(c, loading, nil, true); err != nil {
 				app.discoveryCommandMu.Unlock()
 				return err
 			}
@@ -1097,7 +1108,13 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 				defer app.discoveryCommandMu.Unlock()
 				syncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
-				_, results, syncErr := app.discovery.SyncWithResults(syncCtx, user)
+				var results []discovery.FavoriteSyncResult
+				var syncErr error
+				if key == "menu" {
+					_, results, syncErr = app.discovery.SyncWithResults(syncCtx, user)
+				} else {
+					_, results, syncErr = app.discovery.SyncPlatformWithResults(syncCtx, user, key)
+				}
 				notice := favoritesSyncResultNotice(results, syncErr)
 				text, markup, renderErr := app.renderFavorites(context.Background(), user)
 				if renderErr != nil {

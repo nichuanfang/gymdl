@@ -1,6 +1,8 @@
 package bot
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,33 @@ import (
 	"github.com/nichuanfang/gymdl/internal/gin/task"
 	"github.com/nichuanfang/gymdl/processor/music"
 )
+
+func TestStatusDistinguishesWaitingDownloadsAndUnreadableWebDAV(t *testing.T) {
+	now := time.Now()
+	app := &BotApp{
+		activeMusicKeys: map[string]struct{}{"downloading": {}, "held-by-confirmation": {}},
+		pendingMusic: map[string]pendingMusicDownload{
+			"held":           {reservationKey: "held-by-confirmation", expiresAt: now.Add(time.Minute)},
+			"no-reservation": {expiresAt: now.Add(time.Minute)},
+		},
+	}
+	root := filepath.Join(t.TempDir(), "outbox")
+	if err := os.WriteFile(root, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := core.GlobalWebDAV
+	core.GlobalWebDAV = &core.WebDAV{Outbox: core.NewWebDAVOutbox(root)}
+	t.Cleanup(func() { core.GlobalWebDAV = previous })
+	text := formatServiceStatus(app.collectServiceStatus(now, 1))
+	for _, expected := range []string{"机器人正在下载 1 个", "等待确认重复 2 个", "WebDAV 待上传队列暂不可读"} {
+		if !strings.Contains(text, expected) {
+			t.Errorf("missing %q in:\n%s", expected, text)
+		}
+	}
+	if strings.Contains(text, "WebDAV 未启用") {
+		t.Fatal("unreadable queue was reported as disabled")
+	}
+}
 
 func TestFormatServiceStatusKeepsTheQuietAndBusyShapes(t *testing.T) {
 	quiet := formatServiceStatus(serviceStatus{PendingKnown: true})

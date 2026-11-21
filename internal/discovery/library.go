@@ -34,31 +34,34 @@ type NavidromeLibrary struct {
 
 func (l *NavidromeLibrary) Invalidate() { l.mu.Lock(); l.expires = time.Time{}; l.mu.Unlock() }
 func (l *NavidromeLibrary) Contains(ctx context.Context, t Track) (bool, error) {
+	owned, _, err := l.matchOwnership(ctx, t)
+	return owned, err
+}
+
+func (l *NavidromeLibrary) matchOwnership(ctx context.Context, t Track) (owned, sameTitle bool, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if time.Now().After(l.expires) {
 		if err := l.load(ctx); err != nil {
-			return false, err
+			return false, false, err
 		}
 	}
-	return l.ownsLocked(t), nil
+	owned, sameTitle = l.ownsLocked(t)
+	return owned, sameTitle, nil
 }
 
-func (l *NavidromeLibrary) ownsLocked(t Track) bool {
+func (l *NavidromeLibrary) ownsLocked(t Track) (owned, sameTitle bool) {
 	key := ownershipTitle(t.Title)
 	if key == "" {
-		return false
+		return false, false
 	}
 	tracks := l.byTitle[key]
 	for _, other := range tracks {
 		if sameOwnedWork(t, other) {
-			return true
+			return true, true
 		}
 	}
-	// One library copy of a specific title is the same work. Last.fm often
-	// stores a second credit (composer, translated name, sound team) that
-	// does not match the file tags.
-	return len(tracks) == 1 && specificOwnedTitle(t.Title)
+	return false, len(tracks) != 0
 }
 
 func (l *NavidromeLibrary) load(ctx context.Context) error {
