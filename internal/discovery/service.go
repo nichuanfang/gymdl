@@ -52,6 +52,10 @@ const (
 	resolveMissTTL  = 30 * time.Minute
 )
 
+// favoriteSyncRoundTimeout bounds one automatic round so a slow source cannot
+// hold the polling loop indefinitely. Tests shorten it through the variable.
+var favoriteSyncRoundTimeout = 10 * time.Minute
+
 type resolveCacheEntry struct {
 	track Track
 	err   error
@@ -820,10 +824,15 @@ func (s *Service) runFavoritePoll(ctx context.Context, poll time.Duration) {
 			return
 		case <-timer.C:
 			if s.Enabled {
-				fresh, _ := s.Sync(ctx, 0)
+				round, cancel := context.WithTimeout(ctx, favoriteSyncRoundTimeout)
+				fresh, syncErr := s.Sync(round, 0)
+				cancel()
 				if ctx.Err() != nil {
 					utils.InfoWithFormat("[Discovery] 收藏读取已停止")
 					return
+				}
+				if errors.Is(syncErr, context.DeadlineExceeded) {
+					utils.WarnWithFormat("[Discovery] 收藏读取本轮超时，已在 %s 停止并等待下一轮", favoriteSyncRoundTimeout)
 				}
 				s.notifyFresh(s.suppressAfterManualSync(fresh))
 			}

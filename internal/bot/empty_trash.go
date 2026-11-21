@@ -397,7 +397,7 @@ func (app *BotApp) startEmptyTrash(c tb.Context) error {
 	if c.Chat() == nil || c.Sender() == nil {
 		return c.Send("无法读取 Telegram 会话信息，请在聊天中重新发送 /empty_trash。")
 	}
-	if hold, ok := app.chatMaintenanceHold(c.Chat().ID, ""); ok {
+	if hold, blocked := app.beginMaintenanceCommand(c, "t"); blocked {
 		return app.presentMaintenanceHold(c, hold, "t", nil)
 	}
 	service, err := newEmptyTrashService(app.cfg)
@@ -405,13 +405,16 @@ func (app *BotApp) startEmptyTrash(c tb.Context) error {
 		return c.Send("清空回收站服务尚未配置：" + err.Error())
 	}
 	app.playlistMaintenanceStartMu.Lock()
-	if hold, ok := app.chatMaintenanceHold(c.Chat().ID, ""); ok {
+	hold, ended, blocked := app.clearIdleMaintenanceConflictsLocked(c.Chat().ID, "t")
+	if blocked {
 		app.playlistMaintenanceStartMu.Unlock()
+		app.editEndedMaintenanceCards(c, ended)
 		service.organizer.client.CloseIdleConnections()
 		return app.presentMaintenanceHold(c, hold, "t", nil)
 	}
 	if !app.beginEmptyTrashRun(c.Chat().ID) {
 		app.playlistMaintenanceStartMu.Unlock()
+		app.editEndedMaintenanceCards(c, ended)
 		service.organizer.client.CloseIdleConnections()
 		return c.Send("当前有其他维护任务正在运行，请稍后重试。")
 	}
@@ -419,11 +422,13 @@ func (app *BotApp) startEmptyTrash(c tb.Context) error {
 	if err != nil {
 		app.finishEmptyTrashRun(c.Chat().ID)
 		app.playlistMaintenanceStartMu.Unlock()
+		app.editEndedMaintenanceCards(c, ended)
 		service.organizer.client.CloseIdleConnections()
 		return err
 	}
 	go app.prepareEmptyTrashPreview(c.Sender().ID, c.Chat().ID, message, service)
 	app.playlistMaintenanceStartMu.Unlock()
+	app.editEndedMaintenanceCards(c, ended)
 	return nil
 }
 

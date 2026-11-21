@@ -1316,7 +1316,7 @@ func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
 	if c.Chat().Type != tb.ChatPrivate {
 		return c.Send("歌单选择页面仅支持与机器人私聊，请在私聊中发送 /assign_playlist。")
 	}
-	if hold, ok := app.chatMaintenanceHold(c.Chat().ID, ""); ok {
+	if hold, blocked := app.beginMaintenanceCommand(c, "a"); blocked {
 		return app.presentMaintenanceHold(c, hold, "a", nil)
 	}
 	organizer, err := newPlaylistOrganizerService(app.cfg.PlaylistOrganizer)
@@ -1347,11 +1347,21 @@ func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
 	if len(options) > maxPlaylistOptions {
 		return c.Send("可选歌单超过 100 个，暂时无法打开歌单选择页面。")
 	}
-	if hold, ok := app.chatMaintenanceHold(c.Chat().ID, ""); ok {
+	if hold, blocked := app.beginMaintenanceCommand(c, "a"); blocked {
+		return app.presentMaintenanceHold(c, hold, "a", nil)
+	}
+	app.playlistMaintenanceStartMu.Lock()
+	hold, ended, blocked := app.clearIdleMaintenanceConflictsLocked(c.Chat().ID, "a")
+	if blocked {
+		app.playlistMaintenanceStartMu.Unlock()
+		app.editEndedMaintenanceCards(c, ended)
+		organizer.client.CloseIdleConnections()
 		return app.presentMaintenanceHold(c, hold, "a", nil)
 	}
 	message, err := c.Bot().Send(c.Chat(), "⌛ 正在读取第一首待归档歌曲…")
 	if err != nil {
+		app.playlistMaintenanceStartMu.Unlock()
+		app.editEndedMaintenanceCards(c, ended)
 		organizer.client.CloseIdleConnections()
 		return err
 	}
@@ -1369,19 +1379,17 @@ func (app *BotApp) startPlaylistAssignment(c tb.Context) error {
 		hiddenPlaylistCount: len(skipped),
 		expiresAt:           time.Now().Add(playlistAssignmentTTL),
 	}
-	app.playlistMaintenanceStartMu.Lock()
-	if hold, blocked := app.chatMaintenanceHold(assignment.chatID, ""); blocked || !app.registerPlaylistAssignment(assignment) {
-		app.playlistMaintenanceStartMu.Unlock()
-		if !blocked {
-			if again, ok := app.chatMaintenanceHold(assignment.chatID, ""); ok {
-				hold = again
-			} else {
-				hold = maintenanceHold{text: "歌单整理还开着。", busyText: "歌单整理正在处理，请稍等。"}
-			}
+	registered := app.registerPlaylistAssignment(assignment)
+	app.playlistMaintenanceStartMu.Unlock()
+	app.editEndedMaintenanceCards(c, ended)
+	if !registered {
+		if again, ok := app.chatMaintenanceHold(assignment.chatID, ""); ok {
+			hold = again
+		} else {
+			hold = maintenanceHold{text: "歌单整理还开着。", busyText: "歌单整理正在处理，请稍等。"}
 		}
 		return app.presentMaintenanceHold(c, hold, "a", message)
 	}
-	app.playlistMaintenanceStartMu.Unlock()
 	go app.preparePlaylistAssignment(assignment.token)
 	return nil
 }

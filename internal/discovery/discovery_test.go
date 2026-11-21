@@ -338,6 +338,50 @@ func (p gatingProvider) Fetch(ctx context.Context, platform string) (Snapshot, e
 	return p.fetch(ctx, platform)
 }
 
+func TestFavoritePollRoundTimeoutReleasesTheNextRound(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, _, err := s.Apply(ctx, 1, 9, snapshot("account", testTrack("1", "Old", "Artist")), true); err != nil {
+		t.Fatal(err)
+	}
+	oldTimeout := favoriteSyncRoundTimeout
+	favoriteSyncRoundTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { favoriteSyncRoundTimeout = oldTimeout })
+
+	calls := make(chan struct{}, 2)
+	svc := Service{
+		Store: s, Enabled: true, PollInterval: 10 * time.Millisecond,
+		Provider: gatingProvider{fetch: func(ctx context.Context, platform string) (Snapshot, error) {
+			calls <- struct{}{}
+			select {
+			case <-ctx.Done():
+				return Snapshot{}, ctx.Err()
+			case <-time.After(2 * time.Second):
+				return Snapshot{}, errors.New("slow source did not time out")
+			}
+		}},
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.runFavoritePoll(runCtx, 10*time.Millisecond)
+	}()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-calls:
+		case <-time.After(time.Second):
+			t.Fatal("next favorite round did not start after a timeout")
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("favorite poll did not stop")
+	}
+}
+
 func TestFreshFavoriteNoticeKeepsAShortList(t *testing.T) {
 	items := make([]FreshFavorite, 0, 9)
 	for i := 1; i <= 9; i++ {

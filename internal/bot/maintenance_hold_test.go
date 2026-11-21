@@ -2,10 +2,12 @@ package bot
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/nichuanfang/gymdl/internal/playlistcatalog"
 	tb "gopkg.in/telebot.v4"
 )
 
@@ -110,6 +112,118 @@ func TestMaintenanceHoldLeavesARunningCardAlone(t *testing.T) {
 	}
 }
 
+func TestMaintenanceCommandAutoEndsAnIdleCardInPlace(t *testing.T) {
+	app := &BotApp{}
+	card := &tb.Message{ID: 51, Chat: &tb.Chat{ID: 7}}
+	token := strings.Repeat("12", 16)
+	if !app.registerAIPlaylistSession(pendingAIPlaylistSession{
+		token: token, userID: 7, chatID: 7, message: card, expiresAt: time.Now().Add(time.Minute),
+	}) {
+		t.Fatal("register")
+	}
+	api := &maintenanceTestBot{}
+	ctx := &holdContext{sender: &tb.User{ID: 7}, chat: &tb.Chat{ID: 7}, bot: api}
+
+	if hold, blocked := app.beginMaintenanceCommand(ctx, "a"); blocked {
+		t.Fatalf("idle card still blocks the next command: %+v", hold)
+	}
+	if app.hasAIPlaylistSessionForChat(7) {
+		t.Fatal("idle AI playlist session is still open")
+	}
+	if len(api.edits) != 1 || api.edits[0].message != card || api.edits[0].text != "已结束上一个会话。" {
+		t.Fatalf("old card edits = %+v", api.edits)
+	}
+	if len(ctx.sent) != 0 {
+		t.Fatalf("auto-switch should not send another message: %#v", ctx.sent)
+	}
+}
+
+func TestMaintenanceCommandAutoEndsAnIdleDescriptionCard(t *testing.T) {
+	app := &BotApp{}
+	card := &tb.Message{ID: 52, Chat: &tb.Chat{ID: 7}}
+	app.savePlaylistDesc(pendingPlaylistDesc{
+		token: "desc", userID: 7, chatID: 7, message: card, expiresAt: time.Now().Add(time.Minute),
+	})
+	api := &maintenanceTestBot{}
+	ctx := &holdContext{sender: &tb.User{ID: 7}, chat: &tb.Chat{ID: 7}, bot: api}
+
+	if hold, blocked := app.beginMaintenanceCommand(ctx, "i"); blocked {
+		t.Fatalf("idle description card still blocks the next command: %+v", hold)
+	}
+	if app.hasPlaylistDescForChat(7) {
+		t.Fatal("idle description session is still open")
+	}
+	if len(api.edits) != 1 || api.edits[0].message != card || api.edits[0].text != "已结束上一个会话。" {
+		t.Fatalf("old card edits = %+v", api.edits)
+	}
+}
+
+func TestPlaylistDescCommandSwitchesFromAnIdleAICardDirectly(t *testing.T) {
+	app := &BotApp{}
+	store, err := playlistcatalog.Open(filepath.Join(t.TempDir(), "gymdl.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.playlistCatalog = store
+
+	card := &tb.Message{ID: 55, Chat: &tb.Chat{ID: 7}}
+	token := strings.Repeat("56", 16)
+	if !app.registerAIPlaylistSession(pendingAIPlaylistSession{
+		token: token, userID: 7, chatID: 7, message: card, expiresAt: time.Now().Add(time.Minute),
+	}) {
+		t.Fatal("register")
+	}
+	api := &maintenanceTestBot{}
+	ctx := &holdContext{
+		sender: &tb.User{ID: 7},
+		chat:   &tb.Chat{ID: 7, Type: tb.ChatPrivate},
+		bot:    api,
+	}
+	if err := app.PlaylistDescCommand(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if app.hasAIPlaylistSessionForChat(7) {
+		t.Fatal("idle AI playlist session is still open")
+	}
+	if !app.hasPlaylistDescForChat(7) {
+		t.Fatal("description command did not start")
+	}
+	if len(api.edits) != 1 || api.edits[0].message != card || api.edits[0].text != maintenanceEndedText {
+		t.Fatalf("old card edits = %+v", api.edits)
+	}
+	if len(api.sent) != 1 || !strings.Contains(api.sent[0].text, "歌单描述") {
+		t.Fatalf("new command messages = %+v", api.sent)
+	}
+	if len(ctx.sent) != 0 {
+		t.Fatalf("unexpected extra messages: %#v", ctx.sent)
+	}
+}
+
+func TestMaintenanceCommandKeepsAProcessingCard(t *testing.T) {
+	app := &BotApp{}
+	card := &tb.Message{ID: 53, Chat: &tb.Chat{ID: 7}}
+	token := strings.Repeat("34", 16)
+	if !app.registerAIPlaylistSession(pendingAIPlaylistSession{
+		token: token, userID: 7, chatID: 7, message: card, processing: true, expiresAt: time.Now().Add(time.Minute),
+	}) {
+		t.Fatal("register")
+	}
+	api := &maintenanceTestBot{}
+	ctx := &holdContext{sender: &tb.User{ID: 7}, chat: &tb.Chat{ID: 7}, bot: api}
+
+	hold, blocked := app.beginMaintenanceCommand(ctx, "a")
+	if !blocked || !hold.processing || hold.busyText != "AI 歌单正在处理，请稍等。" {
+		t.Fatalf("hold = %+v blocked=%t", hold, blocked)
+	}
+	if !app.hasAIPlaylistSessionForChat(7) {
+		t.Fatal("processing AI playlist session was released")
+	}
+	if len(api.edits) != 0 {
+		t.Fatalf("processing card was edited: %+v", api.edits)
+	}
+}
+
 func TestMaintenanceHoldCancelMatchesTheCardCancelCopy(t *testing.T) {
 	app := &BotApp{}
 	now := time.Now().Add(time.Minute)
@@ -149,6 +263,7 @@ type holdContext struct {
 	sender  *tb.User
 	chat    *tb.Chat
 	message *tb.Message
+	bot     tb.API
 	args    []string
 	sent    []string
 	edits   []string
@@ -160,7 +275,7 @@ func (c *holdContext) Sender() *tb.User     { return c.sender }
 func (c *holdContext) Chat() *tb.Chat       { return c.chat }
 func (c *holdContext) Message() *tb.Message { return c.message }
 func (c *holdContext) Args() []string       { return c.args }
-func (c *holdContext) Bot() tb.API          { return nil }
+func (c *holdContext) Bot() tb.API          { return c.bot }
 func (c *holdContext) Send(v interface{}, opts ...interface{}) error {
 	c.sent = append(c.sent, fmt.Sprint(v))
 	for _, opt := range opts {
@@ -179,4 +294,27 @@ func (c *holdContext) Respond(resp ...*tb.CallbackResponse) error {
 		c.alerts = append(c.alerts, resp[0].Text)
 	}
 	return nil
+}
+
+type maintenanceTestEdit struct {
+	message *tb.Message
+	text    string
+}
+
+type maintenanceTestBot struct {
+	tb.API
+	edits []maintenanceTestEdit
+	sent  []maintenanceTestEdit
+}
+
+func (b *maintenanceTestBot) Edit(editable tb.Editable, value interface{}, _ ...interface{}) (*tb.Message, error) {
+	message, _ := editable.(*tb.Message)
+	b.edits = append(b.edits, maintenanceTestEdit{message: message, text: fmt.Sprint(value)})
+	return message, nil
+}
+
+func (b *maintenanceTestBot) Send(to tb.Recipient, value interface{}, _ ...interface{}) (*tb.Message, error) {
+	message := &tb.Message{ID: 70 + len(b.sent), Chat: &tb.Chat{ID: 7}}
+	b.sent = append(b.sent, maintenanceTestEdit{message: message, text: fmt.Sprint(value)})
+	return message, nil
 }

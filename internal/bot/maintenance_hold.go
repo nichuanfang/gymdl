@@ -8,6 +8,7 @@ import (
 )
 
 const maintenanceHoldCallbackUnique = "hold"
+const maintenanceEndedText = "已结束上一个会话。"
 
 var maintenanceHoldEndpoint = tb.InlineButton{Unique: maintenanceHoldCallbackUnique}
 
@@ -50,6 +51,69 @@ func (app *BotApp) chatMaintenanceHold(chatID int64, opening string) (maintenanc
 		}
 	}
 	return maintenanceHold{}, false
+}
+
+// beginMaintenanceCommand clears idle cards from other commands so the next
+// command can start directly. A card that is processing is never interrupted.
+func (app *BotApp) beginMaintenanceCommand(c tb.Context, next string) (maintenanceHold, bool) {
+	if c == nil || c.Chat() == nil {
+		return maintenanceHold{}, false
+	}
+	app.playlistMaintenanceStartMu.Lock()
+	hold, ended, blocked := app.clearIdleMaintenanceConflictsLocked(c.Chat().ID, next)
+	app.playlistMaintenanceStartMu.Unlock()
+	app.editEndedMaintenanceCards(c, ended)
+	return hold, blocked
+}
+
+// clearIdleMaintenanceConflictsLocked must be called with
+// playlistMaintenanceStartMu held. Returning ended cards separately lets the
+// caller release the lock before Telegram network I/O.
+func (app *BotApp) clearIdleMaintenanceConflictsLocked(chatID int64, next string) (maintenanceHold, []maintenanceHold, bool) {
+	var ended []maintenanceHold
+	for range 4 {
+		hold, ok := app.chatMaintenanceHold(chatID, "")
+		if !ok {
+			return maintenanceHold{}, ended, false
+		}
+		if hold.processing || hold.token == "" {
+			return hold, ended, true
+		}
+		note, released := app.releaseMaintenanceHold(hold)
+		if !released {
+			if refreshed, stillOpen := app.chatMaintenanceHold(chatID, ""); stillOpen {
+				return refreshed, ended, true
+			}
+			continue
+		}
+		utils.InfoWithFormat("[Telegram] 自动结束%s并开始%s chat=%d note=%s", maintenanceHoldLabel(hold.kind), maintenanceHoldLabel(next), chatID, note)
+		ended = append(ended, hold)
+	}
+	if hold, ok := app.chatMaintenanceHold(chatID, ""); ok {
+		return hold, ended, true
+	}
+	return maintenanceHold{}, ended, false
+}
+
+func (app *BotApp) editEndedMaintenanceCards(c tb.Context, ended []maintenanceHold) {
+	if len(ended) == 0 {
+		return
+	}
+	var api tb.API
+	if c != nil {
+		api = c.Bot()
+	}
+	if api == nil && app.bot != nil {
+		api = app.bot
+	}
+	for _, hold := range ended {
+		if api == nil || hold.message == nil {
+			continue
+		}
+		if _, err := api.Edit(hold.message, maintenanceEndedText, &tb.ReplyMarkup{}); err != nil {
+			utils.WarnWithFormat("[Telegram] 结束上一张维护卡片失败 chat=%d: %v", hold.chatID, err)
+		}
+	}
 }
 
 func (app *BotApp) emptyTrashHold(chatID int64) (maintenanceHold, bool) {

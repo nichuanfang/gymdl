@@ -73,15 +73,25 @@ func (app *BotApp) startAIPlaylist(c tb.Context) error {
 	if c.Chat() == nil || c.Sender() == nil {
 		return c.Send("无法读取 Telegram 会话信息，请在聊天中重新发送 /ai_playlist。")
 	}
-	if hold, ok := app.chatMaintenanceHold(c.Chat().ID, ""); ok {
+	if hold, blocked := app.beginMaintenanceCommand(c, "i"); blocked {
 		return app.presentMaintenanceHold(c, hold, "i", nil)
 	}
 	service, err := app.openAIPlaylistService()
 	if err != nil {
 		return c.Send("AI 智能歌单服务尚未配置：" + err.Error())
 	}
+	app.playlistMaintenanceStartMu.Lock()
+	hold, ended, blocked := app.clearIdleMaintenanceConflictsLocked(c.Chat().ID, "i")
+	if blocked {
+		app.playlistMaintenanceStartMu.Unlock()
+		app.editEndedMaintenanceCards(c, ended)
+		_ = service.close()
+		return app.presentMaintenanceHold(c, hold, "i", nil)
+	}
 	message, err := c.Bot().Send(c.Chat(), "🤖 正在读取 [AI] 歌单…")
 	if err != nil {
+		app.playlistMaintenanceStartMu.Unlock()
+		app.editEndedMaintenanceCards(c, ended)
 		_ = service.close()
 		return err
 	}
@@ -94,20 +104,18 @@ func (app *BotApp) startAIPlaylist(c tb.Context) error {
 		processing:  true,
 		expiresAt:   time.Now().Add(aiPlaylistSessionTTL),
 	}
-	app.playlistMaintenanceStartMu.Lock()
-	if hold, blocked := app.chatMaintenanceHold(session.chatID, ""); blocked || !app.registerAIPlaylistSession(session) {
-		app.playlistMaintenanceStartMu.Unlock()
+	registered := app.registerAIPlaylistSession(session)
+	app.playlistMaintenanceStartMu.Unlock()
+	app.editEndedMaintenanceCards(c, ended)
+	if !registered {
 		_ = service.close()
-		if !blocked {
-			if again, ok := app.chatMaintenanceHold(session.chatID, ""); ok {
-				hold = again
-			} else {
-				hold = maintenanceHold{text: "AI 歌单还开着。", busyText: "AI 歌单正在处理，请稍等。"}
-			}
+		if again, ok := app.chatMaintenanceHold(session.chatID, ""); ok {
+			hold = again
+		} else {
+			hold = maintenanceHold{text: "AI 歌单还开着。", busyText: "AI 歌单正在处理，请稍等。"}
 		}
 		return app.presentMaintenanceHold(c, hold, "i", message)
 	}
-	app.playlistMaintenanceStartMu.Unlock()
 	go app.prepareAIPlaylistMenu(session.token, service)
 	return nil
 }

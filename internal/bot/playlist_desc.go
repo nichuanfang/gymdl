@@ -97,7 +97,7 @@ func (app *BotApp) PlaylistDescCommand(c tb.Context) error {
 	if app.playlistCatalog == nil {
 		return c.Send("歌单库还没准备好，请检查数据库。")
 	}
-	if hold, ok := app.chatMaintenanceHold(c.Chat().ID, "desc"); ok {
+	if hold, blocked := app.beginMaintenanceCommand(c, "d"); blocked {
 		return app.presentMaintenanceHold(c, hold, "d", nil)
 	}
 	session := pendingPlaylistDesc{
@@ -115,7 +115,16 @@ func (app *BotApp) PlaylistDescCommand(c tb.Context) error {
 		return err
 	}
 	session.message = message
-	app.savePlaylistDesc(session)
+	app.playlistMaintenanceStartMu.Lock()
+	hold, ended, blocked := app.clearIdleMaintenanceConflictsLocked(session.chatID, "d")
+	if !blocked {
+		app.savePlaylistDesc(session)
+	}
+	app.playlistMaintenanceStartMu.Unlock()
+	app.editEndedMaintenanceCards(c, ended)
+	if blocked {
+		return app.presentMaintenanceHold(c, hold, "d", message)
+	}
 	return nil
 }
 
