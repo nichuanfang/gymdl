@@ -19,6 +19,23 @@ import (
 	tb "gopkg.in/telebot.v4"
 )
 
+type snapshotOnlyProvider struct {
+	fetch func(context.Context, string) (discovery.Snapshot, error)
+}
+
+func (p snapshotOnlyProvider) Fetch(ctx context.Context, platform string) (discovery.Snapshot, error) {
+	return p.fetch(ctx, platform)
+}
+func (snapshotOnlyProvider) Resolve(context.Context, discovery.Track, string) (discovery.Track, error) {
+	return discovery.Track{}, errors.New("no alternate")
+}
+func (snapshotOnlyProvider) ResolveOn(context.Context, discovery.Track, string) (discovery.Track, error) {
+	return discovery.Track{}, errors.New("no alternate")
+}
+func (snapshotOnlyProvider) Enrich(_ context.Context, t discovery.Track) (discovery.Track, bool, error) {
+	return t, false, nil
+}
+
 // Exercise the real Telebot dispatch/parser and API feedback, not just a
 // callback helper with pre-split arguments.
 func TestDiscoveryButtonsThroughTelebotRoute(t *testing.T) {
@@ -741,9 +758,168 @@ func TestDiscoveryPendingUploadAndFailedCardsUseTrackFields(t *testing.T) {
 			t.Fatalf("failed card missing %q: %s", want, failed)
 		}
 	}
-	if got := buttonRowTexts(failedMarkup); len(got) != 2 || got[0][0] != "重试" || got[0][1] != "返回收藏" || got[1][0] != "上一首" {
+	if got := buttonRowTexts(failedMarkup); len(got) != 3 || got[0][0] != "重试" || got[0][1] != "换平台" || got[1][0] != "不再处理" || got[1][1] != "返回收藏" || got[2][0] != "上一首" {
 		t.Fatalf("failed buttons = %#v", got)
 	}
+}
+
+func TestFailedJobCardActionsRetryAndDismissOnlyThatSong(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	ids := make([]string, 0, 2)
+	for i, title := range []string{"First", "Second"} {
+		job := discovery.Track{Platform: "netease", ID: strconv.Itoa(i + 1), Title: title, Artist: "Artist", URL: "https://music.163.com/song?id=" + strconv.Itoa(i+1), Verified: true}
+		id, err := store.Enqueue(ctx, 1, 1, job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		j, err := store.Job(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = store.Finish(ctx, j, discovery.Failed, "下载失败", "", 0); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	app := &BotApp{cfg: &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"1"}}}, discovery: &discovery.Service{Store: store}}
+	msg := &tb.Message{ID: 7, Chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate}}
+	click := func(action string, extra ...string) *discoveryCallbackContext {
+		args := append([]string{action, ids[0]}, extra...)
+		ctx := &discoveryCallbackContext{
+			args: args, sender: &tb.User{ID: 1}, chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate},
+			callback: &tb.Callback{ID: "cb", Message: msg}, message: msg,
+		}
+		if err := app.HandleDiscoveryCallback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return ctx
+	}
+	click("retry", "0")
+	retriedJob, _ := store.Job(ctx, ids[0])
+	untouchedJob, _ := store.Job(ctx, ids[1])
+	if retriedJob.State != discovery.Queued || untouchedJob.State != discovery.Failed {
+		t.Fatalf("single retry changed the wrong job: retried=%+v untouched=%+v", retriedJob, untouchedJob)
+	}
+	refailed, err := store.Job(ctx, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Finish(ctx, refailed, discovery.Failed, "再次失败", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if edited := click("dismiss_job", "0").edited; !strings.Contains(edited, "入库异常") {
+		t.Fatalf("dismiss did not move to the remaining failed card: %s", edited)
+	}
+	job, err := store.Job(ctx, ids[0])
+	if err != nil || job.State != discovery.Ignored {
+		t.Fatalf("dismissed state=%+v err=%v", job, err)
+	}
+}
+
+func TestFailedJobCrossPlatformLookupDoesNotMutateOnFailure(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	track := discovery.Track{Platform: "netease", ID: "1", Title: "Song", Artist: "Artist", URL: "https://music.163.com/song?id=1", Verified: true}
+	id, err := store.Enqueue(ctx, 1, 1, track)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ := store.Job(ctx, id)
+	if err = store.Finish(ctx, job, discovery.Failed, "下载失败", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	var clicks int
+	app := &BotApp{
+		cfg: &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"1"}}},
+		discovery: &discovery.Service{Store: store, Provider: snapshotOnlyProvider{fetch: func(context.Context, string) (discovery.Snapshot, error) {
+			clicks++
+			return discovery.Snapshot{}, errors.New("source unavailable")
+		}}},
+	}
+	msg := &tb.Message{ID: 7, Chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate}}
+	ctxCB := &discoveryCallbackContext{
+		args: []string{"switch_source", id, "0"}, sender: &tb.User{ID: 1}, chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate},
+		callback: &tb.Callback{ID: "cb", Message: msg}, message: msg,
+	}
+	if err = app.HandleDiscoveryCallback(ctxCB); err != nil {
+		t.Fatal(err)
+	}
+	edited := ctxCB.waitEdited(t, "没能换平台")
+	if !strings.Contains(edited, "原任务未改") {
+		t.Fatalf("failure copy = %s", edited)
+	}
+	job, _ = store.Job(ctx, id)
+	if job.State != discovery.Failed || job.Error != "下载失败" || clicks != 0 {
+		t.Fatalf("failed lookup mutated job=%+v provider calls=%d", job, clicks)
+	}
+}
+
+func TestFailedJobCrossPlatformRetryReplacesTheJobWithVerifiedAlternate(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	original := discovery.Track{Platform: "netease", ID: "1", Title: "Song", Artist: "Artist", URL: "https://music.163.com/song?id=1", Verified: true}
+	id, err := store.Enqueue(ctx, 1, 1, original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, _ := store.Job(ctx, id)
+	if err = store.Finish(ctx, job, discovery.Failed, "原平台失败", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	alternate := discovery.Track{Platform: "qq", ID: "q1", Title: "Song", Artist: "Artist", URL: "https://y.qq.com/n/ryqq/songDetail/q1", Verified: true}
+	app := &BotApp{
+		cfg: &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"1"}}},
+		discovery: &discovery.Service{Store: store, Provider: snapshotOnlyProvider{fetch: func(context.Context, string) (discovery.Snapshot, error) {
+			return discovery.Snapshot{}, errors.New("source unavailable")
+		}}},
+	}
+	// Use a provider that resolves the alternate so the callback follows the
+	// same production path as a safe cross-platform replacement.
+	app.discovery.Provider = alternateProvider{alternate: alternate}
+	msg := &tb.Message{ID: 7, Chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate}}
+	ctxCB := &discoveryCallbackContext{
+		args: []string{"switch_source", id, "0"}, sender: &tb.User{ID: 1}, chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate},
+		callback: &tb.Callback{ID: "cb", Message: msg}, message: msg,
+	}
+	if err = app.HandleDiscoveryCallback(ctxCB); err != nil {
+		t.Fatal(err)
+	}
+	_ = ctxCB.waitEdited(t, "入库异常")
+	job, err = store.Job(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.State != discovery.Queued || job.Track.Platform != "qq" || job.Track.ID != "q1" || job.Track.URL != alternate.URL {
+		t.Fatalf("alternate was not queued in place: %+v", job)
+	}
+}
+
+type alternateProvider struct{ alternate discovery.Track }
+
+func (alternateProvider) Fetch(context.Context, string) (discovery.Snapshot, error) {
+	return discovery.Snapshot{}, errors.New("not used")
+}
+func (p alternateProvider) Resolve(context.Context, discovery.Track, string) (discovery.Track, error) {
+	return p.alternate, nil
+}
+func (p alternateProvider) ResolveOn(context.Context, discovery.Track, string) (discovery.Track, error) {
+	return p.alternate, nil
+}
+func (alternateProvider) Enrich(_ context.Context, t discovery.Track) (discovery.Track, bool, error) {
+	return t, false, nil
 }
 
 func TestFavoritesSyncResultNoticeKeepsSuccessfulPlatformsSuccessful(t *testing.T) {

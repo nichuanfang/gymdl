@@ -974,6 +974,10 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		callbackNotice = "返回收藏同步…"
 	case "retry":
 		callbackNotice = "正在重试入库异常…"
+	case "switch_source":
+		callbackNotice = "正在搜索其他平台…"
+	case "dismiss_job":
+		callbackNotice = "正在标为不再处理…"
 	case "status":
 		callbackNotice = "正在刷新队列状态…"
 	case "pending_upload":
@@ -1038,7 +1042,7 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			return err
 		}
 		return app.showDiscoveryPendingUpload(c, page)
-	case "probe", "pause", "resume", "sync", "history", "favorites", "retry", "status", "accept", "reject":
+	case "probe", "pause", "resume", "sync", "history", "favorites", "retry", "switch_source", "dismiss_job", "status", "accept", "reject":
 		if err := c.Respond(&tb.CallbackResponse{Text: callbackNotice}); err != nil {
 			return err
 		}
@@ -1089,6 +1093,16 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		case "favorites":
 			return app.presentFavorites(c, "")
 		case "retry":
+			if key != "menu" {
+				retried, retryErr := app.discovery.Store.RetryJob(ctx, key, c.Sender().ID)
+				if retryErr != nil {
+					return answerOnCard(c, "没能重新排队："+utils.EscapeHTML(discoveryPublicError(retryErr)), nil, true)
+				}
+				if !retried {
+					return answerOnCard(c, "这条异常已经处理过了。", discoveryFailedRecoveryMarkup(), true)
+				}
+				return app.showDiscoveryFailed(c, 0)
+			}
 			jobCounts, jobErr := app.discovery.Store.JobCounts(ctx, c.Sender().ID)
 			if jobErr != nil {
 				return app.presentFavorites(c, "❌ 无法读取失败记录。")
@@ -1103,6 +1117,21 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			}
 			logFavoriteRetry(failed, nil)
 			return app.presentFavorites(c, fmt.Sprintf("✅ %d 首入库异常已重新排队。", failed))
+		case "switch_source":
+			return app.switchFailedJobSource(c, key)
+		case "dismiss_job":
+			next := 0
+			if len(args) >= 3 {
+				next, _ = strconv.Atoi(args[2])
+			}
+			dismissed, dismissErr := app.discovery.Store.DismissFailedJob(ctx, key, c.Sender().ID)
+			if dismissErr != nil {
+				return answerOnCard(c, "没能标为不再处理："+utils.EscapeHTML(discoveryPublicError(dismissErr)), nil, true)
+			}
+			if !dismissed {
+				return answerOnCard(c, "这条异常已经处理过了。", discoveryFailedRecoveryMarkup(), true)
+			}
+			return app.showDiscoveryFailed(c, next)
 		case "status":
 			if err := app.discovery.Reconcile(ctx, c.Sender().ID); err != nil {
 				utils.WarnWithFormat("[Discovery] 刷新入库队列失败 user=%d: %v", c.Sender().ID, err)
@@ -1615,10 +1644,16 @@ func discoveryFailedCard(job discovery.Job, index, total int) (string, *tb.Reply
 		text.WriteString("\n原因: 未记录")
 	}
 	markup := &tb.ReplyMarkup{}
-	appendDiscoveryRows(markup, markup.Row(
-		markup.Data("重试", discoveryCallbackUnique, "retry", "menu"),
-		markup.Data("返回收藏", discoveryCallbackUnique, "favorites", "menu"),
-	))
+	appendDiscoveryRows(markup,
+		markup.Row(
+			markup.Data("重试", discoveryCallbackUnique, "retry", job.ID),
+			markup.Data("换平台", discoveryCallbackUnique, "switch_source", job.ID, strconv.Itoa(index)),
+		),
+		markup.Row(
+			markup.Data("不再处理", discoveryCallbackUnique, "dismiss_job", job.ID, strconv.Itoa(index)),
+			markup.Data("返回收藏", discoveryCallbackUnique, "favorites", "menu"),
+		),
+	)
 	nav := tb.Row{}
 	if index > 0 {
 		nav = append(nav, markup.Data("上一首", discoveryCallbackUnique, "failed", strconv.Itoa(index-1)))
@@ -1630,4 +1665,57 @@ func discoveryFailedCard(job discovery.Job, index, total int) (string, *tb.Reply
 		appendDiscoveryRows(markup, nav)
 	}
 	return strings.TrimRight(text.String(), "\n"), markup
+}
+
+func discoveryFailedRecoveryMarkup() *tb.ReplyMarkup {
+	markup := &tb.ReplyMarkup{}
+	markup.Inline(markup.Row(markup.Data("返回收藏", discoveryCallbackUnique, "favorites", "menu")))
+	return markup
+}
+
+// switchFailedJobSource only requeues after a verified same-recording source
+// is found. A failed lookup leaves the original job untouched and shows a
+// recovery card instead of pretending the download was restarted.
+func (app *BotApp) switchFailedJobSource(c tb.Context, id string) error {
+	if c.Sender() == nil || c.Chat() == nil {
+		return answerOnCard(c, "无法读取当前会话。", nil, false)
+	}
+	if !app.discoveryCommandMu.TryLock() {
+		return answerOnCard(c, "另一项收藏操作正在处理，请稍后再试。", discoveryFailedRecoveryMarkup(), true)
+	}
+	user := c.Sender().ID
+	next := 0
+	if len(c.Args()) >= 4 {
+		next, _ = strconv.Atoi(c.Args()[3])
+	}
+	app.goDiscovery(func() {
+		defer app.discoveryCommandMu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		job, err := app.discovery.Store.Job(ctx, id)
+		if err != nil || job.User != user || job.State != discovery.Failed {
+			_ = editDiscoveryMessage(c, "这条异常已经处理过了。", discoveryFailedRecoveryMarkup(), true)
+			return
+		}
+		alternate, resolveErr := app.discovery.ResolveFromAnotherPlatform(ctx, job.Track)
+		if resolveErr != nil {
+			note := "没有找到可确认的同版录音，原任务未改。"
+			if errors.Is(resolveErr, discovery.ErrAmbiguousRecording) {
+				note = "其他平台有多个可能版本，未自动替换原任务。"
+			}
+			_ = editDiscoveryMessage(c, "没能换平台："+utils.EscapeHTML(note), discoveryFailedRecoveryMarkup(), true)
+			return
+		}
+		job.Track = alternate
+		if err = app.discovery.Store.Finish(ctx, job, discovery.Queued, "", "", 0); err != nil {
+			_ = editDiscoveryMessage(c, "换平台成功但没能重新排队，请重试。", discoveryFailedRecoveryMarkup(), true)
+			return
+		}
+		if err = app.discovery.Store.RememberFavorite(ctx, job.User, alternate); err != nil {
+			utils.WarnWithFormat("[Discovery] 换平台来源记录失败: %v", err)
+		}
+		utils.InfoWithFormat("[Discovery] 入库异常已换平台重试《%s》%s → %s", utils.TruncateString(job.Track.Title, 40), utils.TruncateString(job.Track.Artist, 24), aichat.PlatformLabel(alternate.Platform))
+		_ = app.showDiscoveryFailed(c, next)
+	})
+	return nil
 }

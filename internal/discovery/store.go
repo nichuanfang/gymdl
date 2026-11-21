@@ -341,7 +341,7 @@ func (s *Store) Exclusions(ctx context.Context, user int64) (map[string]string, 
 	// but they are not permanent rediscover exclusions. NAS outages can leave a
 	// song pending for days, and hiding it made the next rediscover batch look
 	// empty even though it had never reached the library.
-	jobs, err := s.db.QueryContext(ctx, `SELECT identity,state FROM discovery_jobs WHERE user_id=? AND state IN ('queued','running','completed','owned')`, user)
+	jobs, err := s.db.QueryContext(ctx, `SELECT identity,state FROM discovery_jobs WHERE user_id=? AND state IN ('queued','running','completed','owned','ignored')`, user)
 	if err != nil {
 		return nil, err
 	}
@@ -554,6 +554,28 @@ func (s *Store) Recover(ctx context.Context) error {
 func (s *Store) Retry(ctx context.Context, user int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE discovery_jobs SET state='queued',attempts=0,next_run=0,last_error='',notified=0,source_account='' WHERE user_id=? AND state='failed'`, user)
 	return err
+}
+
+// RetryJob requeues one failed job. The state predicate makes repeated taps
+// harmless and prevents a stale card from overwriting a newer job state.
+func (s *Store) RetryJob(ctx context.Context, id string, user int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE discovery_jobs SET state='queued',attempts=0,next_run=0,last_error='',notified=0,source_account='' WHERE id=? AND user_id=? AND state='failed'`, id, user)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// DismissFailedJob records an explicit user decision for one failed song.
+// Favorites polling and rediscover both already exclude ignored jobs.
+func (s *Store) DismissFailedJob(ctx context.Context, id string, user int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE discovery_jobs SET state='ignored',last_error='',notified=1,updated=? WHERE id=? AND user_id=? AND state='failed'`, time.Now().Unix(), id, user)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 func (s *Store) NotifyDone(ctx context.Context, id string, updated int64, state string) error {

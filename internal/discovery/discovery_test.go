@@ -1105,6 +1105,72 @@ func TestWorkerProcessorPanicBecomesVisibleFailure(t *testing.T) {
 	}
 }
 
+func TestFailedJobCanBeRetriedOrDismissedIndividually(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	for i, title := range []string{"First", "Second"} {
+		j := testTrack(fmt.Sprint(i+1), title, "Artist")
+		id, err := s.Enqueue(ctx, 1, 1, j)
+		if err != nil {
+			t.Fatal(err)
+		}
+		job, err := s.Job(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Finish(ctx, job, Failed, "download failed", "", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	jobs, total, err := s.FailedJobs(ctx, 1, 0, 10)
+	if err != nil || total != 2 {
+		t.Fatal(err, total)
+	}
+	retried, err := s.RetryJob(ctx, jobs[0].ID, 1)
+	if err != nil || !retried {
+		t.Fatal("retry", retried, err)
+	}
+	dismissed, err := s.DismissFailedJob(ctx, jobs[1].ID, 1)
+	if err != nil || !dismissed {
+		t.Fatal("dismiss", dismissed, err)
+	}
+	failed, total, err := s.FailedJobs(ctx, 1, 0, 10)
+	if err != nil || total != 0 || len(failed) != 0 {
+		t.Fatal("failed jobs remain", total, failed, err)
+	}
+	queued, _ := s.Job(ctx, jobs[0].ID)
+	ignored, _ := s.Job(ctx, jobs[1].ID)
+	if queued.State != Queued || ignored.State != Ignored {
+		t.Fatalf("states queued=%s ignored=%s", queued.State, ignored.State)
+	}
+	excluded, err := s.Excluded(ctx, 1)
+	if err != nil || !excluded[Identity(ignored.Track)] {
+		t.Fatal("dismissed failed song will be rediscovered", excluded, err)
+	}
+	if again, err := s.RetryJob(ctx, jobs[1].ID, 1); err != nil || again {
+		t.Fatal("dismissed job was retried", again, err)
+	}
+	if again, err := s.DismissFailedJob(ctx, jobs[0].ID, 1); err != nil || again {
+		t.Fatal("queued job was dismissed", again, err)
+	}
+}
+
+func TestCrossPlatformRetryRequiresAClaimedAlternate(t *testing.T) {
+	original := testTrack("n", "东方之珠 (Live)", "罗大佑")
+	original.Platform = "netease"
+	alternate := testTrack("q", "东方之珠 (Live)", "罗大佑")
+	alternate.Platform = "qq"
+	svc := Service{Provider: stubProvider{alternate: alternate}}
+	resolved, err := svc.ResolveFromAnotherPlatform(context.Background(), original)
+	if err != nil || resolved.Platform != "qq" || resolved.ID != alternate.ID {
+		t.Fatalf("resolved=%+v err=%v", resolved, err)
+	}
+	svc.Provider = stubProvider{alternate: Track{Platform: "qq", Title: "别的歌", Verified: true}}
+	if _, err = svc.ResolveFromAnotherPlatform(context.Background(), original); err == nil {
+		t.Fatal("unrelated alternate was accepted")
+	}
+}
+
 type resolveCounter struct {
 	stubProvider
 	n *int

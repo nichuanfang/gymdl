@@ -757,6 +757,51 @@ func (s *Service) resolveCandidate(ctx context.Context, track Track, platform st
 	return resolved, err
 }
 
+// ResolveFromAnotherPlatform forces a fresh cross-platform lookup for a failed
+// job, bypassing the normal resolve cache. It never reuses the original source
+// URL because that source has already failed.
+func (s *Service) ResolveFromAnotherPlatform(ctx context.Context, track Track) (Track, error) {
+	if s.Provider == nil {
+		return Track{}, errors.New("收藏来源服务尚未就绪")
+	}
+	source := strings.TrimSpace(track.Platform)
+	if err := s.ClearResolveCache(track, ""); err != nil {
+		return Track{}, err
+	}
+	if source != "" {
+		track.URL = ""
+	}
+	resolved, err := s.Provider.Resolve(ctx, track, source)
+	if err != nil {
+		return Track{}, err
+	}
+	if !SameRecording(track, resolved) || resolved.Platform == source {
+		return Track{}, ErrNoUniqueRecording
+	}
+	resolved.Plays = track.Plays
+	resolved.LastPlayed = track.LastPlayed
+	resolved.Favorite = track.Favorite
+	resolved.CardAction = ""
+	resolved.IngestID = ""
+	resolved.IngestNote = ""
+	// Mark the chosen alternate as an explicit user decision. ProcessOne then
+	// retries that exact source instead of trying to resolve back to the
+	// original failed platform.
+	resolved.Approved = true
+	return resolved, nil
+}
+
+// ClearResolveCache removes cached lookup results for one recording. It is
+// used for explicit user retries, where a prior miss must not suppress a new
+// search.
+func (s *Service) ClearResolveCache(track Track, platform string) error {
+	key := platform + "\n" + Normalize(track.Title) + "\n" + Normalize(track.Artist) + "\n" + Normalize(track.Album)
+	s.cacheMu.Lock()
+	delete(s.resolveCache, key)
+	s.cacheMu.Unlock()
+	return nil
+}
+
 func (s *Service) Run(ctx context.Context) error {
 	if err := s.Store.Recover(ctx); err != nil {
 		return err
