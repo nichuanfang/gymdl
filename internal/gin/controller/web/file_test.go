@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -192,6 +193,25 @@ func (f *fakeLibraryDAV) stats() (calls, maxConcurrent int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls, f.maxActive
+}
+
+func TestFullWebDAVIndexCanBypassInteractiveSearchLimits(t *testing.T) {
+	remote := &fakeLibraryDAV{dirs: map[string][]os.FileInfo{
+		"/library": {
+			fakeInfo{name: "one.mp3", size: 10},
+			fakeInfo{name: "two.mp3", size: 20},
+			fakeInfo{name: "three.mp3", size: 30},
+		},
+	}}
+	limited, truncated, err := scanWebDAVFileIndexContextWithLimits(context.Background(), "library", "/", remote, 2, 2, 64)
+	if err != nil || !truncated || len(limited) != 2 {
+		t.Fatalf("interactive index = %d entries, truncated=%t err=%v", len(limited), truncated, err)
+	}
+
+	all, truncated, err := scanWebDAVFileIndexAllContext(context.Background(), "library", "/", remote)
+	if err != nil || truncated || len(all) != 3 {
+		t.Fatalf("full index = %d entries, truncated=%t err=%v", len(all), truncated, err)
+	}
 }
 
 func TestWebDAVFileSearchFiltersSongArtistAlbumAndPreservesRelativePaths(t *testing.T) {

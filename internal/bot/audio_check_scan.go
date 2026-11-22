@@ -41,6 +41,16 @@ type audioCheckReport struct {
 	referenceQueue   int
 	withoutReference int
 	limited          bool
+	resumeAvailable  bool
+}
+
+type audioCheckScanState struct {
+	files   []web.FileEntry
+	limited bool
+	remote  bool
+	deep    bool
+	indexed map[string][]discovery.NavidromeAudio
+	cached  map[string]audioquality.CachedResult
 }
 
 func audioCheckLibrary(cfg *config.Config) (string, error) {
@@ -75,16 +85,40 @@ func audioFileVersion(file web.FileEntry) audioquality.FileVersion {
 }
 
 func scanAudioCheckBatch(ctx context.Context, cfg *config.Config, store *audioquality.Store, library string, user int64, deep bool) (audioCheckReport, error) {
-	files, limited, err := web.ListLibraryAudio(ctx, cfg)
+	state, err := newAudioCheckScanState(ctx, cfg, store, library, user, deep)
 	if err != nil {
 		return audioCheckReport{}, err
 	}
+	return state.scanBatch(ctx, cfg, store, library, deep)
+}
+
+func newAudioCheckScanState(ctx context.Context, cfg *config.Config, store *audioquality.Store, library string, user int64, deep bool) (*audioCheckScanState, error) {
+	return newAudioCheckScanStateMode(ctx, cfg, store, library, user, deep, false)
+}
+
+func newFullAudioCheckScanState(ctx context.Context, cfg *config.Config, store *audioquality.Store, library string, user int64) (*audioCheckScanState, error) {
+	return newAudioCheckScanStateMode(ctx, cfg, store, library, user, true, true)
+}
+
+func newAudioCheckScanStateMode(ctx context.Context, cfg *config.Config, store *audioquality.Store, library string, user int64, deep, full bool) (*audioCheckScanState, error) {
+	var files []web.FileEntry
+	var limited bool
+	var err error
+	if full {
+		files, limited, err = web.ListAllLibraryAudio(ctx, cfg)
+	} else {
+		files, limited, err = web.ListLibraryAudio(ctx, cfg)
+	}
+	if err != nil {
+		return nil, err
+	}
 	cached, err := store.Results(ctx, library, user)
 	if err != nil {
-		return audioCheckReport{}, fmt.Errorf("无法读取体检记录: %w", err)
+		return nil, fmt.Errorf("无法读取体检记录: %w", err)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	remote := cfg.Tidy.Mode == 2
+	state := &audioCheckScanState{files: files, limited: limited, remote: remote, deep: deep, cached: cached}
 	var indexed map[string][]discovery.NavidromeAudio
 	if remote && !deep {
 		// Share the existing Navidrome inventory wire format. If inventory
@@ -100,7 +134,13 @@ func scanAudioCheckBatch(ctx context.Context, cfg *config.Config, store *audioqu
 			}
 		}
 	}
-	report := audioCheckReport{total: len(files), limited: limited}
+	state.indexed = indexed
+	return state, nil
+}
+
+func (state *audioCheckScanState) scanBatch(ctx context.Context, cfg *config.Config, store *audioquality.Store, library string, deep bool) (audioCheckReport, error) {
+	files, cached := state.files, state.cached
+	report := audioCheckReport{total: len(files), limited: state.limited}
 	now := time.Now()
 	attempted := 0
 	var bytes int64
@@ -109,7 +149,7 @@ func scanAudioCheckBatch(ctx context.Context, cfg *config.Config, store *audioqu
 		if item, ok := cached[file.Path]; ok && item.FileVersion == version && (!item.Unreadable || now.Before(item.RetryAt)) {
 			continue
 		}
-		if remote && !deep && indexedAudioLooksNormal(file, indexed[file.Name]) {
+		if state.remote && !deep && indexedAudioLooksNormal(file, state.indexed[file.Name]) {
 			report.deferred++
 			continue
 		}
@@ -117,7 +157,7 @@ func scanAudioCheckBatch(ctx context.Context, cfg *config.Config, store *audioqu
 			report.unreadable++
 			continue
 		}
-		if ctx.Err() != nil || attempted >= audioCheckBatchFiles || (remote && attempted > 0 && bytes+file.Size > audioCheckBatchBytes) {
+		if ctx.Err() != nil || attempted >= audioCheckBatchFiles || (state.remote && attempted > 0 && bytes+file.Size > audioCheckBatchBytes) {
 			report.remaining++
 			continue
 		}
@@ -138,7 +178,7 @@ func scanAudioCheckBatch(ctx context.Context, cfg *config.Config, store *audioqu
 			}
 			return report, fmt.Errorf("无法保存体检记录: %w", err)
 		}
-		cached[file.Path] = item
+		state.cached[file.Path] = item
 	}
 
 	references := 0
@@ -164,6 +204,7 @@ func scanAudioCheckBatch(ctx context.Context, cfg *config.Config, store *audioqu
 					if err := store.Save(ctx, library, item); err != nil {
 						return report, fmt.Errorf("无法保存时长对照: %w", err)
 					}
+					state.cached[file.Path] = item
 				}
 			} else {
 				report.referenceQueue++
@@ -174,6 +215,83 @@ func scanAudioCheckBatch(ctx context.Context, cfg *config.Config, store *audioqu
 			report.withoutReference++
 		}
 		if !item.Reviewed && item.NeedsReview() {
+			report.findings = append(report.findings, audioCheckFinding{file: file, Result: item.Result})
+		}
+	}
+	sort.SliceStable(report.findings, func(i, j int) bool {
+		left, right := report.findings[i], report.findings[j]
+		if left.Damaged != right.Damaged {
+			return left.Damaged
+		}
+		return left.ShorterThanSource() && !right.ShorterThanSource()
+	})
+	return report, nil
+}
+
+func (state *audioCheckScanState) cachedReport() audioCheckReport {
+	report := audioCheckReport{total: len(state.files), limited: state.limited}
+	now := time.Now()
+	for _, file := range state.files {
+		item, ok := state.cached[file.Path]
+		if !ok || item.FileVersion != audioFileVersion(file) {
+			if state.remote && !state.deep && indexedAudioLooksNormal(file, state.indexed[file.Name]) {
+				report.deferred++
+				continue
+			}
+			if file.Size > web.MaxLibraryAudioBytes {
+				report.unreadable++
+				continue
+			}
+			report.remaining++
+			continue
+		}
+		if item.Unreadable {
+			report.unreadable++
+			continue
+		}
+		if !item.Reviewed && !item.RetryAt.IsZero() && !now.Before(item.RetryAt) {
+			report.referenceQueue++
+		}
+		report.checked++
+		if !item.Damaged && item.Reference == 0 {
+			report.withoutReference++
+		}
+		if !item.Reviewed && item.NeedsReview() {
+			report.findings = append(report.findings, audioCheckFinding{file: file, Result: item.Result})
+		}
+	}
+	sort.SliceStable(report.findings, func(i, j int) bool {
+		left, right := report.findings[i], report.findings[j]
+		if left.Damaged != right.Damaged {
+			return left.Damaged
+		}
+		return left.ShorterThanSource() && !right.ShorterThanSource()
+	})
+	return report
+}
+
+func cachedAudioCheckReport(ctx context.Context, store *audioquality.Store, library string, user int64) (audioCheckReport, error) {
+	cached, err := store.Results(ctx, library, user)
+	if err != nil {
+		return audioCheckReport{}, err
+	}
+	report := audioCheckReport{total: len(cached), resumeAvailable: true}
+	for name, item := range cached {
+		if item.Unreadable {
+			report.unreadable++
+			continue
+		}
+		report.checked++
+		if !item.Damaged && item.Reference == 0 {
+			report.withoutReference++
+		}
+		if !item.Reviewed && item.NeedsReview() {
+			filePath := filepath.ToSlash(name)
+			file := web.FileEntry{
+				Name: path.Base(filePath), Path: filePath, Size: item.Size,
+				ModTime: time.Unix(0, item.Mod), Ext: strings.ToLower(filepath.Ext(filePath)),
+				Artist: item.Artist, Album: item.Album,
+			}
 			report.findings = append(report.findings, audioCheckFinding{file: file, Result: item.Result})
 		}
 	}

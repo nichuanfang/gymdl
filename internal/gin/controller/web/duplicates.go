@@ -179,6 +179,17 @@ func collectLibraryAudio(cfg *config.Config) ([]FileEntry, error) {
 }
 
 func ListLibraryAudio(ctx context.Context, cfg *config.Config) ([]FileEntry, bool, error) {
+	return listLibraryAudio(ctx, cfg, false)
+}
+
+// ListAllLibraryAudio lists the full audio library without the interactive
+// search index limits. Callers should use a cancellable context for large
+// remote libraries.
+func ListAllLibraryAudio(ctx context.Context, cfg *config.Config) ([]FileEntry, bool, error) {
+	return listLibraryAudio(ctx, cfg, true)
+}
+
+func listLibraryAudio(ctx context.Context, cfg *config.Config, all bool) ([]FileEntry, bool, error) {
 	if cfg == nil || cfg.Tidy == nil {
 		return nil, false, fmt.Errorf("整理目录还没准备好")
 	}
@@ -186,7 +197,14 @@ func ListLibraryAudio(ctx context.Context, cfg *config.Config) ([]FileEntry, boo
 		if core.GlobalWebDAV == nil || core.GlobalWebDAV.Client == nil {
 			return nil, false, fmt.Errorf("WebDAV 未初始化")
 		}
-		entries, truncated, err := scanWebDAVFileIndexContext(ctx, webDAVDirectory(cfg), "/", core.GlobalWebDAV.Client)
+		var entries []FileEntry
+		var truncated bool
+		var err error
+		if all {
+			entries, truncated, err = scanWebDAVFileIndexAllContext(ctx, webDAVDirectory(cfg), "/", core.GlobalWebDAV.Client)
+		} else {
+			entries, truncated, err = scanWebDAVFileIndexContext(ctx, webDAVDirectory(cfg), "/", core.GlobalWebDAV.Client)
+		}
 		if err != nil {
 			return nil, false, fmt.Errorf("读取 WebDAV 曲库失败")
 		}

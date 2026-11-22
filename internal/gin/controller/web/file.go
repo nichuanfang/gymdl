@@ -320,9 +320,10 @@ type webDAVDirTask struct {
 }
 
 type webDAVDirResult struct {
-	entries []FileEntry
-	dirs    []webDAVDirTask
-	err     error
+	entries   []FileEntry
+	dirs      []webDAVDirTask
+	err       error
+	truncated bool
 }
 
 func listWebDAVFiles(baseDir, relPath, query, field string, client fileLibraryRemote) ([]FileEntry, bool, error) {
@@ -443,6 +444,14 @@ func scanWebDAVFileIndex(baseDir, relPath string, client fileLibraryRemote) ([]F
 }
 
 func scanWebDAVFileIndexContext(ctx context.Context, baseDir, relPath string, client fileLibraryRemote) ([]FileEntry, bool, error) {
+	return scanWebDAVFileIndexContextWithLimits(ctx, baseDir, relPath, client, maxFileSearchEntries, maxFileSearchDirs, maxFileSearchDepth)
+}
+
+func scanWebDAVFileIndexAllContext(ctx context.Context, baseDir, relPath string, client fileLibraryRemote) ([]FileEntry, bool, error) {
+	return scanWebDAVFileIndexContextWithLimits(ctx, baseDir, relPath, client, 0, 0, maxFileSearchDepth)
+}
+
+func scanWebDAVFileIndexContextWithLimits(ctx context.Context, baseDir, relPath string, client fileLibraryRemote, maxEntries, maxDirs, maxDepth int) ([]FileEntry, bool, error) {
 	root, err := remoteSafePath(baseDir, relPath)
 	if err != nil {
 		return nil, false, err
@@ -495,10 +504,12 @@ func scanWebDAVFileIndexContext(ctx context.Context, baseDir, relPath string, cl
 							continue
 						}
 						if item.IsDir() {
-							if task.depth < maxFileSearchDepth {
+							if maxDepth == 0 || task.depth < maxDepth {
 								result.dirs = append(result.dirs, webDAVDirTask{
 									remoteDir: entryRemote, relativeDir: entryRel, depth: task.depth + 1,
 								})
+							} else {
+								result.truncated = true
 							}
 							continue
 						}
@@ -525,12 +536,15 @@ func scanWebDAVFileIndexContext(ctx context.Context, baseDir, relPath string, cl
 			if result.err != nil {
 				return nil, truncated, result.err
 			}
+			truncated = truncated || result.truncated
 			visitedDirs++
-			remainingFiles := maxFileSearchEntries - visitedFiles
-			if len(result.entries) > remainingFiles {
-				result.entries = result.entries[:remainingFiles]
-				truncated = true
-				stopAtFileLimit = true
+			if maxEntries > 0 {
+				remainingFiles := maxEntries - visitedFiles
+				if len(result.entries) > remainingFiles {
+					result.entries = result.entries[:remainingFiles]
+					truncated = true
+					stopAtFileLimit = true
+				}
 			}
 			entries = append(entries, result.entries...)
 			visitedFiles += len(result.entries)
@@ -538,12 +552,16 @@ func scanWebDAVFileIndexContext(ctx context.Context, baseDir, relPath string, cl
 				break
 			}
 
-			remainingDirs := maxFileSearchDirs - visitedDirs - len(next)
-			if len(result.dirs) > remainingDirs {
-				if remainingDirs > 0 {
-					next = append(next, result.dirs[:remainingDirs]...)
+			if maxDirs > 0 {
+				remainingDirs := maxDirs - visitedDirs - len(next)
+				if len(result.dirs) > remainingDirs {
+					if remainingDirs > 0 {
+						next = append(next, result.dirs[:remainingDirs]...)
+					}
+					truncated = true
+				} else {
+					next = append(next, result.dirs...)
 				}
-				truncated = true
 			} else {
 				next = append(next, result.dirs...)
 			}

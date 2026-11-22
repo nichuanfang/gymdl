@@ -171,6 +171,121 @@ func TestAudioCheckTelegramCommandAndReview(t *testing.T) {
 	}
 }
 
+func TestAudioCheckCardsOfferStopAndResumableFullScan(t *testing.T) {
+	session := audioCheckSession{
+		token:  "scan-token",
+		report: audioCheckReport{total: 10, checked: 4, remaining: 3, deferred: 2, referenceQueue: 1},
+	}
+	text, markup := formatAudioCheckCard(session)
+	if !strings.Contains(text, "已检查 4/10 首") {
+		t.Fatalf("result card lost progress: %s", text)
+	}
+	buttons := map[string]string{}
+	for _, row := range markup.InlineKeyboard {
+		for _, button := range row {
+			buttons[button.Text] = button.Data
+		}
+	}
+	for _, label := range []string{"继续扫描", "深度扫描", "全库体检"} {
+		if buttons[label] == "" {
+			t.Errorf("result card is missing %q: %#v", label, markup.InlineKeyboard)
+		}
+	}
+	if !strings.HasSuffix(buttons["全库体检"], "full|scan-token") {
+		t.Errorf("full scan callback = %q", buttons["全库体检"])
+	}
+
+	session.full = true
+	text, markup = formatAudioCheckProgressCard(session)
+	if !strings.Contains(text, "包含快速初筛暂缓的文件") {
+		t.Fatalf("full scan mode is not explained: %s", text)
+	}
+	if len(markup.InlineKeyboard) != 1 || len(markup.InlineKeyboard[0]) != 1 {
+		t.Fatalf("progress card should have one stop control: %#v", markup.InlineKeyboard)
+	}
+	stop := markup.InlineKeyboard[0][0]
+	if stop.Text != "终止并查看结果" || !strings.HasSuffix(stop.Data, "stop|scan-token") {
+		t.Fatalf("unexpected stop control: %#v", stop)
+	}
+
+	session.running = false
+	_, markup = formatAudioCheckCard(session)
+	if got := markup.InlineKeyboard[len(markup.InlineKeyboard)-1][0].Text; got != "继续全库体检" {
+		t.Errorf("stopped full scan button = %q", got)
+	}
+}
+
+type audioCheckCallbackTestContext struct {
+	tb.Context
+	args    []string
+	sender  *tb.User
+	chat    *tb.Chat
+	message *tb.Message
+	answer  *tb.CallbackResponse
+}
+
+func (c *audioCheckCallbackTestContext) Args() []string       { return c.args }
+func (c *audioCheckCallbackTestContext) Sender() *tb.User     { return c.sender }
+func (c *audioCheckCallbackTestContext) Chat() *tb.Chat       { return c.chat }
+func (c *audioCheckCallbackTestContext) Message() *tb.Message { return c.message }
+func (c *audioCheckCallbackTestContext) Respond(response ...*tb.CallbackResponse) error {
+	if len(response) > 0 {
+		c.answer = response[0]
+	}
+	return nil
+}
+
+func TestAudioCheckStopCallbackCancelsCurrentRun(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	message := &tb.Message{ID: 42, Chat: &tb.Chat{ID: 7, Type: tb.ChatPrivate}}
+	app := &BotApp{
+		cfg: &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"7"}}},
+		audioCheckSessions: map[int64]audioCheckSession{7: {
+			token: "token", expires: time.Now().Add(time.Minute), owner: 7, message: message, running: true,
+		}},
+		audioCheckDone: make(chan struct{}), audioCheckCancel: cancel,
+	}
+	callback := &audioCheckCallbackTestContext{
+		args: []string{"stop", "token"}, sender: &tb.User{ID: 7}, chat: message.Chat,
+		message: message,
+	}
+	if err := app.HandleAudioCheckCallback(callback); err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("stop callback did not cancel run: %v", ctx.Err())
+	}
+	if callback.answer == nil || !strings.Contains(callback.answer.Text, "正在停止") {
+		t.Fatalf("stop callback response = %#v", callback.answer)
+	}
+}
+
+func TestCachedAudioCheckReportShowsCompletedFindingsWhenIndexStops(t *testing.T) {
+	store, err := audioquality.Open(filepath.Join(t.TempDir(), "audio-check.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	item := audioquality.CachedResult{
+		FileVersion: audioquality.FileVersion{Path: "Artist/Album/Song.mp3", Size: 123, Mod: time.Now().UnixNano()},
+		Result:      audioquality.Result{Title: "Song", Artist: "Artist", Album: "Album", Codec: "mp3", Bitrate: 96},
+	}
+	if err := store.Save(t.Context(), "library", item); err != nil {
+		t.Fatal(err)
+	}
+	report, err := cachedAudioCheckReport(t.Context(), store, "library", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.resumeAvailable || report.total != 1 || report.checked != 1 || len(report.findings) != 1 {
+		t.Fatalf("cached partial report = %#v", report)
+	}
+	if report.findings[0].file.Path != item.Path || report.findings[0].Bitrate != 96 {
+		t.Fatalf("cached finding was not restored: %#v", report.findings[0])
+	}
+}
+
 func TestAudioCheckWebDAVDefersHealthyFilesAndCanDecodeThem(t *testing.T) {
 	fixture := filepath.Join(t.TempDir(), "song.flac")
 	writeAudioCheckFixture(t, fixture, "-c:a", "flac")
@@ -224,11 +339,18 @@ func TestAudioCheckWebDAVDefersHealthyFilesAndCanDecodeThem(t *testing.T) {
 	if err != nil || downloads.Load() != 0 || fast.total != 1 || fast.deferred != 1 {
 		t.Fatalf("ordinary batch downloaded an indexed clean file: %#v, downloads=%d err=%v", fast, downloads.Load(), err)
 	}
-	deep, err := scanAudioCheckBatch(ctx, cfg, store, "webdav", 1, true)
+	fullState, err := newFullAudioCheckScanState(ctx, cfg, store, "webdav", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending := fullState.cachedReport(); pending.remaining != 1 || pending.deferred != 0 {
+		t.Fatalf("full scan should include quick-scan deferred files: %#v", pending)
+	}
+	deep, err := fullState.scanBatch(ctx, cfg, store, "webdav", true)
 	if err != nil || downloads.Load() != 1 || deep.checked != 1 || len(deep.findings) != 0 || deep.unreadable != 0 {
 		t.Fatalf("deep batch did not check the stored file: %#v, downloads=%d err=%v", deep, downloads.Load(), err)
 	}
-	if _, err := scanAudioCheckBatch(ctx, cfg, store, "webdav", 1, true); err != nil || downloads.Load() != 1 {
+	if _, err := fullState.scanBatch(ctx, cfg, store, "webdav", true); err != nil || downloads.Load() != 1 {
 		t.Fatalf("unchanged WebDAV file downloaded again: %d %v", downloads.Load(), err)
 	}
 	partial.Store(true)
