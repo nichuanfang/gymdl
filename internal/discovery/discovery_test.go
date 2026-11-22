@@ -403,7 +403,13 @@ func TestFreshFavoriteNoticeKeepsAShortList(t *testing.T) {
 func TestFreshFavoriteNoticeLinksAndEscapesTheTitle(t *testing.T) {
 	track := testTrack("1", "A & B <C>", "甲&乙")
 	text := formatFreshFavoriteNotices([]FreshFavorite{{Chat: 1, Platform: "netease", Track: track}})[1]
-	if !strings.Contains(text, `<a href="https://music.163.com/song?id=1">A &amp; B &lt;C&gt;</a>`) || !strings.Contains(text, "甲&amp;乙") || strings.Contains(text, "A & B") {
+	if !strings.Contains(text, `<a href="https://m.music.163.com/m/applink/?scheme=orpheus%3A%2F%2Fsong%2F1">A &amp; B &lt;C&gt;</a>`) || !strings.Contains(text, "甲&amp;乙") || strings.Contains(text, "A & B") {
+		t.Fatal(text)
+	}
+
+	track = Track{Platform: "qq", ID: "001kG0Ys4JRmMa", URL: "https://y.qq.com/n/ryqq/songDetail/001kG0Ys4JRmMa", Title: "QQ 歌曲", Artist: "阿肆"}
+	text = formatFreshFavoriteNotices([]FreshFavorite{{Chat: 1, Platform: "qq", Track: track}})[1]
+	if !strings.Contains(text, `<a href="https://music.qq.com/unilink/download.html?scheme=qqmusic%3A%2F%2F`) {
 		t.Fatal(text)
 	}
 }

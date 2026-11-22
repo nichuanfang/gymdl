@@ -25,6 +25,7 @@ func SetupWebRoutesWithTaskManager(rg *gin.RouterGroup, c *config.Config, tm *ta
 	// this callback; it must remain outside the WebUI's cookie-auth group.
 	rg.POST("/playlist-assignment/:token", web.HandlePlaylistAssignmentWebAppSelection)
 	rg.GET("/playlist-assignment/music-link", web.HandleQQMusicLink)
+	rg.GET("/discovery/music-preview", web.HandleQQMusicPreview)
 
 	group := rg.Group("/web")
 	authSecure := c.WebConfig != nil && c.WebConfig.Https

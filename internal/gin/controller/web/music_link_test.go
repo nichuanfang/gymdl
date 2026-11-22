@@ -65,3 +65,20 @@ func TestHandleQQMusicLinkRejectsInvalidMID(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleQQMusicLinkRejectsNonIOSPlatformOverride(t *testing.T) {
+	previousConfig := GetWebConfig()
+	SetWebConfig(&config.Config{PlaylistOrganizer: &config.PlaylistOrganizerConfig{WebAppURL: "https://webapp.example.com"}})
+	t.Cleanup(func() { SetWebConfig(previousConfig) })
+
+	router := gin.New()
+	router.GET("/api/playlist-assignment/music-link", HandleQQMusicLink)
+	for _, platform := range []string{"mac", "windows", "unknown"} {
+		request := httptest.NewRequest(http.MethodGet, "/api/playlist-assignment/music-link?mid=0039MnYb0qxYhV&platform="+platform, nil)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("platform %q status = %d, want %d", platform, response.Code, http.StatusBadRequest)
+		}
+	}
+}

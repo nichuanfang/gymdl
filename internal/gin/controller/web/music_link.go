@@ -2,13 +2,12 @@ package web
 
 import (
 	"bytes"
-	"encoding/json"
 	"html/template"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nichuanfang/gymdl/internal/qqmusic"
 )
 
 var musicLinkPage = template.Must(template.New("music-link").Parse(`<!doctype html>
@@ -69,27 +68,17 @@ func HandleQQMusicLink(c *gin.Context) {
 		return
 	}
 	mid := strings.TrimSpace(c.Query("mid"))
-	if !validQQSongMID(mid) {
+	if !qqmusic.ValidSongMID(mid) {
 		c.Status(http.StatusBadRequest)
 		return
 	}
 
-	payload, err := json.Marshal(struct {
-		Action string `json:"action"`
-		Song   []struct {
-			SongMID string `json:"songmid"`
-		} `json:"song"`
-	}{
-		Action: "play",
-		Song: []struct {
-			SongMID string `json:"songmid"`
-		}{{SongMID: mid}},
-	})
-	if err != nil {
-		c.Status(http.StatusInternalServerError)
+	platform := strings.ToLower(strings.TrimSpace(c.Query("platform")))
+	if platform != "" && platform != "ios" {
+		c.Status(http.StatusBadRequest)
 		return
 	}
-	appURL := "qqmusic://qq.com/media/playSonglist?p=" + url.QueryEscape(string(payload))
+	appURL, _ := qqmusic.SongAppLink(mid)
 	webURL := "https://y.qq.com/n/ryqq/songDetail/" + mid
 	var body bytes.Buffer
 	if err := musicLinkPage.Execute(&body, musicLinkPageData{AppURL: template.URL(appURL), WebURL: webURL}); err != nil {
@@ -97,16 +86,4 @@ func HandleQQMusicLink(c *gin.Context) {
 		return
 	}
 	c.Data(http.StatusOK, "text/html; charset=utf-8", body.Bytes())
-}
-
-func validQQSongMID(value string) bool {
-	if value == "" || len(value) > 64 {
-		return false
-	}
-	for _, r := range value {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
-			return false
-		}
-	}
-	return true
 }

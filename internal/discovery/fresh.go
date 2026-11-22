@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/nichuanfang/gymdl/internal/musiclink"
 	"github.com/nichuanfang/gymdl/utils"
 )
 
@@ -120,7 +121,7 @@ func freshListenTitle(title, rawURL string) string {
 	if shown == "" {
 		shown = "未命名"
 	}
-	rawURL = strings.TrimSpace(rawURL)
+	rawURL = strings.TrimSpace(musiclink.DirectAppLink(rawURL))
 	if !strings.HasPrefix(rawURL, "https://") && !strings.HasPrefix(rawURL, "http://") {
 		return shown
 	}

@@ -91,11 +91,11 @@ func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string
 		}
 		if args[0] == "back" {
 			text, markup := app.renderDiscoveryCard(card, 0)
-			return editDiscoveryCard(c, card, 0, text, markup, true)
+			return app.editDiscoveryCard(c, card, 0, text, markup, true)
 		}
 		text, _ := app.renderDiscoveryCard(card, 0)
 		text += "\n\n<b>更多设置</b>\n选择推荐场景或来源。"
-		return editDiscoveryCard(c, card, 0, text, tasteSettingsMarkup(token), true)
+		return app.editDiscoveryCard(c, card, 0, text, tasteSettingsMarkup(token), true)
 	}
 	app.rediscoverMu.Unlock()
 	switch {
@@ -156,7 +156,7 @@ func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.Tast
 			return
 		}
 		text, markup := app.renderDiscoveryCard(card, 0)
-		if previewURL := discoveryCardPreviewURL(card, 0); previewURL != "" {
+		if previewURL := app.discoveryCardPreviewURL(card, 0); previewURL != "" {
 			err = editDiscoveryText(api, message, text, markup, true, previewURL)
 		} else {
 			_, err = api.Edit(message, text, tb.ModeHTML, markup)

@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/internal/gin/response"
+	"github.com/nichuanfang/gymdl/internal/qqmusic"
 	"github.com/nichuanfang/gymdl/utils"
 	"golang.org/x/sync/singleflight"
 )
@@ -600,19 +601,7 @@ func searchQQWithCredentialRefresh(ctx context.Context, keyword string, limit, o
 }
 
 func qqAlbumCoverURL(pmid, mid string) string {
-	coverID := strings.TrimSpace(pmid)
-	if coverID == "" {
-		coverID = strings.TrimSpace(mid)
-	}
-	if coverID == "" {
-		return ""
-	}
-	for _, r := range coverID {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
-			return ""
-		}
-	}
-	return "https://y.gtimg.cn/music/photo_new/T002R300x300M000" + coverID + ".jpg"
+	return qqmusic.AlbumCoverURL(pmid, mid)
 }
 
 type qqSearchHTTPStatusError struct {

@@ -267,7 +267,7 @@ func TestRediscoverConfirmationButtonsThroughTelebot(t *testing.T) {
 		}
 		app.refreshRediscoverMessage(card.Token, card.User, card.Chat, message)
 		pending := nextEdit("版本 &lt;待核对&gt;")
-		if accept && !strings.Contains(pending.Text, job.Track.URL) {
+		if accept && !strings.Contains(pending.Text, discoveryListenURL(job.Track.URL)) {
 			t.Fatalf("confirmation card did not show the actual alternate: %s", pending.Text)
 		}
 		yes, no := findButton(pending, "确认入库"), findButton(pending, "不再处理")
@@ -362,7 +362,7 @@ func TestDiscoveryPendingCardShowsOneSong(t *testing.T) {
 		Error: "对不上唯一版本 <原版>",
 	}
 	text, markup := discoveryPendingCard(job, 0, 3)
-	for _, want := range []string{"⚠️ <b>待确认</b> · 1/3", "歌曲: <a href=\"https://music.163.com/song?id=1\">至少还有你</a>", "艺人: 林忆莲", "原因: 对不上唯一版本 &lt;原版&gt;"} {
+	for _, want := range []string{"⚠️ <b>待确认</b> · 1/3", fmt.Sprintf("歌曲: <a href=\"%s\">至少还有你</a>", discoveryListenURL(job.Track.URL)), "艺人: 林忆莲", "原因: 对不上唯一版本 &lt;原版&gt;"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q: %s", want, text)
 		}
@@ -397,7 +397,7 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	if !strings.Contains(text, "🎵 <b>遗珠</b>\n──────────────────\n") {
 		t.Fatalf("heading lost the shared card frame: %s", text)
 	}
-	if !strings.Contains(text, `歌曲: <a href="https://music.163.com/song?id=1">第一首</a>`) || !strings.Contains(text, "艺人: 甲") || !strings.Contains(text, "专辑: 专辑甲") || strings.Contains(text, "听过") || strings.Contains(text, "收藏过") {
+	if !strings.Contains(text, fmt.Sprintf(`歌曲: <a href="%s">第一首</a>`, discoveryListenURL(tracks[0].URL))) || !strings.Contains(text, "艺人: 甲") || !strings.Contains(text, "专辑: 专辑甲") || strings.Contains(text, "听过") || strings.Contains(text, "收藏过") {
 		t.Fatalf("card should show only title, artist and album: %s", text)
 	}
 	labels := buttonTexts(markup)
@@ -470,7 +470,7 @@ func TestRediscoverCardKeepsTheOriginalFrameAndAddsCompactFacts(t *testing.T) {
 		LastPlayed: time.Now().AddDate(0, 0, -40), CardAction: discovery.Running,
 	}
 	text, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: []discovery.Track{track}}, 0)
-	want := "🎵 <b>遗珠 · 网易云</b>\n──────────────────\n歌曲: <a href=\"https://music.163.com/song?id=1\">东方之珠 (Live)</a>\n艺人: 罗大佑\n专辑: 北京-香港演唱会\n时长: 3:21\n次数: 12次\n\n⏳ 正在整理入库..."
+	want := "🎵 <b>遗珠 · 网易云</b>\n──────────────────\n歌曲: <a href=\"" + discoveryListenURL(track.URL) + "\">东方之珠 (Live)</a>\n艺人: 罗大佑\n专辑: 北京-香港演唱会\n时长: 3:21\n次数: 12次\n\n⏳ 正在整理入库..."
 	if text != want {
 		t.Fatalf("card = %q, want %q", text, want)
 	}
@@ -1254,7 +1254,7 @@ func TestRediscoverSongNameOpensTheListenLink(t *testing.T) {
 	}
 	for index, track := range tracks[:2] {
 		text, markup := discoveryRecommendationCard(discovery.Card{Token: "test-card", Tracks: tracks}, index)
-		want := fmt.Sprintf(`歌曲: <a href="%s">%s</a>`, track.URL, track.Title)
+		want := fmt.Sprintf(`歌曲: <a href="%s">%s</a>`, discoveryListenURL(track.URL), track.Title)
 		if !strings.Contains(text, want) || strings.Contains(text, "试听·") {
 			t.Fatalf("title is not the listen link: %s", text)
 		}

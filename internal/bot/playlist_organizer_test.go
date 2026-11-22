@@ -829,7 +829,7 @@ func TestPlaylistAssignmentTitleOpensLibrarySourceLink(t *testing.T) {
 		url  string
 		want string
 	}{
-		{name: "netease", url: "https://music.163.com/song?id=12345", want: `<b><a href="https://music.163.com/song?id=12345">Crossover</a></b>`},
+		{name: "netease", url: "https://music.163.com/song?id=12345", want: `<b><a href="https://m.music.163.com/m/applink/?scheme=orpheus%3A%2F%2Fsong%2F12345">Crossover</a></b>`},
 		{name: "bracketed", url: "来源：<https://example.test/song?a=1&b=2>", want: `<b><a href="https://example.test/song?a=1&amp;b=2">Crossover</a></b>`},
 		{name: "first-url", url: "downloaded from https://example.test/one then https://example.test/two", want: `<b><a href="https://example.test/one">Crossover</a></b>`},
 	}

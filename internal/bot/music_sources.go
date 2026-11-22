@@ -64,7 +64,7 @@ func (app *BotApp) presentMusicSourceChoices(ctx context.Context, c tb.Context, 
 			title: item.Name, choice: item.URL, confirmSource: confirm, expiresAt: time.Now().Add(musicActionTTL),
 		})
 		rows = append(rows, markup.Row(
-			markup.URL(fmt.Sprintf("打开 %d", i+1), item.URL),
+			markup.URL(fmt.Sprintf("打开 %d", i+1), discoveryListenURL(item.URL)),
 			markup.Data(fmt.Sprintf("下载 %d", i+1), musicActionCallbackUnique, "download", token),
 		))
 	}

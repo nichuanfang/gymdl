@@ -163,7 +163,7 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 	bot.ProcessUpdate(tb.Update{Message: &tb.Message{ID: 7, Chat: chat, Sender: &tb.User{ID: 1}, Text: "/recommend 粤语爵士"}})
 	next("sendMessage", "text", "找适合你的歌")
 	first := next("editMessageText", "text", "个性化推荐 · 网易云")
-	if !strings.Contains(first["text"], "粤语 · 爵士") || !strings.Contains(first["text"], `href="https://music.163.com/song?id=1"`) {
+	if !strings.Contains(first["text"], "粤语 · 爵士") || !strings.Contains(first["text"], `href="`+discoveryListenURL("https://music.163.com/song?id=1")+`"`) {
 		t.Fatalf("first card lost typed filter or listen link: %v", first)
 	}
 	waitReady()

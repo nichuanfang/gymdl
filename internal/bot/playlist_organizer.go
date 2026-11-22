@@ -1903,7 +1903,7 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 
 func playlistAssignmentTitle(song unplaylistSong) string {
 	title := utils.EscapeHTML(displaySongValue(song.Title))
-	sourceURL := playlistAssignmentSourceURL(song.Comment)
+	sourceURL := discoveryListenURL(playlistAssignmentSourceURL(song.Comment))
 	if sourceURL == "" {
 		return title
 	}
