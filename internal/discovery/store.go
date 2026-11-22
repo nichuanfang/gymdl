@@ -319,6 +319,10 @@ const (
 // Exclusions keeps the reason a song is hidden. The old boolean-only view made
 // a short batch look like a failed search instead of "already seen".
 func (s *Store) Exclusions(ctx context.Context, user int64) (map[string]string, error) {
+	return s.exclusions(ctx, user, false)
+}
+
+func (s *Store) exclusions(ctx context.Context, user int64, taste bool) (map[string]string, error) {
 	out := map[string]string{}
 	rows, err := s.db.QueryContext(ctx, `SELECT identity,dismissed,shown FROM discovery_preferences WHERE user_id=?`, user)
 	if err != nil {
@@ -349,7 +353,8 @@ func (s *Store) Exclusions(ctx context.Context, user int64) (map[string]string, 
 	// but they are not permanent rediscover exclusions. NAS outages can leave a
 	// song pending for days, and hiding it made the next rediscover batch look
 	// empty even though it had never reached the library.
-	jobs, err := s.db.QueryContext(ctx, `SELECT identity,state FROM discovery_jobs WHERE user_id=? AND state IN ('queued','running','completed','owned','ignored')`, user)
+	jobs, err := s.db.QueryContext(ctx, `SELECT identity,state FROM discovery_jobs WHERE user_id=? AND
+		(state IN ('queued','running','completed','owned','ignored') OR (? AND state IN ('pending_upload','needs_confirmation')))`, user, taste)
 	if err != nil {
 		return nil, err
 	}

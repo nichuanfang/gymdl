@@ -1,0 +1,207 @@
+package bot
+
+import (
+	"context"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/internal/discovery"
+	"github.com/nichuanfang/gymdl/utils"
+	tb "gopkg.in/telebot.v4"
+)
+
+func (app *BotApp) RecommendCommand(c tb.Context) error {
+	if err := app.discoveryAvailable(c); err != nil {
+		return c.Send(err.Error())
+	}
+	request, err := discovery.ParseTasteRequest(c.Message().Payload)
+	if err != nil {
+		return c.Send(err.Error())
+	}
+	return app.startTasteRecommendation(c, request, nil)
+}
+
+// Last.fm is a single listening history. Other authorized users still get
+// recommendations from their own synchronized favorites.
+func tasteHistoryOwner(cfg *config.TelegramConfig) int64 {
+	if cfg == nil {
+		return 0
+	}
+	configured, _ := strconv.ParseInt(strings.TrimSpace(cfg.ChatID), 10, 64)
+	ids := map[int64]struct{}{}
+	for _, raw := range cfg.AllowedUsers {
+		if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
+			if id == configured {
+				return id
+			}
+			ids[id] = struct{}{}
+		}
+	}
+	if len(ids) == 1 {
+		for id := range ids {
+			return id
+		}
+	}
+	return 0
+}
+
+func appendTasteActions(markup *tb.ReplyMarkup, card discovery.Card) {
+	button := func(label string, args ...string) tb.Btn {
+		return markup.Data(label, discoveryCallbackUnique, append([]string{"taste", card.Token}, args...)...)
+	}
+	appendDiscoveryRows(markup,
+		markup.Row(button("再推荐一首", "next"), button("场景", "scenes")),
+		markup.Row(button("网易云", "platform", "netease"), button("QQ 音乐", "platform", "qq"), button("双平台", "platform", discovery.TasteBoth)),
+	)
+}
+
+func tasteSceneMarkup(token string) *tb.ReplyMarkup {
+	markup := &tb.ReplyMarkup{}
+	button := func(label, scene string) tb.Btn {
+		return markup.Data(label, discoveryCallbackUnique, "taste", token, "scene", scene)
+	}
+	appendDiscoveryRows(markup,
+		markup.Row(button("通勤", "commute"), button("放松", "relax"), button("运动", "workout")),
+		markup.Row(button("睡前", "sleep"), button("按口味", "taste"), markup.Data("返回", discoveryCallbackUnique, "taste", token, "back")),
+	)
+	return markup
+}
+
+func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string) error {
+	if len(args) == 0 {
+		return c.Respond(&tb.CallbackResponse{Text: "按钮参数无效", ShowAlert: true})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	app.rediscoverMu.Lock()
+	card, err := app.discovery.Store.Card(ctx, token, c.Sender().ID, c.Chat().ID)
+	if err != nil || card.Kind != discovery.TasteCardKind || card.Taste == nil {
+		app.rediscoverMu.Unlock()
+		return c.Respond(&tb.CallbackResponse{Text: "这张卡片已过期，请重新发送 /recommend", ShowAlert: true})
+	}
+	request := card.Taste.Request
+	if args[0] == "scenes" || args[0] == "back" {
+		defer app.rediscoverMu.Unlock()
+		if err := c.Respond(); err != nil {
+			return err
+		}
+		if args[0] == "back" {
+			text, markup := discoveryRecommendationCard(card, 0)
+			return editDiscoveryMessage(c, text, markup, true)
+		}
+		return c.Edit(tasteSceneMarkup(token))
+	}
+	app.rediscoverMu.Unlock()
+	switch {
+	case args[0] == "next" && len(args) == 1:
+	case args[0] == "platform" && len(args) == 2 && discovery.ValidTastePlatform(args[1]):
+		request.Platform = args[1]
+	case args[0] == "scene" && len(args) == 2:
+		filter, ok := request.Filter.WithScene(args[1])
+		if !ok {
+			return c.Respond(&tb.CallbackResponse{Text: "场景无效", ShowAlert: true})
+		}
+		request.Filter = filter
+	default:
+		return c.Respond(&tb.CallbackResponse{Text: "按钮参数无效", ShowAlert: true})
+	}
+	return app.startTasteRecommendation(c, request, &card)
+}
+
+func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.TasteRequest, previous *discovery.Card) error {
+	if !app.discoveryCommandMu.TryLock() {
+		if c.Callback() != nil {
+			return c.Respond(&tb.CallbackResponse{Text: "上一首还在找，稍等一下"})
+		}
+		return c.Send("上一首还在找，稍等一下。")
+	}
+	message, err := app.tasteProgressMessage(c, previous)
+	if err != nil || message == nil {
+		app.discoveryCommandMu.Unlock()
+		return err
+	}
+	api, user, chat := c.Bot(), c.Sender().ID, c.Chat().ID
+	app.goDiscovery(func() {
+		defer app.discoveryCommandMu.Unlock()
+		query, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+		result, err := app.discovery.RecommendTaste(query, user, request)
+		cancel()
+		card := discovery.Card{User: user, Chat: chat, Kind: discovery.TasteCardKind, Taste: &discovery.TasteCard{Request: request}}
+		if err != nil {
+			card.Taste.Notice = err.Error()
+		} else if result.Track != nil {
+			card.Tracks = []discovery.Track{*result.Track}
+			card.Taste.Reason, card.Taste.Notice = result.Reason, result.Notice
+			card.Taste.Request.ExploreFirst = !result.Explore
+		} else {
+			card.Taste.Notice = "这次没找到合适的新歌。可以再试一次或换个平台。"
+			if filter := request.Filter.Label(); filter != "" {
+				card.Taste.Notice = "这次没找到标签能支持「" + filter + "」的新歌。可换个场景或回到「按口味」。"
+			}
+			if result.Notice != "" {
+				card.Taste.Notice += "\n" + result.Notice
+			}
+		}
+		saveCtx, saveCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		card, err = app.discovery.Store.SaveCard(saveCtx, card)
+		saveCancel()
+		if err != nil {
+			_, _ = api.Edit(message, "推荐结果暂时无法保存，请重新发送 /recommend。", &tb.ReplyMarkup{})
+			return
+		}
+		text, markup := discoveryRecommendationCard(card, 0)
+		if _, err := api.Edit(message, text, tb.ModeHTML, markup); err != nil {
+			utils.WarnWithFormat("[Discovery] 个性化推荐卡片发送失败")
+			return
+		}
+		if result.Track != nil {
+			prefCtx, prefCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer prefCancel()
+			if err := app.discovery.Store.Preference(prefCtx, user, *result.Track, false); err != nil {
+				utils.WarnWithFormat("[Discovery] 个性化推荐展示记录保存失败")
+			}
+		}
+	})
+	return nil
+}
+
+func (app *BotApp) tasteProgressMessage(c tb.Context, previous *discovery.Card) (*tb.Message, error) {
+	const text = "⌛ 正在从音乐平台找适合你的歌…"
+	if previous == nil {
+		return c.Bot().Send(c.Chat(), text)
+	}
+	if err := c.Respond(&tb.CallbackResponse{Text: "正在找歌…"}); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	app.rediscoverMu.Lock()
+	defer app.rediscoverMu.Unlock()
+	card, err := app.discovery.Store.Card(ctx, previous.Token, previous.User, previous.Chat)
+	if err != nil || card.Kind != discovery.TasteCardKind {
+		return nil, c.Send("这张卡片已过期，请重新发送 /recommend。")
+	}
+	for _, track := range card.Tracks {
+		if track.IngestID != "" {
+			// Its download watcher and any confirmation buttons stay on the old message.
+			if _, err := c.Bot().Edit(c.Message(), tasteMarkupForCard(card)); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+				utils.WarnWithFormat("[Discovery] 个性化推荐原卡片按钮恢复失败")
+			}
+			return c.Bot().Send(c.Chat(), text)
+		}
+	}
+	if err := editDiscoveryMessage(c, text, nil, false); err != nil {
+		return nil, err
+	}
+	if _, err := app.discovery.Store.TakeCard(ctx, card.Token, card.User, card.Chat); err != nil {
+		return nil, c.Edit("上一张卡片已过期，请重新发送 /recommend。", &tb.ReplyMarkup{})
+	}
+	return c.Message(), nil
+}
+
+func tasteMarkupForCard(card discovery.Card) *tb.ReplyMarkup {
+	_, markup := discoveryRecommendationCard(card, 0)
+	return markup
+}

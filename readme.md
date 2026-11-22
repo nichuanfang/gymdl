@@ -133,9 +133,11 @@ cd webui && npm run dev
 
 ### 找回遗珠与 CarPlay 收藏入库
 
+- **`/recommend` 个性化推荐**：每次从网易云和 QQ 音乐推荐一首，结合近期收听、收藏、曲库标签和 Last.fm 相似艺人寻找新歌。可点「场景」选通勤、放松、运动或睡前，也支持 `/recommend 粤语爵士`、`/recommend qq 放松 纯音乐`。歌名可打开平台试听，点「入库」才下载。需要确认时直接在原卡片处理。推荐与遗珠共用「不再推荐」和最近 30 天的展示去重记录。
+
 - **`/rediscover`**：先选网易云、QQ 音乐或 YouTube，然后从曲库缺少的听过或收藏歌曲里挑一首展示，不再选择 3/6/9 首。候选来自全部可读取的 Last.fm 历史和已绑定收藏，优先收藏、反复播放但很久没听的歌，同艺人最多两首；卡片显示收听次数及最后收听日期。歌名可直接打开平台试听，再决定入库或设为不再推荐；恢复推荐只清除该用户的遗珠偏好，不会删除已提交的下载任务。Web 预览不会写入“已展示”，Telegram 成功展示后会避开最近 30 天看过的歌曲；待上传或失败任务仍可在遗珠和收藏队列中查看，不会永久隐藏。下载等操作按钮有效期 30 分钟。
 - **`/favorites`**：在授权私聊中绑定网易云、QQ 和 YouTube 收藏。先用 CookieCloud 登录网易云／YouTube，QQ 使用 `/qq_login`；选择来源后先核对账号和完整收藏数量，确认才建立基线。也可使用 `/favorites bind netease`、`/favorites bind qq`、`/favorites bind youtube`。
-- **首次接入不会批量下载已有收藏**。历史收藏通过“预览历史收藏”进入推荐后选择下载；设置 `favorites.enable: true` 并重启后，后台默认每 10 分钟检查新喜欢。手机菜单顺序为 `/ai` → `/mode` → `/clear` → `/assign_playlist` → `/playlist_desc` → `/ai_playlist` → `/rediscover` → `/favorites` → `/empty_trash` → `/status` → `/help`。`/qq_login` 仍可在私聊手动发送，不出现在菜单里。
+- **首次接入不会批量下载已有收藏**。历史收藏通过“预览历史收藏”进入推荐后选择下载；设置 `favorites.enable: true` 并重启后，后台默认每 10 分钟检查新喜欢。手机菜单顺序为 `/ai` → `/mode` → `/clear` → `/assign_playlist` → `/playlist_desc` → `/ai_playlist` → `/rediscover` → `/recommend` → `/favorites` → `/audio_check` → `/empty_trash` → `/status` → `/help`。`/qq_login` 仍可在私聊手动发送，不出现在菜单里。
 - CarPlay 中在音乐 App 点“喜欢／收藏”即可触发后续同步，无需分享到 TG；车辆有收藏按钮不代表支持 Siri 语音收藏。YouTube 与 YouTube Music 合并相同视频 ID；普通视频点赞会过滤非音乐内容，身份不明确的歌曲留待确认。
 - 优先原平台下载；跨平台仅接受明确的同歌手、同版本候选。现场、翻唱、混音不自动互换。不确定项可在 `/favorites` 核对原链接后确认或跳过。取消喜欢不删除曲库文件。
 - 某一轮读不到完整收藏时保留原基线，只把原因写入日志，不暂停来源，也不推送告警；下一轮到点会再试。账号变化不会改写基线，需要重新预览绑定。手动暂停的来源保持停止，其未开始的自动任务也保持暂停，不会被自动打开。旧版自动暂停会在下一轮恢复；历史快照仍保留。收藏卡片分开显示“同步异常”和“入库异常”。

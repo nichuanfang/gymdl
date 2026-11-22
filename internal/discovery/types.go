@@ -26,8 +26,9 @@ type Track struct {
 	Favorite   bool      `json:"favorite,omitempty"`
 	NonMusic   bool      `json:"non_music,omitempty"`
 	// Verified means metadata identifies one music recording, not a video title/uploader.
-	Verified bool `json:"verified"`
-	Approved bool `json:"approved,omitempty"`
+	Verified         bool `json:"verified"`
+	Approved         bool `json:"approved,omitempty"`
+	TasteRecommended bool `json:"taste_recommended,omitempty"`
 	// CardAction is only for a saved recommendation card.
 	// Empty means undecided. "dismissed" is permanent. Other values mirror job
 	// states such as queued, running, and completed. Clear it before enqueueing.
@@ -138,7 +139,20 @@ type Card struct {
 	// Requested is the 3, 6, or 9 the user asked for.
 	Requested int `json:"requested,omitempty"`
 	// Page is the group currently shown on the Telegram message.
-	Page int `json:"page,omitempty"`
+	Page  int        `json:"page,omitempty"`
+	Taste *TasteCard `json:"taste,omitempty"`
+}
+
+const TasteCardKind = "taste_recommend"
+
+type TasteCard struct {
+	Request TasteRequest `json:"request"`
+	Reason  string       `json:"reason,omitempty"`
+	Notice  string       `json:"notice,omitempty"`
+}
+
+func (c Card) IsSongCard() bool {
+	return c.Kind == "recommend" || c.Kind == TasteCardKind
 }
 
 const (

@@ -13,6 +13,7 @@ import (
 	"github.com/nichuanfang/gymdl/internal/aichat"
 	"github.com/nichuanfang/gymdl/internal/discovery"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
+	"github.com/nichuanfang/gymdl/internal/musicrag"
 	"github.com/nichuanfang/gymdl/internal/storage"
 	"github.com/nichuanfang/gymdl/processor/music"
 	"github.com/nichuanfang/gymdl/utils"
@@ -34,7 +35,16 @@ func (app *BotApp) initDiscovery() {
 	if settings == nil {
 		settings = &config.FavoritesConfig{PollIntervalMinutes: 10, SummaryIntervalMinutes: 30}
 	}
+	taste := discovery.NewTasteSources(app.cfg, func(ctx context.Context) ([]musicrag.Song, error) {
+		index, err := openMusicRAG()
+		if err != nil {
+			return nil, err
+		}
+		return index.Ready(ctx)
+	})
+	taste.HistoryOwner = tasteHistoryOwner(app.cfg.Telegram)
 	app.discovery = &discovery.Service{Store: store, Provider: &discovery.Providers{Config: app.cfg}, Library: &discovery.NavidromeLibrary{Config: app.cfg.PlaylistOrganizer}, Enabled: settings.Enable, PollInterval: time.Duration(settings.PollIntervalMinutes) * time.Minute, SummaryInterval: time.Duration(settings.SummaryIntervalMinutes) * time.Minute,
+		Taste: taste,
 		History: func(ctx context.Context) ([]discovery.Track, error) {
 			if app.cfg.AI == nil {
 				return nil, fmt.Errorf("尚未配置收听历史")
@@ -74,7 +84,11 @@ func (app *BotApp) sendDiscoveryIngested(job discovery.Job) error {
 		MusicSize: job.File.Size, Bitrate: job.File.Bitrate,
 	}
 	token, markup := app.musicActionMarkup(song, job.Track.URL)
-	text := fmt.Sprintf("🎉 <b>遗珠入库成功！</b>\n\n🎵 <b>%s</b>\n🎤 %s\n💿 %s\n🎧 %s",
+	heading := "遗珠入库成功！"
+	if job.Track.TasteRecommended {
+		heading = "推荐歌曲入库成功！"
+	}
+	text := fmt.Sprintf("🎉 <b>%s</b>\n\n🎵 <b>%s</b>\n🎤 %s\n💿 %s\n🎧 %s", heading,
 		musicSourceLabel(song.SongName), musicSourceLabel(song.SongArtists), musicSourceLabel(song.SongAlbum),
 		utils.EscapeHTML(strings.ToUpper(song.FileExt)))
 	if song.Bitrate != "" && song.Bitrate != "0" {
@@ -231,6 +245,10 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	}
 	markup := &tb.ReplyMarkup{}
 	if len(card.Tracks) == 0 {
+		if card.Taste != nil {
+			appendTasteActions(markup, card)
+			return "🎵 <b>个性化推荐</b>\n\n" + utils.EscapeHTML(card.Taste.Notice), markup
+		}
 		text := rediscoverHeading(nil)
 		if line := rediscoverShortfallLine(card); line != "" {
 			text += "\n" + line
@@ -239,7 +257,11 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	}
 	track := card.Tracks[page]
 	var text strings.Builder
-	fmt.Fprintf(&text, "🎵 <b>%s</b>\n", utils.EscapeHTML(rediscoverHeading(card.Tracks)))
+	heading := rediscoverHeading(card.Tracks)
+	if card.Taste != nil {
+		heading = "个性化推荐 · " + aichat.PlatformLabel(track.Platform)
+	}
+	fmt.Fprintf(&text, "🎵 <b>%s</b>\n", utils.EscapeHTML(heading))
 	text.WriteString("──────────────────\n")
 	if len(card.Tracks) > 1 {
 		fmt.Fprintf(&text, "本批 %d 首 · 第 %d 首\n", len(card.Tracks), page+1)
@@ -256,6 +278,14 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	}
 	if track.Plays > 0 {
 		fmt.Fprintf(&text, "次数: %d次\n", track.Plays)
+	}
+	if card.Taste != nil {
+		if reason := card.Taste.Reason; reason != "" {
+			fmt.Fprintf(&text, "\n%s\n", utils.EscapeHTML(utils.TruncateString(reason, 100)))
+		}
+		if notice := card.Taste.Notice; notice != "" {
+			fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(notice))
+		}
 	}
 	if status := rediscoverDecision(track); status != "" {
 		text.WriteByte('\n')
@@ -288,6 +318,10 @@ func discoverySongButtons(markup *tb.ReplyMarkup, card discovery.Card, page int)
 		appendDiscoveryRows(markup, markup.Row(
 			markup.Data("恢复推荐", discoveryCallbackUnique, "restore", card.Token, index),
 		))
+	}
+	if card.Taste != nil {
+		appendTasteActions(markup, card)
+		return
 	}
 	rediscoverActionRow := tb.Row{}
 	if platform := rediscoverCardPlatform(card.Tracks); validRediscoverPlatform(platform) {
@@ -1026,6 +1060,8 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		callbackNotice = "正在打开失败记录…"
 	}
 	switch action {
+	case "taste":
+		return app.handleTasteCallback(c, key, args[2:])
 	case "card_yes", "card_no":
 		if len(args) != 3 {
 			return c.Respond(&tb.CallbackResponse{Text: "按钮参数无效", ShowAlert: true})
@@ -1234,7 +1270,7 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		logFavoriteBind(card.Snapshot.Platform, len(card.Snapshot.Tracks), nil)
 		return app.presentFavorites(c, "✅ 收藏已接上。原来这批先不下载，之后新增的再处理。")
 	}
-	if card.Kind != "recommend" {
+	if !card.IsSongCard() {
 		return c.Respond(&tb.CallbackResponse{Text: "这个按钮失效了，重新发 /rediscover 吧", ShowAlert: true})
 	}
 	if action == "next" {
@@ -1407,6 +1443,7 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			}
 		} else {
 			var id string
+			track.TasteRecommended = card.Kind == discovery.TasteCardKind
 			id, err = app.discovery.Store.Enqueue(context.Background(), card.User, card.Chat, track)
 			if err == nil {
 				queued++
@@ -1457,7 +1494,7 @@ func (app *BotApp) resolveRediscoverJob(c tb.Context, token string, index int, a
 	app.rediscoverMu.Lock()
 	defer app.rediscoverMu.Unlock()
 	card, err := store.Card(ctx, token, c.Sender().ID, c.Chat().ID)
-	if err != nil || card.Kind != "recommend" || index >= len(card.Tracks) {
+	if err != nil || !card.IsSongCard() || index >= len(card.Tracks) {
 		return c.Respond(&tb.CallbackResponse{Text: "遗珠卡片已过期或不可用", ShowAlert: true})
 	}
 	track := &card.Tracks[index]

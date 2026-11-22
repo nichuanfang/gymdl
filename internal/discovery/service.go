@@ -28,6 +28,7 @@ type Service struct {
 	History  func(context.Context) ([]Track, error)
 	Download func(context.Context, Track) (DownloadResult, error)
 	Pending  func(context.Context, Track) (bool, error)
+	Taste    *TasteSources
 	// Notify returns an error on delivery failure so digests remain unacknowledged.
 	// Sync failures are logged and are not sent through Notify.
 	Notify               func(int64, string) error
@@ -887,7 +888,9 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 			resultErr = s.Store.Finish(context.Background(), j, Failed, "下载处理异常，请检查处理器日志后重试", "", 0)
 		}
 	}()
+	tasteRecommended := j.Track.TasteRecommended
 	finish := func(state, message, result string, next int64) error {
+		j.Track.TasteRecommended = tasteRecommended
 		err := s.Store.Finish(ctx, j, state, message, result, next)
 		logDiscoveryJob(j, state, message, err)
 		return err
@@ -953,7 +956,7 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 		if errors.Is(err, errMetadataAmbiguous) {
 			return finish(NeedsConfirmation, err.Error(), "", 0)
 		}
-		alternate, e := s.Provider.Resolve(ctx, t, t.Platform)
+		alternate, e := s.resolveIngestAlternate(ctx, t)
 		if e != nil {
 			if errors.Is(e, ErrAmbiguousRecording) {
 				return finish(NeedsConfirmation, "原平台不可用，其他平台版本存疑；可确认重试原链接或跳过", "", 0)
@@ -1002,6 +1005,17 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 		return s.notifyIngestedJob(ctx, stored)
 	}
 	return nil
+}
+
+func (s *Service) resolveIngestAlternate(ctx context.Context, t Track) (Track, error) {
+	if !t.TasteRecommended {
+		return s.Provider.Resolve(ctx, t, t.Platform)
+	}
+	platform := "qq"
+	if t.Platform == "qq" {
+		platform = "netease"
+	}
+	return s.Provider.ResolveOn(ctx, t, platform)
 }
 
 func audioDuplicateOutcome(err error) (state, reason string) {

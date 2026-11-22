@@ -63,6 +63,7 @@ func helpText() string {
 /playlist_desc 同步歌单并维护整理说明
 /ai_playlist 预览后创建或更新 AI 歌单
 /rediscover 从历史和收藏找曲库缺少的歌曲
+/recommend 个性化推荐，可加曲风或场景，如 /recommend 粤语爵士
 /favorites 管理账号、同步收藏并查看入库队列
 /audio_check 检查低码率、损坏和疑似缺尾的歌曲
 /empty_trash 预览后清空回收站
@@ -332,6 +333,7 @@ func botCommands() []tb.Command {
 		{Text: "playlist_desc", Description: "歌单描述"},
 		{Text: "ai_playlist", Description: "生成歌单"},
 		{Text: "rediscover", Description: "找回遗珠"},
+		{Text: "recommend", Description: "个性化推荐"},
 		{Text: "favorites", Description: "收藏同步"},
 		{Text: "audio_check", Description: "曲库体检"},
 		{Text: "empty_trash", Description: "清空回收站"},

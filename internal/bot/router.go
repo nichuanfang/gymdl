@@ -29,6 +29,7 @@ func (app *BotApp) registerHandlers() {
 	app.bot.Handle("/ai_playlist", app.AIPlaylistCommand)
 
 	app.bot.Handle("/rediscover", app.RediscoverCommand)
+	app.bot.Handle("/recommend", app.RecommendCommand)
 	app.bot.Handle("/favorites", app.FavoritesCommand)
 	app.bot.Handle("/audio_check", app.AudioCheckCommand)
 	app.bot.Handle(&discoveryEndpoint, app.HandleDiscoveryCallback)
