@@ -27,15 +27,16 @@ import (
 
 // SearchResultItem 统一的搜索结果条目
 type SearchResultItem struct {
-	Platform    string `json:"platform"`     // netease / qq / youtube / bilibili
-	SongID      string `json:"song_id"`      // 平台内部数字 ID 或视频 ID
-	SongMID     string `json:"song_mid"`     // QQ 专有 mid
-	Name        string `json:"name"`         // 歌曲或视频标题
-	Artists     string `json:"artists"`      // 歌手 / UP 主
-	Album       string `json:"album"`        // 专辑名（B 站无则为空）
-	DurationSec int    `json:"duration_sec"` // 时长（秒）
-	URL         string `json:"url"`          // 可直接提交下载的链接
-	IsVIP       bool   `json:"is_vip"`       // 是否 VIP / 付费
+	Platform    string `json:"platform"`            // netease / qq / youtube / bilibili
+	SongID      string `json:"song_id"`             // 平台内部数字 ID 或视频 ID
+	SongMID     string `json:"song_mid"`            // QQ 专有 mid
+	Name        string `json:"name"`                // 歌曲或视频标题
+	Artists     string `json:"artists"`             // 歌手 / UP 主
+	Album       string `json:"album"`               // 专辑名（B 站无则为空）
+	CoverURL    string `json:"cover_url,omitempty"` // 专辑封面
+	DurationSec int    `json:"duration_sec"`        // 时长（秒）
+	URL         string `json:"url"`                 // 可直接提交下载的链接
+	IsVIP       bool   `json:"is_vip"`              // 是否 VIP / 付费
 }
 
 // SearchPlatformErrors 各平台的错误信息
@@ -515,6 +516,8 @@ type qqSearchResponse struct {
 			} `json:"singer"`
 			Album struct {
 				Name string `json:"name"`
+				Mid  string `json:"mid"`
+				Pmid string `json:"pmid"`
 			} `json:"album"`
 			Interval int `json:"interval"`
 			Pay      struct {
@@ -587,12 +590,29 @@ func searchQQWithCredentialRefresh(ctx context.Context, keyword string, limit, o
 			Name:        name,
 			Artists:     strings.Join(artists, " / "),
 			Album:       s.Album.Name,
+			CoverURL:    qqAlbumCoverURL(s.Album.Pmid, s.Album.Mid),
 			DurationSec: s.Interval,
 			URL:         fmt.Sprintf("https://y.qq.com/n/ryqq/songDetail/%s", s.Mid),
 			IsVIP:       s.Pay.PayPlay != 0,
 		})
 	}
 	return items, nil
+}
+
+func qqAlbumCoverURL(pmid, mid string) string {
+	coverID := strings.TrimSpace(pmid)
+	if coverID == "" {
+		coverID = strings.TrimSpace(mid)
+	}
+	if coverID == "" {
+		return ""
+	}
+	for _, r := range coverID {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return ""
+		}
+	}
+	return "https://y.gtimg.cn/music/photo_new/T002R300x300M000" + coverID + ".jpg"
 }
 
 type qqSearchHTTPStatusError struct {

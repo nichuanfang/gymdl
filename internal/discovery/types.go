@@ -17,6 +17,7 @@ type Track struct {
 	Platform   string    `json:"platform"`
 	ID         string    `json:"id"`
 	URL        string    `json:"url"`
+	CoverURL   string    `json:"cover_url,omitempty"`
 	Title      string    `json:"title"`
 	Artist     string    `json:"artist"`
 	Album      string    `json:"album,omitempty"`

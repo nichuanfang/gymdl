@@ -200,7 +200,7 @@ func (app *BotApp) runAITurn(c tb.Context, text string) error {
 		return fail(err)
 	}
 	reply := aichat.Render(out, app.cfg.AI.DefaultMode, app.aiEnabled(c))
-	cardText, cardMarkup := candidateSongCard(out.Candidates, 0, true)
+	cardText, cardMarkup := candidateSongCard(out.Candidates, 0, true, discoveryPublicWebAppURL(app))
 	if strings.TrimSpace(reply) == "" && cardMarkup != nil {
 		if _, editErr := c.Bot().Edit(msg, cardText, tb.ModeHTML, cardMarkup); editErr != nil {
 			utils.WarnWithFormat("[AI] 编辑推荐卡片失败，改为新消息发送: %v", editErr)
@@ -271,7 +271,7 @@ func friendlyAIError(cause error) string {
 // candidateSongCard is one grounded hit. items are already in recommendation
 // order. allowBatch is false for an older card so its buttons cannot download
 // a newer answer.
-func candidateSongCard(items []aichat.Candidate, index int, allowBatch bool) (string, *tb.ReplyMarkup) {
+func candidateSongCard(items []aichat.Candidate, index int, allowBatch bool, publicURLs ...string) (string, *tb.ReplyMarkup) {
 	items = visibleAICandidates(items)
 	if len(items) == 0 {
 		return "", nil
@@ -294,7 +294,11 @@ func candidateSongCard(items []aichat.Candidate, index int, allowBatch bool) (st
 	if strings.TrimSpace(item.Title) != "" {
 		title = item.Title
 	}
-	fmt.Fprintf(&text, "<b>%s</b>\n", discoveryListenTitle(title, item.URL))
+	publicURL := ""
+	if len(publicURLs) > 0 {
+		publicURL = publicURLs[0]
+	}
+	fmt.Fprintf(&text, "<b>%s</b>\n", discoveryListenTitleWithWebApp(title, item.URL, publicURL))
 	if artist := strings.TrimSpace(item.Artist); artist != "" {
 		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
 	}
@@ -407,7 +411,7 @@ func (app *BotApp) HandleAICandidateCallback(c tb.Context) error {
 			return app.expireCandidateMarkup(c)
 		}
 		latest := len(items) > 0 && items[0].BatchID == token
-		text, markup := candidateSongCard(candidateModelOrder(batch), index, latest)
+		text, markup := candidateSongCard(candidateModelOrder(batch), index, latest, discoveryPublicWebAppURL(app))
 		if markup == nil {
 			return app.expireCandidateMarkup(c)
 		}

@@ -70,7 +70,7 @@ func fromSearch(i web.SearchResultItem) Track {
 	if i.Platform == "youtube" && id != "" {
 		sourceURL = "https://music.youtube.com/watch?v=" + id
 	}
-	return Track{Platform: i.Platform, ID: id, URL: sourceURL, Title: i.Name, Artist: i.Artists, Album: i.Album, Duration: i.DurationSec, Verified: i.Name != "" && i.Artists != ""}
+	return Track{Platform: i.Platform, ID: id, URL: sourceURL, CoverURL: i.CoverURL, Title: i.Name, Artist: i.Artists, Album: i.Album, Duration: i.DurationSec, Verified: i.Name != "" && i.Artists != ""}
 }
 
 // neteaseRequestError is a transport failure. HTTP 400 is not retried.

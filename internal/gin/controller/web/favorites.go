@@ -225,7 +225,11 @@ func readQQFavoritePage(ctx context.Context, client *qqMusicClient, euin, cookie
 			Mid, Title, Name string
 			Interval         int
 			Singer           []struct{ Name string }
-			Album            struct{ Name string }
+			Album            struct {
+				Name string `json:"name"`
+				Mid  string `json:"mid"`
+				Pmid string `json:"pmid"`
+			} `json:"album"`
 		} `json:"songlist"`
 	}
 	if err = json.Unmarshal(raw, &d); err != nil || d.Code != 0 {
@@ -248,7 +252,7 @@ func readQQFavoritePage(ctx context.Context, client *qqMusicClient, euin, cookie
 		if title == "" {
 			title = s.Name
 		}
-		songs = append(songs, SearchResultItem{Platform: "qq", SongMID: s.Mid, SongID: strconv.Itoa(s.ID), Name: title, Artists: strings.Join(artists, " / "), Album: s.Album.Name, DurationSec: s.Interval, URL: "https://y.qq.com/n/ryqq/songDetail/" + s.Mid})
+		songs = append(songs, SearchResultItem{Platform: "qq", SongMID: s.Mid, SongID: strconv.Itoa(s.ID), Name: title, Artists: strings.Join(artists, " / "), Album: s.Album.Name, CoverURL: qqAlbumCoverURL(s.Album.Pmid, s.Album.Mid), DurationSec: s.Interval, URL: "https://y.qq.com/n/ryqq/songDetail/" + s.Mid})
 	}
 	return qqFavoritePage{total: *total, hasMore: d.HasMore != 0, creator: d.Info.Creator.MusicID.String(), songs: songs}, nil
 }

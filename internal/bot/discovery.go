@@ -223,8 +223,8 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 			_ = editDiscoveryMessage(c, "结果没保存好，再试一次吧。", rediscoverResultRecoveryMarkup(platform, limit), false)
 			return
 		}
-		text, markup := discoveryRecommendationCard(card, 0)
-		if err := editDiscoveryMessage(c, text, markup, true); err != nil {
+		text, markup := app.renderDiscoveryCard(card, 0)
+		if err := editDiscoveryCard(c, card, 0, text, markup, true); err != nil {
 			utils.WarnWithFormat("[Discovery] 展示遗珠失败: %v", err)
 			return
 		}
@@ -239,7 +239,15 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 
 const discoveryPageSize = 1
 
-func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.ReplyMarkup) {
+func (app *BotApp) renderDiscoveryCard(card discovery.Card, page int) (string, *tb.ReplyMarkup) {
+	return discoveryRecommendationCard(card, page, discoveryPublicWebAppURL(app))
+}
+
+func discoveryRecommendationCard(card discovery.Card, page int, publicURLs ...string) (string, *tb.ReplyMarkup) {
+	publicURL := ""
+	if len(publicURLs) > 0 {
+		publicURL = publicURLs[0]
+	}
 	if page < 0 || page >= len(card.Tracks) {
 		page = 0
 	}
@@ -266,7 +274,7 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	if len(card.Tracks) > 1 {
 		fmt.Fprintf(&text, "本批 %d 首 · 第 %d 首\n", len(card.Tracks), page+1)
 	}
-	fmt.Fprintf(&text, "歌曲: %s\n", discoveryListenTitle(track.Title, track.URL))
+	fmt.Fprintf(&text, "歌曲: %s\n", discoveryListenTitleWithWebApp(track.Title, track.URL, publicURL))
 	if artist := strings.TrimSpace(track.Artist); artist != "" {
 		fmt.Fprintf(&text, "艺人: %s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
 	}
@@ -421,9 +429,13 @@ func rediscoverDecision(track discovery.Track) string {
 	}
 }
 
-func rediscoverTrackFields(track discovery.Track) string {
+func rediscoverTrackFields(track discovery.Track, publicURLs ...string) string {
+	publicURL := ""
+	if len(publicURLs) > 0 {
+		publicURL = publicURLs[0]
+	}
 	var text strings.Builder
-	fmt.Fprintf(&text, "歌曲: %s\n", discoveryListenTitle(track.Title, track.URL))
+	fmt.Fprintf(&text, "歌曲: %s\n", discoveryListenTitleWithWebApp(track.Title, track.URL, publicURL))
 	if artist := strings.TrimSpace(track.Artist); artist != "" {
 		fmt.Fprintf(&text, "艺人: %s\n", utils.EscapeHTML(utils.TruncateString(artist, 32)))
 	}
@@ -560,6 +572,10 @@ func discoveryListenTitle(title, rawURL string) string {
 	return `<a href="` + href + `">` + shown + `</a>`
 }
 
+func discoveryListenTitleWithWebApp(title, rawURL, webAppURL string) string {
+	return discoveryListenTitle(title, discoveryListenURL(rawURL, webAppURL))
+}
+
 func (app *BotApp) FavoritesCommand(c tb.Context) error {
 	if err := app.discoveryAvailable(c); err != nil {
 		return c.Send(err.Error())
@@ -613,6 +629,59 @@ func editDiscoveryMessage(c tb.Context, text string, markup *tb.ReplyMarkup, htm
 		opts = append(opts, &tb.ReplyMarkup{})
 	}
 	err := c.Edit(text, opts...)
+	if err != nil && strings.Contains(err.Error(), "message is not modified") {
+		return nil
+	}
+	return err
+}
+
+func discoveryCardPreviewURL(card discovery.Card, page int) string {
+	if page < 0 || page >= len(card.Tracks) {
+		page = 0
+	}
+	if len(card.Tracks) == 0 {
+		return ""
+	}
+	track := card.Tracks[page]
+	const prefix = "https://y.gtimg.cn/music/photo_new/T002R300x300M000"
+	if track.Platform != "qq" || !strings.HasPrefix(track.CoverURL, prefix) || !strings.HasSuffix(track.CoverURL, ".jpg") {
+		return ""
+	}
+	coverID := strings.TrimSuffix(strings.TrimPrefix(track.CoverURL, prefix), ".jpg")
+	if !validSongMID(coverID) || track.CoverURL != prefix+coverID+".jpg" {
+		return ""
+	}
+	return track.CoverURL
+}
+
+func editDiscoveryCard(c tb.Context, card discovery.Card, page int, text string, markup *tb.ReplyMarkup, html bool) error {
+	previewURL := discoveryCardPreviewURL(card, page)
+	if previewURL == "" || c.Message() == nil {
+		return editDiscoveryMessage(c, text, markup, html)
+	}
+	return editDiscoveryText(c.Bot(), c.Message(), text, markup, html, previewURL)
+}
+
+func editDiscoveryText(bot tb.API, message tb.Editable, text string, markup *tb.ReplyMarkup, html bool, previewURL string) error {
+	if bot == nil || message == nil || previewURL == "" {
+		return fmt.Errorf("无法更新歌曲卡片")
+	}
+	messageID, chatID := message.MessageSig()
+	params := map[string]any{
+		"chat_id":              chatID,
+		"message_id":           messageID,
+		"text":                 text,
+		"link_preview_options": map[string]any{"url": previewURL, "prefer_large_media": true},
+	}
+	if html {
+		params["parse_mode"] = string(tb.ModeHTML)
+	}
+	if markup == nil {
+		params["reply_markup"] = &tb.ReplyMarkup{}
+	} else {
+		params["reply_markup"] = markup
+	}
+	_, err := bot.Raw("editMessageText", params)
 	if err != nil && strings.Contains(err.Error(), "message is not modified") {
 		return nil
 	}
@@ -1302,8 +1371,8 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		}
 		var editErr error
 		if loadErr == nil {
-			text, markup := discoveryRecommendationCard(card, index)
-			editErr = editDiscoveryMessage(c, text, markup, true)
+			text, markup := app.renderDiscoveryCard(card, index)
+			editErr = editDiscoveryCard(c, card, index, text, markup, true)
 		}
 		app.rediscoverMu.Unlock()
 		if loadErr != nil {
@@ -1331,8 +1400,8 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		}
 		var editErr error
 		if loadErr == nil {
-			text, markup := discoveryRecommendationCard(card, page)
-			editErr = editDiscoveryMessage(c, text, markup, true)
+			text, markup := app.renderDiscoveryCard(card, page)
+			editErr = editDiscoveryCard(c, card, page, text, markup, true)
 		}
 		app.rediscoverMu.Unlock()
 		if loadErr != nil {
@@ -1468,7 +1537,7 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		return answerOnCard(c, "结果没存上，先看看收藏同步里的队列，再决定要不要重试。", discoveryFavoritesShortcut(), false)
 	}
 	message := c.Message()
-	text, markup := discoveryRecommendationCard(card, page)
+	text, markup := app.renderDiscoveryCard(card, page)
 	if submitted > 0 && !(action == "ignore" && failed == 0) {
 		notice := fmt.Sprintf("提交了 %d 首，排队 %d 首，跳过 %d 首", submitted, queued, skipped)
 		if failed > 0 {
@@ -1479,7 +1548,7 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		}
 		text = utils.EscapeHTML(notice) + "\n\n" + text
 	}
-	editErr := editDiscoveryMessage(c, text, markup, true)
+	editErr := editDiscoveryCard(c, card, page, text, markup, true)
 	app.rediscoverMu.Unlock()
 	if watch && message != nil {
 		go app.watchRediscoverCard(card.Token, card.User, card.Chat, message)
@@ -1524,8 +1593,8 @@ func (app *BotApp) resolveRediscoverJob(c tb.Context, token string, index int, a
 		return c.Respond(&tb.CallbackResponse{Text: "卡片更新失败，可再点一次刷新状态", ShowAlert: true})
 	}
 	responseErr := c.Respond(&tb.CallbackResponse{Text: notice})
-	text, markup := discoveryRecommendationCard(card, index)
-	editErr := editDiscoveryMessage(c, text, markup, true)
+	text, markup := app.renderDiscoveryCard(card, index)
+	editErr := editDiscoveryCard(c, card, index, text, markup, true)
 	if !rediscoverSettled(track.CardAction) && c.Message() != nil {
 		go app.watchRediscoverCard(card.Token, card.User, card.Chat, c.Message())
 	}
@@ -1578,8 +1647,13 @@ func (app *BotApp) refreshRediscoverMessage(token string, user, chat int64, mess
 			return true
 		}
 		if app.bot != nil && message != nil {
-			text, markup := discoveryRecommendationCard(updated, updated.Page)
-			if _, err = app.bot.Edit(message, text, tb.ModeHTML, markup); err != nil && !strings.Contains(err.Error(), "not modified") {
+			text, markup := app.renderDiscoveryCard(updated, updated.Page)
+			if previewURL := discoveryCardPreviewURL(updated, updated.Page); previewURL != "" {
+				err = editDiscoveryText(app.bot, message, text, markup, true, previewURL)
+			} else {
+				_, err = app.bot.Edit(message, text, tb.ModeHTML, markup)
+			}
+			if err != nil && !strings.Contains(err.Error(), "not modified") {
 				utils.WarnWithFormat("[Discovery] 更新遗珠进度失败: %v", err)
 			}
 		}
@@ -1657,18 +1731,18 @@ func (app *BotApp) showDiscoveryPending(c tb.Context, page int) error {
 	if total == 0 {
 		return answerOnCard(c, "✅ 没有待确认任务。", discoveryFavoritesShortcut(), false)
 	}
-	text, markup := discoveryPendingCard(job, index, total)
+	text, markup := discoveryPendingCard(job, index, total, discoveryPublicWebAppURL(app))
 	return answerOnCard(c, text, markup, true)
 }
 
-func discoveryPendingCard(job discovery.Job, index, total int) (string, *tb.ReplyMarkup) {
+func discoveryPendingCard(job discovery.Job, index, total int, publicURLs ...string) (string, *tb.ReplyMarkup) {
 	var text strings.Builder
 	text.WriteString("⚠️ <b>待确认</b>")
 	if total > 1 {
 		fmt.Fprintf(&text, " · %d/%d", index+1, total)
 	}
 	text.WriteString("\n──────────────────\n")
-	text.WriteString(rediscoverTrackFields(job.Track))
+	text.WriteString(rediscoverTrackFields(job.Track, publicURLs...))
 	if note := strings.TrimSpace(job.Error); note != "" {
 		fmt.Fprintf(&text, "\n原因: %s", utils.EscapeHTML(utils.TruncateString(note, 120)))
 	}
@@ -1705,18 +1779,18 @@ func (app *BotApp) showDiscoveryPendingUpload(c tb.Context, page int) error {
 	if page >= len(jobs) {
 		page = len(jobs) - 1
 	}
-	text, markup := discoveryPendingUploadCard(jobs[page], page, len(jobs))
+	text, markup := discoveryPendingUploadCard(jobs[page], page, len(jobs), discoveryPublicWebAppURL(app))
 	return answerOnCard(c, text, markup, true)
 }
 
-func discoveryPendingUploadCard(job discovery.Job, index, total int) (string, *tb.ReplyMarkup) {
+func discoveryPendingUploadCard(job discovery.Job, index, total int, publicURLs ...string) (string, *tb.ReplyMarkup) {
 	var text strings.Builder
 	text.WriteString("☁️ <b>待上传</b>")
 	if total > 1 {
 		fmt.Fprintf(&text, " · %d/%d", index+1, total)
 	}
 	text.WriteString("\n──────────────────\n")
-	text.WriteString(rediscoverTrackFields(job.Track))
+	text.WriteString(rediscoverTrackFields(job.Track, publicURLs...))
 	text.WriteString("\n等待曲库确认；不会再次下载。")
 	if note := strings.TrimSpace(job.Error); note != "" {
 		fmt.Fprintf(&text, "\n原因: %s", utils.EscapeHTML(utils.TruncateString(note, 120)))
@@ -1782,18 +1856,18 @@ func (app *BotApp) showDiscoveryFailed(c tb.Context, page int) error {
 			return answerOnCard(c, "无法读取失败记录", nil, false)
 		}
 	}
-	text, markup := discoveryFailedCard(jobs[0], page, total)
+	text, markup := discoveryFailedCard(jobs[0], page, total, discoveryPublicWebAppURL(app))
 	return answerOnCard(c, text, markup, true)
 }
 
-func discoveryFailedCard(job discovery.Job, index, total int) (string, *tb.ReplyMarkup) {
+func discoveryFailedCard(job discovery.Job, index, total int, publicURLs ...string) (string, *tb.ReplyMarkup) {
 	var text strings.Builder
 	text.WriteString("⚠️ <b>入库异常</b>")
 	if total > 1 {
 		fmt.Fprintf(&text, " · %d/%d", index+1, total)
 	}
 	text.WriteString("\n──────────────────\n")
-	text.WriteString(rediscoverTrackFields(job.Track))
+	text.WriteString(rediscoverTrackFields(job.Track, publicURLs...))
 	if note := strings.TrimSpace(job.Error); note != "" {
 		fmt.Fprintf(&text, "\n原因: %s", utils.EscapeHTML(utils.TruncateString(note, 160)))
 	} else {

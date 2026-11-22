@@ -90,12 +90,12 @@ func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string
 			return err
 		}
 		if args[0] == "back" {
-			text, markup := discoveryRecommendationCard(card, 0)
-			return editDiscoveryMessage(c, text, markup, true)
+			text, markup := app.renderDiscoveryCard(card, 0)
+			return editDiscoveryCard(c, card, 0, text, markup, true)
 		}
-		text, _ := discoveryRecommendationCard(card, 0)
+		text, _ := app.renderDiscoveryCard(card, 0)
 		text += "\n\n<b>更多设置</b>\n选择推荐场景或来源。"
-		return editDiscoveryMessage(c, text, tasteSettingsMarkup(token), true)
+		return editDiscoveryCard(c, card, 0, text, tasteSettingsMarkup(token), true)
 	}
 	app.rediscoverMu.Unlock()
 	switch {
@@ -155,8 +155,13 @@ func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.Tast
 			_, _ = api.Edit(message, "推荐结果暂时无法保存，请重新发送 /recommend。", &tb.ReplyMarkup{})
 			return
 		}
-		text, markup := discoveryRecommendationCard(card, 0)
-		if _, err := api.Edit(message, text, tb.ModeHTML, markup); err != nil {
+		text, markup := app.renderDiscoveryCard(card, 0)
+		if previewURL := discoveryCardPreviewURL(card, 0); previewURL != "" {
+			err = editDiscoveryText(api, message, text, markup, true, previewURL)
+		} else {
+			_, err = api.Edit(message, text, tb.ModeHTML, markup)
+		}
+		if err != nil {
 			utils.WarnWithFormat("[Discovery] 个性化推荐卡片发送失败")
 			return
 		}
