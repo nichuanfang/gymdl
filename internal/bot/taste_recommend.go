@@ -95,7 +95,7 @@ func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string
 		}
 		text, _ := app.renderDiscoveryCard(card, 0)
 		text += "\n\n<b>更多设置</b>\n选择推荐场景或来源。"
-		return app.editDiscoveryCard(c, card, 0, text, tasteSettingsMarkup(token), true)
+		return editDiscoveryMessage(c, text, tasteSettingsMarkup(token), true)
 	}
 	app.rediscoverMu.Unlock()
 	switch {

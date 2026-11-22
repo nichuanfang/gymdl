@@ -101,3 +101,24 @@ func TestDiscoveryCardPreviewAcceptsQQAlbumPMIDVariant(t *testing.T) {
 		t.Fatalf("insecure preview origin = %q, want empty", got)
 	}
 }
+
+func TestDiscoveryCardPreviewUsesNetEaseSongPage(t *testing.T) {
+	card := discovery.Card{Kind: discovery.TasteCardKind, Tracks: []discovery.Track{{
+		Platform: "netease", ID: "186016", URL: "https://music.163.com/song?id=186016",
+		Title: "晴天", Artist: "周杰伦", Album: "叶惠美", Duration: 269,
+	}}}
+	if got, want := discoveryCardPreviewURL(card, 0, ""), "https://music.163.com/song?id=186016"; got != want {
+		t.Fatalf("NetEase card preview URL = %q, want %q", got, want)
+	}
+	for _, id := range []string{"", "0", "-1", "0186016", "186016&next=https://attacker.example"} {
+		card.Tracks[0].ID = id
+		if got := discoveryCardPreviewURL(card, 0, ""); got != "" {
+			t.Errorf("invalid NetEase id %q produced preview URL %q", id, got)
+		}
+	}
+	card.Kind = "rediscover"
+	card.Tracks[0].ID = "186016"
+	if got := discoveryCardPreviewURL(card, 0, ""); got != "" {
+		t.Fatalf("non-personalized NetEase card preview URL = %q, want empty", got)
+	}
+}

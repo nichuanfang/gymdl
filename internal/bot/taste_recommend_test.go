@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -43,6 +44,8 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 			var text string
 			if json.Unmarshal(value, &text) == nil {
 				params[key] = text
+			} else {
+				params[key] = string(value)
 			}
 		}
 		requests <- update{method, params}
@@ -51,7 +54,14 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 			fmt.Fprint(w, `{"ok":true,"result":true}`)
 			return
 		}
-		fmt.Fprint(w, `{"ok":true,"result":{"message_id":42,"chat":{"id":1,"type":"private"}}}`)
+		result := map[string]any{"message_id": 42, "chat": map[string]any{"id": 1, "type": "private"}}
+		var replyMarkup string
+		if err := json.Unmarshal(raw["reply_markup"], &replyMarkup); err == nil && replyMarkup != "" {
+			result["reply_markup"] = json.RawMessage(replyMarkup)
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result}); err != nil {
+			t.Errorf("encode %s response: %v", method, err)
+		}
 	}))
 	defer server.Close()
 	bot, err := tb.NewBot(tb.Settings{Offline: true, Synchronous: true, Token: "1:test", URL: server.URL})
@@ -75,10 +85,12 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 							id = "1" + id
 						}
 						link := "https://music.163.com/song?id=" + id
+						cover := ""
 						if platform == "qq" {
 							link = "https://y.qq.com/n/ryqq/songDetail/" + id
+							cover = "https://y.gtimg.cn/music/photo_new/T002R300x300M000002ef2VB0Qfb30_2.jpg"
 						}
-						tracks = append(tracks, discovery.Track{Platform: platform, ID: id, Title: "曲目" + id, Artist: artist, URL: link, Verified: true})
+						tracks = append(tracks, discovery.Track{Platform: platform, ID: id, Title: "曲目" + id, Artist: artist, Album: "测试专辑", CoverURL: cover, Duration: 200, URL: link, Verified: true})
 					}
 					return tracks, nil
 				},
@@ -88,6 +100,7 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 			},
 		},
 	}
+	app.cfg.PlaylistOrganizer = &config.PlaylistOrganizerConfig{WebAppURL: "https://webapp.example.com"}
 	bot.Handle("/recommend", app.RecommendCommand)
 	bot.Handle(&discoveryEndpoint, app.HandleDiscoveryCallback)
 	chat := &tb.Chat{ID: 1, Type: tb.ChatPrivate}
@@ -103,6 +116,7 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 		t.Helper()
 		timer := time.NewTimer(6 * time.Second)
 		defer timer.Stop()
+		var skipped []update
 		for {
 			select {
 			case request := <-requests:
@@ -112,8 +126,9 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 					}
 					return request.data
 				}
+				skipped = append(skipped, request)
 			case <-timer.C:
-				t.Fatalf("missing %s with %s containing %q", method, field, want)
+				t.Fatalf("missing %s with %s containing %q; saw %#v", method, field, want, skipped)
 				return nil
 			}
 		}
@@ -134,7 +149,7 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 		t.Helper()
 		var markup tb.ReplyMarkup
 		if err := json.Unmarshal([]byte(data["reply_markup"]), &markup); err != nil {
-			t.Fatal(err)
+			t.Fatalf("decode reply_markup %q from %v: %v", data["reply_markup"], data, err)
 		}
 		for _, row := range markup.InlineKeyboard {
 			for _, btn := range row {
@@ -160,11 +175,29 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 		}
 		return rows
 	}
+	nextTasteCard := func(needle string) (map[string]string, map[string]string) {
+		t.Helper()
+		card := next("editMessageText", "text", needle)
+		previewEdit := next("editMessageText", "link_preview_options", "url")
+		var preview struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal([]byte(previewEdit["link_preview_options"]), &preview); err != nil || preview.URL == "" {
+			t.Fatalf("recommendation preview options = %q (%v)", previewEdit["link_preview_options"], err)
+		}
+		return card, previewEdit
+	}
 	bot.ProcessUpdate(tb.Update{Message: &tb.Message{ID: 7, Chat: chat, Sender: &tb.User{ID: 1}, Text: "/recommend 粤语爵士"}})
 	next("sendMessage", "text", "找适合你的歌")
-	first := next("editMessageText", "text", "个性化推荐 · 网易云")
+	first, previewEdit := nextTasteCard("个性化推荐 · 网易云")
 	if !strings.Contains(first["text"], "粤语 · 爵士") || !strings.Contains(first["text"], `href="`+discoveryListenURL("https://music.163.com/song?id=1")+`"`) {
 		t.Fatalf("first card lost typed filter or listen link: %v", first)
+	}
+	var preview struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(previewEdit["link_preview_options"]), &preview); err != nil || preview.URL != "https://music.163.com/song?id=1" {
+		t.Fatalf("NetEase preview options = %q (%v)", previewEdit["link_preview_options"], err)
 	}
 	waitReady()
 	if jobs, err := store.Jobs(ctx, 1, false); err != nil || len(jobs) != 0 {
@@ -174,10 +207,16 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 		t.Fatalf("recommendation card buttons = %v, want %v", got, want)
 	}
 	oldNext := button(first, "换一首")
+	if !strings.HasPrefix(oldNext, "\f") {
+		t.Fatalf("Telebot callback namespace was not encoded: %q", oldNext)
+	}
+	if got := button(previewEdit, "换一首"); got != oldNext {
+		t.Fatalf("preview edit changed callback data: got %q, want %q", got, oldNext)
+	}
 	click(2, oldNext)
 	next("answerCallbackQuery", "text", "卡片已过期")
 	click(1, oldNext)
-	second := next("editMessageText", "text", "风格相近")
+	second, _ := nextTasteCard("风格相近")
 	waitReady()
 	click(1, oldNext)
 	next("answerCallbackQuery", "text", "卡片已过期")
@@ -188,19 +227,19 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 		t.Fatalf("recommendation settings buttons = %v", got)
 	}
 	click(1, button(settings, "返回歌曲卡片"))
-	returned := next("editMessageText", "text", "个性化推荐")
+	returned, _ := nextTasteCard("个性化推荐")
 	if got, want := buttonRows(returned), [][]string{{"入库", "不再推荐"}, {"换一首", "更多设置"}}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("returned recommendation buttons = %v, want %v", got, want)
 	}
 	click(1, button(returned, "更多设置"))
 	settings = next("editMessageText", "text", "选择推荐场景或来源")
 	click(1, button(settings, "放松"))
-	third := next("editMessageText", "text", "放松 · 粤语 · 爵士")
+	third, _ := nextTasteCard("放松 · 粤语 · 爵士")
 	waitReady()
 	click(1, button(third, "更多设置"))
 	settings = next("editMessageText", "text", "选择推荐场景或来源")
 	click(1, button(settings, "自动选择（网易云 / QQ）"))
-	fourth := next("editMessageText", "text", "个性化推荐 ·")
+	fourth, _ := nextTasteCard("个性化推荐 ·")
 	if !strings.Contains(fourth["text"], "放松 · 粤语 · 爵士") {
 		t.Fatalf("automatic platform selection dropped the filters: %v", fourth)
 	}
@@ -208,9 +247,22 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 	click(1, button(fourth, "更多设置"))
 	settings = next("editMessageText", "text", "选择推荐场景或来源")
 	click(1, button(settings, "QQ 音乐"))
-	fifth := next("editMessageText", "text", "个性化推荐 · QQ 音乐")
+	fifth, qqPreview := nextTasteCard("个性化推荐 · QQ 音乐")
 	if !strings.Contains(fifth["text"], "放松 · 粤语 · 爵士") {
 		t.Fatalf("platform switch dropped the filters: %v", fifth)
+	}
+	var qqPreviewOptions struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(qqPreview["link_preview_options"]), &qqPreviewOptions); err != nil {
+		t.Fatalf("decode QQ preview options: %v", err)
+	}
+	parsedQQPreview, err := url.Parse(qqPreviewOptions.URL)
+	if err != nil || parsedQQPreview.Host != "webapp.example.com" || parsedQQPreview.Path != "/api/discovery/music-preview" || parsedQQPreview.Query().Get("mid") == "" {
+		t.Fatalf("QQ recommendation preview URL = %q (%v)", qqPreviewOptions.URL, err)
+	}
+	if got, want := button(qqPreview, "换一首"), button(fifth, "换一首"); got != want {
+		t.Fatalf("QQ preview edit changed callback data: got %q, want %q", got, want)
 	}
 	waitReady()
 	download := button(fifth, "入库")

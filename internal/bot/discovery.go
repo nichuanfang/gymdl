@@ -632,8 +632,24 @@ func discoveryCardPreviewURL(card discovery.Card, page int, webAppURL string) st
 		return ""
 	}
 	track := card.Tracks[page]
+	switch track.Platform {
+	case "netease":
+		if card.Kind != discovery.TasteCardKind {
+			return ""
+		}
+		id, err := strconv.ParseUint(track.ID, 10, 64)
+		if err != nil || id == 0 || strconv.FormatUint(id, 10) != track.ID {
+			return ""
+		}
+		return "https://music.163.com/song?id=" + strconv.FormatUint(id, 10)
+	case "qq":
+		// QQ Music needs our metadata page because its app link does not expose
+		// reliable Open Graph metadata to Telegram.
+	default:
+		return ""
+	}
 	const coverPrefix = "https://y.gtimg.cn/music/photo_new/T002R300x300M000"
-	if track.Platform != "qq" || !strings.HasPrefix(track.CoverURL, coverPrefix) || !strings.HasSuffix(track.CoverURL, ".jpg") {
+	if !strings.HasPrefix(track.CoverURL, coverPrefix) || !strings.HasSuffix(track.CoverURL, ".jpg") {
 		return ""
 	}
 	coverID := strings.TrimSuffix(strings.TrimPrefix(track.CoverURL, coverPrefix), ".jpg")
@@ -678,10 +694,14 @@ func discoveryPreviewQueryText(value string, maxRunes int) string {
 }
 
 func (app *BotApp) discoveryCardPreviewURL(card discovery.Card, page int) string {
-	if app == nil || app.cfg == nil || app.cfg.PlaylistOrganizer == nil {
+	if app == nil || app.cfg == nil {
 		return ""
 	}
-	return discoveryCardPreviewURL(card, page, app.cfg.PlaylistOrganizer.WebAppURL)
+	webAppURL := ""
+	if app.cfg.PlaylistOrganizer != nil {
+		webAppURL = app.cfg.PlaylistOrganizer.WebAppURL
+	}
+	return discoveryCardPreviewURL(card, page, webAppURL)
 }
 
 func (app *BotApp) editDiscoveryCard(c tb.Context, card discovery.Card, page int, text string, markup *tb.ReplyMarkup, html bool) error {
@@ -696,6 +716,20 @@ func editDiscoveryText(bot tb.API, message tb.Editable, text string, markup *tb.
 	if bot == nil || message == nil || previewURL == "" {
 		return fmt.Errorf("无法更新歌曲卡片")
 	}
+	// Let Telebot prepare callback_data before setting the custom preview URL.
+	// Raw editMessageText bypasses that preparation, which makes buttons inert.
+	if markup == nil {
+		markup = &tb.ReplyMarkup{}
+	}
+	opts := []any{tb.NoPreview, markup}
+	if html {
+		opts = append(opts, tb.ModeHTML)
+	}
+	edited, editErr := bot.Edit(message, text, opts...)
+	if editErr != nil && !strings.Contains(editErr.Error(), "message is not modified") {
+		return editErr
+	}
+
 	messageID, chatID := message.MessageSig()
 	params := map[string]any{
 		"chat_id":              chatID,
@@ -703,13 +737,13 @@ func editDiscoveryText(bot tb.API, message tb.Editable, text string, markup *tb.
 		"text":                 text,
 		"link_preview_options": map[string]any{"url": previewURL, "prefer_large_media": true},
 	}
+	// Bot.Edit clones and encodes the keyboard before sending it. Reuse the
+	// Telegram response so callback_data stays encoded on the preview edit too.
+	if edited != nil && edited.ReplyMarkup != nil {
+		params["reply_markup"] = edited.ReplyMarkup
+	}
 	if html {
 		params["parse_mode"] = string(tb.ModeHTML)
-	}
-	if markup == nil {
-		params["reply_markup"] = &tb.ReplyMarkup{}
-	} else {
-		params["reply_markup"] = markup
 	}
 	_, err := bot.Raw("editMessageText", params)
 	if err != nil && strings.Contains(err.Error(), "message is not modified") {
