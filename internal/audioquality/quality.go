@@ -119,10 +119,12 @@ func Inspect(ctx context.Context, filename string) (Result, error) {
 		Codec: stream.Codec, Bitrate: (bps + 500) / 1000, Duration: declared,
 	}
 	var progress bytes.Buffer
+	var decodeErrors bytes.Buffer
 	decode := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
 		"-protocol_whitelist", "file,pipe", "-format_whitelist", audioFormats, "-threads", "1",
 		"-i", filename, "-map", "0:a:0", "-nostats", "-progress", "pipe:1", "-f", "null", "-")
 	decode.Stdout = &progress
+	decode.Stderr = &decodeErrors
 	decodeErr := decode.Run()
 	if ctx.Err() != nil {
 		return Result{}, ctx.Err()
@@ -132,6 +134,12 @@ func Inspect(ctx context.Context, filename string) (Result, error) {
 		if !errors.As(decodeErr, &status) || status.ExitCode() < 0 {
 			return Result{}, decodeErr
 		}
+		result.Damaged = true
+	}
+	// FFmpeg 6.1 can report decoder errors yet exit successfully when it
+	// reaches an incomplete final packet. Capture stderr so those files are
+	// still flagged even when the decoded duration is close to the declared one.
+	if strings.TrimSpace(decodeErrors.String()) != "" {
 		result.Damaged = true
 	}
 	for _, line := range strings.Split(progress.String(), "\n") {
