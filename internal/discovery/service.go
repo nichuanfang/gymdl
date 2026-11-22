@@ -923,7 +923,7 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 	if !t.Verified && !t.Approved {
 		return finish(NeedsConfirmation, "无法明确识别音乐单曲，需确认原链接音频", "", 0)
 	}
-	owned, sameTitle, err := s.downloadOwnership(ctx, t)
+	owned, ambiguous, err := s.downloadOwnership(ctx, t)
 	if err != nil {
 		return retry(err)
 	}
@@ -939,19 +939,13 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 			return finish(PendingUpload, "等待近期下载或上传完成", "", 0)
 		}
 	}
-	if sameTitle && !t.Approved {
+	if ambiguous && !t.Approved {
 		return finish(NeedsConfirmation, "曲库里有同名歌曲，请确认是否下载这个版本", "", 0)
 	}
 	result, err := s.Download(ctx, t)
 	if err != nil {
-		var heard *audiodupe.LibraryMatch
-		if errors.As(err, &heard) {
-			switch heard.Decision {
-			case audiodupe.DecisionSkip:
-				return finish(Owned, heard.Error(), "", 0)
-			case audiodupe.DecisionConfirm:
-				return finish(NeedsConfirmation, heard.Error(), "", 0)
-			}
+		if state, reason := audioDuplicateOutcome(err); state != "" {
+			return finish(state, reason, "", 0)
 		}
 		if t.Approved {
 			return retry(err)
@@ -967,19 +961,23 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 			return retry(fmt.Errorf("原平台下载失败，未找到明确同版替代；%w", err))
 		}
 		// Recheck against the actual library after resolving a cross-platform ID.
-		owned, sameTitle, e = s.downloadOwnership(ctx, alternate)
+		owned, ambiguous, e = s.downloadOwnership(ctx, alternate)
 		if e != nil {
 			return retry(e)
 		}
 		if owned {
 			return finish(Owned, "曲库已有该版本", "", 0)
 		}
-		if sameTitle {
+		if ambiguous {
 			j.Track = alternate
 			return finish(NeedsConfirmation, "替代音源与曲库中的歌曲同名，请确认是否下载这个版本", "", 0)
 		}
 		result, err = s.Download(ctx, alternate)
 		if err != nil {
+			if state, reason := audioDuplicateOutcome(err); state != "" {
+				j.Track = alternate
+				return finish(state, reason, "", 0)
+			}
 			return retry(err)
 		}
 	}
@@ -1006,7 +1004,20 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 	return nil
 }
 
-func (s *Service) downloadOwnership(ctx context.Context, t Track) (owned, sameTitle bool, err error) {
+func audioDuplicateOutcome(err error) (state, reason string) {
+	var match *audiodupe.LibraryMatch
+	if errors.As(err, &match) {
+		switch match.Decision {
+		case audiodupe.DecisionSkip:
+			return Owned, match.Error()
+		case audiodupe.DecisionConfirm:
+			return NeedsConfirmation, match.Error()
+		}
+	}
+	return "", ""
+}
+
+func (s *Service) downloadOwnership(ctx context.Context, t Track) (owned, ambiguous bool, err error) {
 	if library, ok := s.Library.(interface {
 		matchOwnership(context.Context, Track) (bool, bool, error)
 	}); ok {

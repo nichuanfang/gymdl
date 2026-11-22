@@ -167,6 +167,140 @@ func TestDiscoveryBaselineConfirmationIsSingleUse(t *testing.T) {
 	}
 }
 
+func TestRediscoverConfirmationButtonsThroughTelebot(t *testing.T) {
+	ctx := t.Context()
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	type edit struct {
+		Text      string
+		MessageID string `json:"message_id"`
+		Markup    string `json:"reply_markup"`
+	}
+	edits := make(chan edit, 8)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "answerCallbackQuery") {
+			fmt.Fprint(w, `{"ok":true,"result":true}`)
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "editMessageText") {
+			t.Errorf("unexpected Telegram method: %s", r.URL.Path)
+		}
+		var payload edit
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode Telegram edit: %v", err)
+		}
+		edits <- payload
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":42,"chat":{"id":10,"type":"private"}}}`)
+	}))
+	defer server.Close()
+	bot, err := tb.NewBot(tb.Settings{Offline: true, Synchronous: true, Token: "1:test", URL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{bot: bot, cfg: &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"10", "20"}}},
+		discovery: &discovery.Service{Store: store}}
+	bot.Handle(&discoveryEndpoint, app.HandleDiscoveryCallback)
+	message := &tb.Message{ID: 42, Chat: &tb.Chat{ID: 10, Type: tb.ChatPrivate}}
+	click := func(user int64, data string) {
+		bot.ProcessUpdate(tb.Update{Callback: &tb.Callback{ID: "callback", Sender: &tb.User{ID: user}, Data: data, Message: message}})
+	}
+	nextEdit := func(want string) edit {
+		t.Helper()
+		select {
+		case got := <-edits:
+			if got.MessageID != "42" || !strings.Contains(got.Text, want) || !strings.Contains(got.Text, "遗珠") {
+				t.Fatalf("expected %q on original card, got %#v", want, got)
+			}
+			return got
+		case <-time.After(5 * time.Second):
+			t.Fatalf("missing card edit for %q", want)
+			return edit{}
+		}
+	}
+	findButton := func(payload edit, label string) string {
+		t.Helper()
+		var markup tb.ReplyMarkup
+		if err := json.Unmarshal([]byte(payload.Markup), &markup); err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range markup.InlineKeyboard {
+			for _, button := range row {
+				if button.Text == label {
+					if len(button.Data) > 64 {
+						t.Fatalf("callback exceeds Telegram limit: %q", button.Data)
+					}
+					return button.Data
+				}
+			}
+		}
+		return ""
+	}
+	for _, accept := range []bool{true, false} {
+		id := "1"
+		if !accept {
+			id = "2"
+		}
+		track := discovery.Track{Platform: "netease", ID: id, Title: "歌曲" + id, Artist: "艺人", URL: "https://music.163.com/song?id=" + id, Verified: true}
+		jobID, err := store.Enqueue(ctx, 10, 10, track)
+		if err != nil {
+			t.Fatal(err)
+		}
+		job, err := store.Job(ctx, jobID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if accept {
+			job.Track.Platform, job.Track.ID, job.Track.URL = "qq", "alt", "https://y.qq.com/n/ryqq/songDetail/alt"
+		}
+		if err := store.Finish(ctx, job, discovery.NeedsConfirmation, "版本 <待核对>", "", 0); err != nil {
+			t.Fatal(err)
+		}
+		track.IngestID, track.CardAction = jobID, discovery.Queued
+		card, err := store.SaveCard(ctx, discovery.Card{Kind: "recommend", User: 10, Chat: 10, Tracks: []discovery.Track{track}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		app.refreshRediscoverMessage(card.Token, card.User, card.Chat, message)
+		pending := nextEdit("版本 &lt;待核对&gt;")
+		if accept && !strings.Contains(pending.Text, job.Track.URL) {
+			t.Fatalf("confirmation card did not show the actual alternate: %s", pending.Text)
+		}
+		yes, no := findButton(pending, "确认入库"), findButton(pending, "不再处理")
+		if yes == "" || no == "" {
+			t.Fatalf("missing confirmation buttons: %s", pending.Markup)
+		}
+		click(20, yes)
+		if current, err := store.Job(ctx, jobID); err != nil || current.State != discovery.NeedsConfirmation {
+			t.Fatalf("wrong user changed the job: %#v %v", current, err)
+		}
+		data, label, state := no, "已跳过", discovery.Ignored
+		if accept {
+			data, label, state = yes, "排队中", discovery.Queued
+		}
+		click(10, data)
+		after := nextEdit(label)
+		if findButton(after, "确认入库") != "" || findButton(after, "不再处理") != "" {
+			t.Fatalf("handled job retained confirmation buttons: %s", after.Markup)
+		}
+		click(10, data)
+		job, err = store.Job(ctx, jobID)
+		if err != nil || job.State != state || job.Track.Approved != accept {
+			t.Fatalf("unexpected job state after repeated click: %#v %v", job, err)
+		}
+		if accept {
+			if err := store.Finish(ctx, job, discovery.Completed, "", "", 0); err != nil {
+				t.Fatal(err)
+			}
+			nextEdit("已入库")
+		}
+	}
+}
+
 type discoveryCallbackContext struct {
 	tb.Context
 	mu        sync.Mutex

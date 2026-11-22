@@ -48,13 +48,52 @@ func TestOwnedWorkMatchesLibraryDespiteMessyCredits(t *testing.T) {
 	}
 }
 
-func TestRediscoverDoesNotHideSameTitleWithDifferentCredits(t *testing.T) {
+func TestRediscoverDownloadsVerifiedSameTitleWithDistinctArtistAndAlbum(t *testing.T) {
+	store := testStore(t)
+	ctx := t.Context()
+	track := testTrack("1", "执迷不悔", "谭咏麟")
+	track.Album, track.Duration = "我们一起走过的日子", 255
+	library := &NavidromeLibrary{
+		byTitle: map[string][]Track{ownershipTitle(track.Title): {{
+			Title: "執迷不悔", Artist: "王菲", Album: "执迷不悔 (Remastered 2019)", Duration: 268,
+		}}},
+		expires: time.Now().Add(time.Minute),
+	}
+	calls := 0
+	svc := Service{Store: store, Library: library, Provider: stubProvider{},
+		History: func(context.Context) ([]Track, error) { return []Track{track}, nil },
+		Download: func(_ context.Context, got Track) (DownloadResult, error) {
+			calls++
+			if got.URL != track.URL || got.Approved {
+				t.Errorf("want verified original source with ordinary audio review, got %#v", got)
+			}
+			return DownloadResult{}, nil
+		},
+	}
+	batch, err := svc.Rediscover(ctx, 1, "netease", 1)
+	if err != nil || len(batch.Tracks) != 1 || batch.SkippedOwned != 0 {
+		t.Fatalf("same-title recommendation got dropped: %#v, %v", batch, err)
+	}
+	id, err := store.Enqueue(ctx, 1, 1, batch.Tracks[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ProcessOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.Job(ctx, id)
+	if err != nil || job.State != Completed || calls != 1 {
+		t.Fatalf("distinct recording was not downloaded: %#v calls=%d err=%v", job, calls, err)
+	}
+}
+
+func TestRediscoverStillConfirmsSameTitleWithMissingAlbum(t *testing.T) {
 	store := testStore(t)
 	ctx := t.Context()
 	track := testTrack("1", "同名", "艺人甲")
 	track.Album = "专辑甲"
 	library := &NavidromeLibrary{
-		byTitle: map[string][]Track{ownershipTitle(track.Title): {{Title: track.Title, Artist: "艺人乙", Album: "专辑乙"}}},
+		byTitle: map[string][]Track{ownershipTitle(track.Title): {{Title: track.Title, Artist: "艺人乙"}}},
 		expires: time.Now().Add(time.Minute),
 	}
 	calls := 0

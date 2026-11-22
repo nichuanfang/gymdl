@@ -1357,6 +1357,41 @@ func TestAudioMatchStopsBeforeAnotherPlatform(t *testing.T) {
 	}
 }
 
+func TestAlternateAudioMatchRequiresConfirmationForTheActualSource(t *testing.T) {
+	store := testStore(t)
+	ctx := t.Context()
+	track := testTrack("1", "执迷不悔", "谭咏麟")
+	track.Album = "我们一起走过的日子"
+	alternate := track
+	alternate.Platform, alternate.ID, alternate.URL = "qq", "alt", "https://y.qq.com/n/ryqq/songDetail/alt"
+	library := &NavidromeLibrary{
+		byTitle: map[string][]Track{ownershipTitle(track.Title): {{Title: track.Title, Artist: "王菲", Album: "执迷不悔"}}},
+		expires: time.Now().Add(time.Minute),
+	}
+	var attempted []Track
+	svc := Service{Store: store, Library: library, Provider: stubProvider{alternate: alternate},
+		Download: func(_ context.Context, got Track) (DownloadResult, error) {
+			attempted = append(attempted, got)
+			if got.Platform == track.Platform {
+				return DownloadResult{}, errors.New("original unavailable")
+			}
+			return DownloadResult{}, &audiodupe.LibraryMatch{Decision: audiodupe.DecisionConfirm, Similarity: 0.9}
+		},
+	}
+	id, err := store.Enqueue(ctx, 1, 1, track)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ProcessOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.Job(ctx, id)
+	if err != nil || len(attempted) != 2 || job.State != NeedsConfirmation ||
+		job.Track.URL != alternate.URL || !strings.Contains(job.Error, "听感很接近") {
+		t.Fatalf("alternate fingerprint result: job=%#v calls=%d err=%v", job, len(attempted), err)
+	}
+}
+
 func TestAlbumOnlyEditionDoesNotCollapseIntoStudioRecording(t *testing.T) {
 	studio := testTrack("1", "Song", "Artist")
 	live := testTrack("2", "Song", "Artist")

@@ -265,8 +265,7 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	return strings.TrimRight(text.String(), "\n"), markup
 }
 
-// discoverySongButtons keeps one song's actions on that song.
-// 入库 is the primary row, paging sits under it, and 不再推荐 is alone on the last row.
+// discoverySongButtons keeps each song's actions on its recommendation card.
 func discoverySongButtons(markup *tb.ReplyMarkup, card discovery.Card, page int) {
 	if page < 0 || page >= len(card.Tracks) {
 		return
@@ -277,6 +276,12 @@ func discoverySongButtons(markup *tb.ReplyMarkup, card discovery.Card, page int)
 		appendDiscoveryRows(markup, markup.Row(
 			markup.Data("入库", discoveryCallbackUnique, "download", card.Token, index),
 			markup.Data("不再推荐", discoveryCallbackUnique, "ignore", card.Token, index),
+		))
+	}
+	if track.CardAction == discovery.NeedsConfirmation && track.IngestID != "" {
+		appendDiscoveryRows(markup, markup.Row(
+			markup.Data("确认入库", discoveryCallbackUnique, "card_yes", card.Token, index),
+			markup.Data("不再处理", discoveryCallbackUnique, "card_no", card.Token, index),
 		))
 	}
 	if track.CardAction == "dismissed" {
@@ -364,7 +369,11 @@ func rediscoverDecision(track discovery.Track) string {
 	case discovery.Owned:
 		return "✅ 曲库已有"
 	case discovery.NeedsConfirmation:
-		return "⚠️ 待确认"
+		note := strings.Join(strings.Fields(track.IngestNote), " ")
+		if note == "" {
+			return "⚠️ 待确认"
+		}
+		return "⚠️ 待确认\n原因: " + utils.EscapeHTML(utils.TruncateString(note, 120))
 	case discovery.Ignored:
 		return "已跳过"
 	case discovery.Failed:
@@ -1017,6 +1026,15 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		callbackNotice = "正在打开失败记录…"
 	}
 	switch action {
+	case "card_yes", "card_no":
+		if len(args) != 3 {
+			return c.Respond(&tb.CallbackResponse{Text: "按钮参数无效", ShowAlert: true})
+		}
+		index, err := strconv.Atoi(args[2])
+		if err != nil || index < 0 {
+			return c.Respond(&tb.CallbackResponse{Text: "曲目编号无效", ShowAlert: true})
+		}
+		return app.resolveRediscoverJob(c, key, index, action == "card_yes")
 	case "source":
 		if key == "menu" {
 			text, markup := discoveryPlatformMenu()
@@ -1432,6 +1450,54 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 	return editErr
 }
 
+func (app *BotApp) resolveRediscoverJob(c tb.Context, token string, index int, accept bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store := app.discovery.Store
+	app.rediscoverMu.Lock()
+	defer app.rediscoverMu.Unlock()
+	card, err := store.Card(ctx, token, c.Sender().ID, c.Chat().ID)
+	if err != nil || card.Kind != "recommend" || index >= len(card.Tracks) {
+		return c.Respond(&tb.CallbackResponse{Text: "遗珠卡片已过期或不可用", ShowAlert: true})
+	}
+	track := &card.Tracks[index]
+	if track.CardAction != discovery.NeedsConfirmation || track.IngestID == "" {
+		return c.Respond(&tb.CallbackResponse{Text: "这首歌已处理或无需确认"})
+	}
+	err = store.ResolveJob(ctx, track.IngestID, card.User, accept)
+	logFavoriteResolve(accept, err)
+	notice := "已跳过这首歌"
+	if err == nil {
+		track.CardAction, track.IngestNote = discovery.Ignored, ""
+		if accept {
+			track.CardAction = discovery.Queued
+			notice = "已确认，重新排队"
+		}
+	} else {
+		// The same job may already have been handled from the favorites card.
+		job, readErr := store.Job(ctx, track.IngestID)
+		if readErr != nil || job.User != card.User || job.State == discovery.NeedsConfirmation {
+			return c.Respond(&tb.CallbackResponse{Text: "暂未能处理，请稍后重试", ShowAlert: true})
+		}
+		updateRediscoverTrack(track, job)
+		notice = "这首歌已处理，已刷新状态"
+	}
+	card.Page = index
+	if err = store.ReplaceCard(ctx, card); err != nil {
+		return c.Respond(&tb.CallbackResponse{Text: "卡片更新失败，可再点一次刷新状态", ShowAlert: true})
+	}
+	responseErr := c.Respond(&tb.CallbackResponse{Text: notice})
+	text, markup := discoveryRecommendationCard(card, index)
+	editErr := editDiscoveryMessage(c, text, markup, true)
+	if !rediscoverSettled(track.CardAction) && c.Message() != nil {
+		go app.watchRediscoverCard(card.Token, card.User, card.Chat, c.Message())
+	}
+	if editErr != nil {
+		return editErr
+	}
+	return responseErr
+}
+
 func (app *BotApp) watchRediscoverCard(token string, user, chat int64, message *tb.Message) {
 	if app == nil || app.bot == nil || message == nil {
 		return
@@ -1502,13 +1568,7 @@ func syncRediscoverProgress(ctx context.Context, store *discovery.Store, card di
 			pending = true
 			continue
 		}
-		note := ""
-		if job.State == discovery.Failed {
-			note = strings.Join(strings.Fields(job.Error), " ")
-		}
-		if card.Tracks[index].CardAction != job.State || card.Tracks[index].IngestNote != note {
-			card.Tracks[index].CardAction = job.State
-			card.Tracks[index].IngestNote = note
+		if updateRediscoverTrack(&card.Tracks[index], job) {
 			changed = true
 		}
 		if !rediscoverSettled(job.State) {
@@ -1516,6 +1576,25 @@ func syncRediscoverProgress(ctx context.Context, store *discovery.Store, card di
 		}
 	}
 	return card, changed, pending, nil
+}
+
+func updateRediscoverTrack(track *discovery.Track, job discovery.Job) bool {
+	note := ""
+	if job.State == discovery.Failed || job.State == discovery.NeedsConfirmation {
+		note = strings.Join(strings.Fields(job.Error), " ")
+	}
+	if track.CardAction == job.State && track.IngestNote == note {
+		return false
+	}
+	if job.State == discovery.NeedsConfirmation && track.URL != job.Track.URL {
+		// Show the actual source the user will approve when a fallback needs review.
+		plays, lastPlayed, favorite := track.Plays, track.LastPlayed, track.Favorite
+		*track = job.Track
+		track.IngestID = job.ID
+		track.Plays, track.LastPlayed, track.Favorite = plays, lastPlayed, favorite
+	}
+	track.CardAction, track.IngestNote = job.State, note
+	return true
 }
 
 func appendDiscoveryRows(markup *tb.ReplyMarkup, rows ...tb.Row) {

@@ -38,7 +38,7 @@ func (l *NavidromeLibrary) Contains(ctx context.Context, t Track) (bool, error) 
 	return owned, err
 }
 
-func (l *NavidromeLibrary) matchOwnership(ctx context.Context, t Track) (owned, sameTitle bool, err error) {
+func (l *NavidromeLibrary) matchOwnership(ctx context.Context, t Track) (owned, ambiguous bool, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if time.Now().After(l.expires) {
@@ -46,22 +46,39 @@ func (l *NavidromeLibrary) matchOwnership(ctx context.Context, t Track) (owned, 
 			return false, false, err
 		}
 	}
-	owned, sameTitle = l.ownsLocked(t)
-	return owned, sameTitle, nil
+	owned, ambiguous = l.ownsLocked(t)
+	return owned, ambiguous, nil
 }
 
-func (l *NavidromeLibrary) ownsLocked(t Track) (owned, sameTitle bool) {
+func (l *NavidromeLibrary) ownsLocked(t Track) (owned, ambiguous bool) {
 	key := ownershipTitle(t.Title)
 	if key == "" {
 		return false, false
 	}
-	tracks := l.byTitle[key]
-	for _, other := range tracks {
+	for _, other := range l.byTitle[key] {
 		if sameOwnedWork(t, other) {
-			return true, true
+			return true, false
+		}
+		// Once the existing work match rules have ruled out overlapping
+		// credits and related albums, require both fields on both tracks to
+		// distinguish a verified source from a same-title library entry.
+		if !t.Verified || !hasOwnershipCredits(t) || !hasOwnershipCredits(other) {
+			ambiguous = true
 		}
 	}
-	return false, len(tracks) != 0
+	return false, ambiguous
+}
+
+func hasOwnershipCredits(t Track) bool {
+	switch Normalize(t.Artist) {
+	case "", "unknown", "unknownartist", "variousartists", "未知", "未知艺人", "未知歌手", "群星":
+		return false
+	}
+	switch albumWorkKey(t.Album) {
+	case "", "unknown", "unknownalbum", "未知", "未知专辑":
+		return false
+	}
+	return len(artistCredits(t.Artist)) > 0
 }
 
 func (l *NavidromeLibrary) load(ctx context.Context) error {
