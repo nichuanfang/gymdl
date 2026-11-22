@@ -1485,7 +1485,7 @@ func (app *BotApp) loadPlaylistAssignmentAISuggestions(token string, song unplay
 	if !ok || updated.processing {
 		return
 	}
-	_ = app.editPlaylistAssignmentCard(updated.message, updated)
+	app.presentPlaylistAssignment(updated)
 }
 
 func (app *BotApp) storePlaylistAssignmentAISuggestions(token, songID string, seq int, suggestions []string, unavailable bool) (pendingPlaylistAssignment, bool) {
@@ -1864,6 +1864,15 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 		text.WriteString(progress)
 		text.WriteString("\n")
 	}
+	if assignment.aiSuggestionLoading {
+		text.WriteString("\n")
+		if assignment.aiSuggestionManual {
+			text.WriteString("正在重新整理…")
+		} else {
+			text.WriteString("正在生成建议…")
+		}
+		return text.String()
+	}
 	text.WriteString("\n")
 	fmt.Fprintf(&text, "<b>%s</b>\n", playlistAssignmentTitle(assignment.song))
 	fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(displaySongValue(assignment.song.Artist)))
@@ -1885,12 +1894,6 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 	} else if note := strings.TrimSpace(assignment.statusNote); note != "" {
 		text.WriteString("\n\n")
 		text.WriteString(utils.EscapeHTML(note))
-	} else if assignment.aiSuggestionLoading {
-		if assignment.aiSuggestionManual {
-			text.WriteString("\n\n正在重新整理…")
-		} else {
-			text.WriteString("\n\n正在生成建议…")
-		}
 	}
 	if assignment.hiddenPlaylistCount > 0 {
 		fmt.Fprintf(&text, "\n⚠️ %d 个歌单未显示。", assignment.hiddenPlaylistCount)
@@ -1952,9 +1955,9 @@ func playlistAssignmentMarkup(assignment pendingPlaylistAssignment) *tb.ReplyMar
 				markup.Data(label, playlistAssignmentCallbackUnique, "add", assignment.token),
 				markup.Data("重新选择", playlistAssignmentCallbackUnique, "reselect", assignment.token),
 			))
-		} else if assignment.webAppButtonURL != "" {
+		} else if !assignment.aiSuggestionLoading && assignment.webAppButtonURL != "" {
 			choose := markup.WebApp("📂 选择歌单", &tb.WebApp{URL: assignment.webAppButtonURL})
-			if assignment.playlistAssist && !assignment.aiSuggestionLoading {
+			if assignment.playlistAssist {
 				rows = append(rows, markup.Row(choose, markup.Data("重新整理", playlistAssignmentCallbackUnique, "redo", assignment.token)))
 			} else {
 				rows = append(rows, markup.Row(choose))

@@ -1017,14 +1017,14 @@ func TestPlaylistAssignmentSuggestionsUpdateChooserDefaultsWithoutLosingSession(
 			loadingButtons[button.Text] = true
 		}
 	}
-	if !foundLoadingChooser || !loadingButtons["📂 选择歌单"] || loadingButtons["重新整理"] {
-		t.Fatal("the chooser should be available while suggestions load")
+	if foundLoadingChooser || loadingButtons["📂 选择歌单"] || loadingButtons["重新整理"] {
+		t.Fatal("the chooser should stay hidden while suggestions load")
 	}
 	if !loadingButtons["跳过本首"] || !loadingButtons["结束整理"] {
 		t.Fatalf("skip and end controls should remain available while AI loads: %#v", loadingButtons)
 	}
-	if text := formatPlaylistAssignment(assignment); !strings.Contains(text, "第 1 首") || !strings.Contains(text, "正在生成建议…") || !strings.Contains(text, "Song") {
-		t.Fatalf("loading card should show the song and background suggestion status: %s", text)
+	if text := formatPlaylistAssignment(assignment); !strings.Contains(text, "正在生成建议…") || strings.Contains(text, "Song") {
+		t.Fatalf("loading card should use the original compact loading copy: %s", text)
 	}
 	updated, ok := app.storePlaylistAssignmentAISuggestions(assignment.token, "song-1", 1, []string{"摇滚"}, false)
 	if !ok || updated.aiSuggestionLoading || len(updated.aiSuggestedPlaylists) != 1 || updated.aiSuggestedPlaylists[0] != "摇滚" {
@@ -1106,10 +1106,10 @@ func TestPlaylistAssignmentOffersAnotherAIPassBesideTheChooser(t *testing.T) {
 		t.Fatalf("retry copy = %q", text)
 	}
 	loading := buttonTexts(playlistAssignmentMarkup(updated))
-	if loading["重新整理"] || !loading["📂 选择歌单"] {
-		t.Fatalf("a second pass should leave the chooser available: %#v", loading)
+	if loading["重新整理"] || loading["📂 选择歌单"] {
+		t.Fatalf("the chooser should remain hidden during a second pass: %#v", loading)
 	}
-	if text := formatPlaylistAssignment(updated); !strings.Contains(text, "正在重新整理…") || !strings.Contains(text, "雨下一整晚") {
+	if text := formatPlaylistAssignment(updated); !strings.Contains(text, "正在重新整理…") || strings.Contains(text, "雨下一整晚") {
 		t.Fatalf("reorganize copy = %q", text)
 	}
 	finished := assignment
