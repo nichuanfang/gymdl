@@ -146,6 +146,20 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 		t.Fatalf("missing %s: %s", label, data["reply_markup"])
 		return ""
 	}
+	buttonRows := func(data map[string]string) [][]string {
+		t.Helper()
+		var markup tb.ReplyMarkup
+		if err := json.Unmarshal([]byte(data["reply_markup"]), &markup); err != nil {
+			t.Fatal(err)
+		}
+		rows := make([][]string, len(markup.InlineKeyboard))
+		for i, row := range markup.InlineKeyboard {
+			for _, btn := range row {
+				rows[i] = append(rows[i], btn.Text)
+			}
+		}
+		return rows
+	}
 	bot.ProcessUpdate(tb.Update{Message: &tb.Message{ID: 7, Chat: chat, Sender: &tb.User{ID: 1}, Text: "/recommend 粤语爵士"}})
 	next("sendMessage", "text", "找适合你的歌")
 	first := next("editMessageText", "text", "个性化推荐 · 网易云")
@@ -156,7 +170,10 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 	if jobs, err := store.Jobs(ctx, 1, false); err != nil || len(jobs) != 0 {
 		t.Fatalf("showing a recommendation created a job: %v, %v", jobs, err)
 	}
-	oldNext := button(first, "再推荐一首")
+	if got, want := buttonRows(first), [][]string{{"入库", "不再推荐"}, {"换一首", "更多设置"}}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("recommendation card buttons = %v, want %v", got, want)
+	}
+	oldNext := button(first, "换一首")
 	click(2, oldNext)
 	next("answerCallbackQuery", "text", "卡片已过期")
 	click(1, oldNext)
@@ -165,18 +182,38 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 	click(1, oldNext)
 	next("answerCallbackQuery", "text", "卡片已过期")
 
-	click(1, button(second, "场景"))
-	scene := next("editMessageReplyMarkup", "reply_markup", "放松")
-	click(1, button(scene, "放松"))
+	click(1, button(second, "更多设置"))
+	settings := next("editMessageText", "text", "选择推荐场景或来源")
+	if got := buttonRows(settings); len(got) != 5 || got[0][0] != "通勤" || got[1][1] != "按口味" || got[2][0] != "网易云" || got[3][0] != "自动选择（网易云 / QQ）" || got[4][0] != "返回歌曲卡片" {
+		t.Fatalf("recommendation settings buttons = %v", got)
+	}
+	click(1, button(settings, "返回歌曲卡片"))
+	returned := next("editMessageText", "text", "个性化推荐")
+	if got, want := buttonRows(returned), [][]string{{"入库", "不再推荐"}, {"换一首", "更多设置"}}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("returned recommendation buttons = %v, want %v", got, want)
+	}
+	click(1, button(returned, "更多设置"))
+	settings = next("editMessageText", "text", "选择推荐场景或来源")
+	click(1, button(settings, "放松"))
 	third := next("editMessageText", "text", "放松 · 粤语 · 爵士")
 	waitReady()
-	click(1, button(third, "QQ 音乐"))
-	fourth := next("editMessageText", "text", "个性化推荐 · QQ 音乐")
+	click(1, button(third, "更多设置"))
+	settings = next("editMessageText", "text", "选择推荐场景或来源")
+	click(1, button(settings, "自动选择（网易云 / QQ）"))
+	fourth := next("editMessageText", "text", "个性化推荐 ·")
 	if !strings.Contains(fourth["text"], "放松 · 粤语 · 爵士") {
-		t.Fatalf("platform switch dropped the filters: %v", fourth)
+		t.Fatalf("automatic platform selection dropped the filters: %v", fourth)
 	}
 	waitReady()
-	download := button(fourth, "入库")
+	click(1, button(fourth, "更多设置"))
+	settings = next("editMessageText", "text", "选择推荐场景或来源")
+	click(1, button(settings, "QQ 音乐"))
+	fifth := next("editMessageText", "text", "个性化推荐 · QQ 音乐")
+	if !strings.Contains(fifth["text"], "放松 · 粤语 · 爵士") {
+		t.Fatalf("platform switch dropped the filters: %v", fifth)
+	}
+	waitReady()
+	download := button(fifth, "入库")
 	click(1, download)
 	next("editMessageText", "text", "排队中")
 	click(1, download)

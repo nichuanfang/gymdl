@@ -52,19 +52,21 @@ func appendTasteActions(markup *tb.ReplyMarkup, card discovery.Card) {
 		return markup.Data(label, discoveryCallbackUnique, append([]string{"taste", card.Token}, args...)...)
 	}
 	appendDiscoveryRows(markup,
-		markup.Row(button("再推荐一首", "next"), button("场景", "scenes")),
-		markup.Row(button("网易云", "platform", "netease"), button("QQ 音乐", "platform", "qq"), button("双平台", "platform", discovery.TasteBoth)),
+		markup.Row(button("换一首", "next"), button("更多设置", "settings")),
 	)
 }
 
-func tasteSceneMarkup(token string) *tb.ReplyMarkup {
+func tasteSettingsMarkup(token string) *tb.ReplyMarkup {
 	markup := &tb.ReplyMarkup{}
-	button := func(label, scene string) tb.Btn {
-		return markup.Data(label, discoveryCallbackUnique, "taste", token, "scene", scene)
+	button := func(label string, args ...string) tb.Btn {
+		return markup.Data(label, discoveryCallbackUnique, append([]string{"taste", token}, args...)...)
 	}
 	appendDiscoveryRows(markup,
-		markup.Row(button("通勤", "commute"), button("放松", "relax"), button("运动", "workout")),
-		markup.Row(button("睡前", "sleep"), button("按口味", "taste"), markup.Data("返回", discoveryCallbackUnique, "taste", token, "back")),
+		markup.Row(button("通勤", "scene", "commute"), button("放松", "scene", "relax"), button("运动", "scene", "workout")),
+		markup.Row(button("睡前", "scene", "sleep"), button("按口味", "scene", "taste")),
+		markup.Row(button("网易云", "platform", "netease"), button("QQ 音乐", "platform", "qq")),
+		markup.Row(button("自动选择（网易云 / QQ）", "platform", discovery.TasteBoth)),
+		markup.Row(button("返回歌曲卡片", "back")),
 	)
 	return markup
 }
@@ -82,7 +84,7 @@ func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string
 		return c.Respond(&tb.CallbackResponse{Text: "这张卡片已过期，请重新发送 /recommend", ShowAlert: true})
 	}
 	request := card.Taste.Request
-	if args[0] == "scenes" || args[0] == "back" {
+	if args[0] == "settings" || args[0] == "scenes" || args[0] == "back" {
 		defer app.rediscoverMu.Unlock()
 		if err := c.Respond(); err != nil {
 			return err
@@ -91,7 +93,9 @@ func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string
 			text, markup := discoveryRecommendationCard(card, 0)
 			return editDiscoveryMessage(c, text, markup, true)
 		}
-		return c.Edit(tasteSceneMarkup(token))
+		text, _ := discoveryRecommendationCard(card, 0)
+		text += "\n\n<b>更多设置</b>\n选择推荐场景或来源。"
+		return editDiscoveryMessage(c, text, tasteSettingsMarkup(token), true)
 	}
 	app.rediscoverMu.Unlock()
 	switch {
