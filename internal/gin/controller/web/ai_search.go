@@ -3,15 +3,32 @@ package web
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strings"
 
 	"github.com/nichuanfang/gymdl/config"
 )
 
-// defaultAgentPlatforms keeps provider fan-out small: all four providers at
-// once multiplies latency and rate-limit exposure, and anonymous Netease is
-// frequently rejected. QQ and Bilibili are the most reliable pair here.
+// defaultAgentPlatforms is only the validation fallback for explicitly
+// requested batches. An omitted platform is resolved by agentPlatforms.
 var defaultAgentPlatforms = []string{"qq", "netease", "bilibili"}
+
+// agentPlatformPicker is a test seam for the random platform choice.
+var agentPlatformPicker = func() string {
+	if rand.Intn(2) == 0 {
+		return "netease"
+	}
+	return "qq"
+}
+
+// agentPlatforms turns "no platform" into one random source instead of
+// fanning out across every provider. The user sees that platform on each hit.
+func agentPlatforms(platforms []string) []string {
+	if len(platforms) != 0 {
+		return platforms
+	}
+	return []string{agentPlatformPicker()}
+}
 
 // EnsureAgentRuntime installs the config snapshot that provider searches read
 // from. The Telegram bot can run without the Web server, so it must publish the
@@ -31,9 +48,7 @@ func SearchForAgent(ctx context.Context, keyword string, platforms []string, lim
 	if keyword == "" {
 		return nil, fmt.Errorf("搜索关键词不能为空")
 	}
-	if len(platforms) == 0 {
-		platforms = defaultAgentPlatforms
-	}
+	platforms = agentPlatforms(platforms)
 	if limit <= 0 || limit > 50 {
 		limit = 10
 	}
@@ -45,7 +60,7 @@ func SearchForAgent(ctx context.Context, keyword string, platforms []string, lim
 		}
 	}
 	if len(valid) == 0 {
-		valid = defaultAgentPlatforms
+		valid = agentPlatforms(nil)
 	}
 	search := func(ctx context.Context, platform, kw string, pageSize, offset int) ([]SearchResultItem, error) {
 		return cachedSearchPage(ctx, platform, kw, pageSize, offset, searchProviderSearch)

@@ -952,6 +952,44 @@ func TestPlaylistAssignmentStatusExplainsAIBehavior(t *testing.T) {
 	}
 }
 
+func TestPlaylistAssignmentShowsSongOnlyAfterSuggestionsAreReady(t *testing.T) {
+	loading := playlistAssignmentLoadingText()
+	if !strings.Contains(loading, "正在生成归档建议") {
+		t.Fatalf("loading copy = %q", loading)
+	}
+	for _, hidden := range []string{"Song", "Artist", "还没选歌单"} {
+		if strings.Contains(loading, hidden) {
+			t.Fatalf("loading copy exposed %q before suggestions were ready: %q", hidden, loading)
+		}
+	}
+
+	ready := pendingPlaylistAssignment{
+		song:                 unplaylistSong{ID: "song-1", Title: "Song", Artist: "Artist"},
+		playlists:            []config.PlaylistInfo{{Name: "华语"}},
+		webAppButtonURL:      "https://webapp.example.com/?data=%7B%7D",
+		playlistAssist:       true,
+		aiSuggestedPlaylists: []string{"华语"},
+		selectionToken:       "01234567890123456789012345678901",
+	}
+	text := formatPlaylistAssignment(ready)
+	for _, expected := range []string{"Song", "Artist", "还没选歌单", "AI 建议：华语"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("ready copy %q missing %q", text, expected)
+		}
+	}
+	foundChooser := false
+	for _, row := range playlistAssignmentMarkup(ready).InlineKeyboard {
+		for _, button := range row {
+			if button.WebApp != nil {
+				foundChooser = true
+			}
+		}
+	}
+	if !foundChooser {
+		t.Fatal("the picker must appear together with the song once suggestions are ready")
+	}
+}
+
 func TestPlaylistAssignmentSuggestionsUpdateChooserDefaultsWithoutLosingSession(t *testing.T) {
 	app := &BotApp{}
 	assignment := pendingPlaylistAssignment{

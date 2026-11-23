@@ -333,6 +333,43 @@ func TestRecommendRanksEvidenceAndExcludesOwnedShownDismissed(t *testing.T) {
 	}
 }
 
+func TestRecommendWithoutPlatformPicksOneAndOnlyNetEaseOrQQ(t *testing.T) {
+	s := testStore(t)
+	var tracks []Track
+	for i := 0; i < 4; i++ {
+		tr := testTrack(fmt.Sprint(i), fmt.Sprint("Song", i), fmt.Sprint("Artist", i))
+		tr.Plays = 10 - i
+		tracks = append(tracks, tr)
+	}
+	for _, picked := range []string{"netease", "qq"} {
+		resolvedPlatforms := map[string]bool{}
+		provider := &countingProvider{}
+		provider.resolveOn = func(track Track, platform string) (Track, error) {
+			resolvedPlatforms[platform] = true
+			track.Platform = platform
+			return track, nil
+		}
+		calls := 0
+		svc := Service{
+			Store: s, Provider: provider, Library: stubLibrary{},
+			History:        func(context.Context) ([]Track, error) { return tracks, nil },
+			platformPicker: func() string { calls++; return picked },
+		}
+		out, err := svc.Recommend(context.Background(), 1)
+		if err != nil || len(out) == 0 {
+			t.Fatalf("%s recommendation = %d, %v", picked, len(out), err)
+		}
+		if calls != 1 || len(resolvedPlatforms) != 1 || !resolvedPlatforms[picked] {
+			t.Fatalf("%s resolved platforms = %#v, picker calls = %d", picked, resolvedPlatforms, calls)
+		}
+		for _, track := range out {
+			if track.Platform != picked {
+				t.Fatalf("%s batch mixed platform %q", picked, track.Platform)
+			}
+		}
+	}
+}
+
 func TestRediscoverReservesHistoryBesideFavorites(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

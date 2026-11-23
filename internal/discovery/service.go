@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sort"
 	"strings"
 	"sync"
@@ -40,6 +41,10 @@ type Service struct {
 	historyReady         bool
 	resolveCache         map[string]resolveCacheEntry
 	neteaseRefreshCursor map[string]int
+
+	// platformPicker is a test seam for the otherwise random platform choice
+	// made by Recommend. Production leaves it nil.
+	platformPicker func() string
 }
 
 const (
@@ -218,9 +223,23 @@ func (s *Service) neteaseRefreshIDs(account string, ids []string) []string {
 	return out
 }
 
+// Recommend is the platform-free "personalized recommendation" path. A random
+// source is chosen once per call so the batch does not mix platforms, while the
+// ranking and history/favorite quotas stay identical to the old cross-source
+// behavior. The card still shows the actual platform of each returned track.
 func (s *Service) Recommend(ctx context.Context, user int64) ([]Track, error) {
 	tracks, _, _, err := s.recommend(ctx, user, "", 10)
 	return tracks, err
+}
+
+func (s *Service) recommendationPlatform() string {
+	if s.platformPicker != nil {
+		return s.platformPicker()
+	}
+	if rand.Intn(2) == 0 {
+		return "netease"
+	}
+	return "qq"
 }
 
 // RediscoverBatch is one platform search. SkippedOwned counts distinct works
@@ -355,7 +374,9 @@ func (s *Service) recommend(ctx context.Context, user int64, platform string, li
 		return state.out, len(state.skipped), len(state.unconfirmed), nil
 	}
 	if platform == "" {
-		_, stop, err := s.pickTracks(ctx, state, ranked, limit, platform, 0)
+		// One platform per batch. Do not pass the empty string into Resolve,
+		// which would search every source for each candidate.
+		_, stop, err := s.pickTracks(ctx, state, ranked, limit, s.recommendationPlatform(), 0)
 		if stop {
 			return finish(nil)
 		}

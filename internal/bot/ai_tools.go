@@ -34,7 +34,7 @@ func (app *BotApp) aiTools() []aichat.Tool {
 						"description": "一次查询多个具体歌名（最多 5 个），与 keyword 二选一",
 					},
 					"platform": map[string]any{
-						"type": "string", "description": "netease/qq/youtube/bilibili，逗号分隔，留空为自动",
+						"type": "string", "description": "netease/qq/youtube/bilibili，逗号分隔；推荐场景留空，会随机选网易云或 QQ",
 					},
 					"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 10},
 				},

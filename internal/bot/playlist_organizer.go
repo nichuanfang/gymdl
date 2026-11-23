@@ -1371,10 +1371,22 @@ func (app *BotApp) preparePlaylistAssignment(token string) {
 	assignment.aiSuggestionManual = false
 	assignment.expiresAt = time.Now().Add(playlistAssignmentTTL)
 	app.updatePlaylistAssignment(assignment)
-	app.editPlaylistAssignmentMessage(assignment.message, formatPlaylistAssignment(assignment), playlistAssignmentMarkup(assignment))
+	// Until classification finishes, show only the progress line. The song card
+	// and the picker appear together once suggestions are ready, so the user does
+	// not see a half-built card or an old chooser without defaults.
 	if assignment.aiSuggestionLoading {
+		app.editPlaylistAssignmentMessage(assignment.message, playlistAssignmentLoadingText(), &tb.ReplyMarkup{})
 		go app.loadPlaylistAssignmentAISuggestions(assignment.token, song, assignment.aiSuggestionSeq)
+		return
 	}
+	app.editPlaylistAssignmentMessage(assignment.message, formatPlaylistAssignment(assignment), playlistAssignmentMarkup(assignment))
+}
+
+// playlistAssignmentLoadingText is the whole message while AI classification is
+// still running. Keeping it separate from formatPlaylistAssignment makes the
+// "song info appears only after suggestions" rule explicit.
+func playlistAssignmentLoadingText() string {
+	return "新歌归档\n\n⌛ 正在生成归档建议…"
 }
 
 func (app *BotApp) loadPlaylistAssignmentAISuggestions(token string, song unplaylistSong, seq int) {
