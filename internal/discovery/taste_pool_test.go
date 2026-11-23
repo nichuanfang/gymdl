@@ -27,7 +27,7 @@ func TestPooledNeteaseRecommendationDoesNotSearchLive(t *testing.T) {
 		}},
 	}
 	got, err := svc.RecommendTaste(ctx, 7, TasteRequest{Platform: "netease"})
-	if err != nil || got.Track == nil || got.Track.ID != "186016" {
+	if err != nil || got.Track == nil || got.Track.ID != "186016" || got.Reason != "来自你常听或收藏的艺人" {
 		t.Fatalf("pooled recommendation = %+v, %v", got, err)
 	}
 	if _, ok, err := store.TakeTasteCandidate(ctx, 7, "netease"); err != nil || ok {
@@ -159,6 +159,9 @@ func TestClickingRecommendNeverBurstsNetease(t *testing.T) {
 		}
 		if got.Track != nil {
 			served = append(served, got.Track.ID)
+			if strings.Contains(got.Reason, "后台") || !strings.Contains(got.Reason, "常听或收藏") {
+				t.Fatalf("pooled reason = %q", got.Reason)
+			}
 		}
 	}
 	slices.Sort(served)

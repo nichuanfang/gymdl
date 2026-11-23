@@ -399,7 +399,7 @@ func (s *Service) recommendPooledTaste(ctx context.Context, user int64, req Tast
 		if req.Filter.Label() != "" {
 			notice = "网易云正在冷却，这首先按备好的口味给你，没有按场景现搜。"
 		}
-		return TasteResult{Track: &track, Reason: "来自后台慢慢找到的新歌", Notice: notice}, nil
+		return TasteResult{Track: &track, Reason: "来自你常听或收藏的艺人", Notice: notice}, nil
 	}
 	if track, ok, notice, err := s.pickDailyTaste(ctx, user, exclusions); err != nil {
 		return TasteResult{}, err

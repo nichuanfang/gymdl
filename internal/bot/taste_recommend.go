@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"math/rand"
 	"strconv"
 	"strings"
 	"time"
@@ -119,7 +120,29 @@ func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string
 	return app.startTasteRecommendation(c, request, &card)
 }
 
+// An unspecified platform means one of the two catalogs, chosen once for this
+// card. Later "next" clicks keep that choice; "自动选择" asks for a new draw.
+func chooseUnspecifiedTastePlatform(request discovery.TasteRequest) discovery.TasteRequest {
+	if request.Platform != discovery.TasteBoth {
+		return request
+	}
+	if tasteAutoPlatform() == "qq" {
+		request.Platform = "qq"
+	} else {
+		request.Platform = "netease"
+	}
+	return request
+}
+
+var tasteAutoPlatform = func() string {
+	if rand.Intn(2) == 0 {
+		return "netease"
+	}
+	return "qq"
+}
+
 func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.TasteRequest, previous *discovery.Card) error {
+	request = chooseUnspecifiedTastePlatform(request)
 	if !app.tasteCommandMu.TryLock() {
 		if c.Callback() != nil {
 			return c.Respond(&tb.CallbackResponse{Text: "上一首还在找，稍等一下"})

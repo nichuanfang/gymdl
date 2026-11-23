@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,6 +55,8 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 		fmt.Fprint(w, `{"ok":true,"result":{"message_id":42,"chat":{"id":1,"type":"private"}}}`)
 	}))
 	defer server.Close()
+	var searched sync.Mutex
+	platformsSeen := map[string]int{}
 	bot, err := tb.NewBot(tb.Settings{Offline: true, Synchronous: true, Token: "1:test", URL: server.URL})
 	if err != nil {
 		t.Fatal(err)
@@ -68,6 +71,9 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 				HistoryOwner: 1,
 				Similar:      func(context.Context, string) ([]string, error) { return []string{"相近艺人"}, nil },
 				Search: func(_ context.Context, platform, artist string) ([]discovery.Track, error) {
+					searched.Lock()
+					platformsSeen[platform]++
+					searched.Unlock()
 					var tracks []discovery.Track
 					for i := 1; i <= 4; i++ {
 						id := fmt.Sprint(i)
@@ -162,9 +168,21 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 	}
 	bot.ProcessUpdate(tb.Update{Message: &tb.Message{ID: 7, Chat: chat, Sender: &tb.User{ID: 1}, Text: "/recommend 粤语爵士"}})
 	next("sendMessage", "text", "找适合你的歌")
-	first := next("editMessageText", "text", "个性化推荐 · 网易云")
-	if !strings.Contains(first["text"], "粤语 · 爵士") || !strings.Contains(first["text"], `href="`+discoveryListenURL("https://music.163.com/song?id=1")+`"`) {
+	first := next("editMessageText", "text", "个性化推荐 ·")
+	source := "https://music.163.com/song?id=1"
+	if strings.Contains(first["text"], "QQ 音乐") {
+		source = "https://y.qq.com/n/ryqq/songDetail/1"
+	} else if !strings.Contains(first["text"], "网易云") {
+		t.Fatalf("unspecified platform did not pick one catalog: %v", first)
+	}
+	if !strings.Contains(first["text"], "粤语 · 爵士") || !strings.Contains(first["text"], `href="`+discoveryListenURL(source)+`"`) {
 		t.Fatalf("first card lost typed filter or listen link: %v", first)
+	}
+	searched.Lock()
+	seen := len(platformsSeen)
+	searched.Unlock()
+	if seen != 1 {
+		t.Fatalf("unspecified recommendation searched %d platforms, want 1", seen)
 	}
 	waitReady()
 	if jobs, err := store.Jobs(ctx, 1, false); err != nil || len(jobs) != 0 {
@@ -237,5 +255,35 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 	done := next("editMessageText", "text", "已入库")
 	if !strings.Contains(done["text"], "个性化推荐") {
 		t.Fatalf("progress changed the card type: %v", done)
+	}
+}
+
+func TestChooseUnspecifiedTastePlatformPicksOneCatalog(t *testing.T) {
+	if got := chooseUnspecifiedTastePlatform(discovery.TasteRequest{Platform: "netease"}); got.Platform != "netease" {
+		t.Fatalf("explicit netease became %q", got.Platform)
+	}
+	if got := chooseUnspecifiedTastePlatform(discovery.TasteRequest{Platform: "qq", Page: 2}); got.Platform != "qq" || got.Page != 2 {
+		t.Fatalf("explicit qq changed: %+v", got)
+	}
+	original := tasteAutoPlatform
+	t.Cleanup(func() { tasteAutoPlatform = original })
+	for _, want := range []string{"netease", "qq"} {
+		tasteAutoPlatform = func() string { return want }
+		got := chooseUnspecifiedTastePlatform(discovery.TasteRequest{Platform: discovery.TasteBoth, Filter: discovery.TasteFilter{Language: "粤语"}})
+		if got.Platform != want || got.Filter.Language != "粤语" {
+			t.Fatalf("auto %s = %+v", want, got)
+		}
+	}
+	tasteAutoPlatform = original
+	seen := map[string]bool{}
+	for i := 0; i < 40; i++ {
+		got := chooseUnspecifiedTastePlatform(discovery.TasteRequest{Platform: discovery.TasteBoth})
+		if got.Platform != "netease" && got.Platform != "qq" {
+			t.Fatalf("auto platform = %q", got.Platform)
+		}
+		seen[got.Platform] = true
+	}
+	if len(seen) != 2 {
+		t.Fatalf("40 draws only saw %v; random choice is stuck", seen)
 	}
 }

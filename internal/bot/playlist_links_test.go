@@ -58,3 +58,22 @@ func TestPlaylistAssignmentPreviewUsesThePublicSongPage(t *testing.T) {
 		}
 	}
 }
+
+func TestPlaylistAssignmentPreviewWaitsForTheSongCard(t *testing.T) {
+	song := unplaylistSong{ID: "song-1", Title: "Only Time", Artist: "Enya", Comment: "https://music.163.com/song?id=186016"}
+	loading := pendingPlaylistAssignment{song: song, aiSuggestionLoading: true}
+	if got := playlistAssignmentCardPreviewURL(loading); got != "" {
+		t.Fatalf("loading preview = %q, want none until the song is shown", got)
+	}
+	if text := formatPlaylistAssignment(loading); !strings.Contains(text, "正在生成建议") || strings.Contains(text, "Only Time") {
+		t.Fatalf("loading copy = %q", text)
+	}
+	ready := loading
+	ready.aiSuggestionLoading = false
+	if got, want := playlistAssignmentCardPreviewURL(ready), "https://music.163.com/song?id=186016"; got != want {
+		t.Fatalf("ready preview = %q, want %q", got, want)
+	}
+	if text := formatPlaylistAssignment(ready); !strings.Contains(text, "Only Time") {
+		t.Fatalf("ready card hid the song: %q", text)
+	}
+}

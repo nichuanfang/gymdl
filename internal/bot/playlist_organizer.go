@@ -2018,6 +2018,15 @@ func playlistAssignmentPreviewURL(song unplaylistSong) string {
 	}
 }
 
+// The loading card only says the suggestions are still being written. Showing
+// the cover then makes Telegram preview the song before its title appears.
+func playlistAssignmentCardPreviewURL(assignment pendingPlaylistAssignment) string {
+	if assignment.aiSuggestionLoading || assignment.song.ID == "" {
+		return ""
+	}
+	return playlistAssignmentPreviewURL(assignment.song)
+}
+
 func playlistAssignmentTitle(song unplaylistSong) string {
 	title := utils.EscapeHTML(displaySongValue(song.Title))
 	sourceURL := discoveryListenURL(playlistAssignmentSourceURL(song.Comment))
@@ -2145,7 +2154,7 @@ func (app *BotApp) editPlaylistAssignmentCard(message *tb.Message, assignment pe
 	}
 	// The title stays an app link. Telegram only renders a cover when the
 	// preview target is the public song page, same as the recommendation card.
-	return editDiscoveryText(app.bot, message, formatPlaylistAssignment(current), playlistAssignmentMarkup(current), true, playlistAssignmentPreviewURL(current.song))
+	return editDiscoveryText(app.bot, message, formatPlaylistAssignment(current), playlistAssignmentMarkup(current), true, playlistAssignmentCardPreviewURL(current))
 }
 
 func (app *BotApp) editPlaylistAssignmentText(message *tb.Message, text string, markup *tb.ReplyMarkup, mode tb.ParseMode) error {
