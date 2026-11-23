@@ -418,17 +418,25 @@ func (s *playlistOrganizerService) probeOliveTin(ctx context.Context) error {
 	return err
 }
 
-func oliveTinOutage(err error) bool {
+func oliveTinTimeout(err error) bool {
 	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "deadline") || strings.Contains(text, "timeout") || strings.Contains(text, "超时")
+}
+
+func oliveTinOutage(err error) bool {
+	if err == nil || oliveTinTimeout(err) {
 		return false
 	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "调用 olivetin 失败") ||
 		strings.Contains(text, "olivetin 返回 http") ||
-		strings.Contains(text, "构造 olivetin") ||
-		strings.Contains(text, "deadline") ||
-		strings.Contains(text, "timeout") ||
-		strings.Contains(text, "超时")
+		strings.Contains(text, "构造 olivetin")
 }
 
 func (app *BotApp) oliveTinCooling(now time.Time) (string, bool) {

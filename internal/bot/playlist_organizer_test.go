@@ -1228,8 +1228,11 @@ func TestOliveTinOutageIsRemembered(t *testing.T) {
 	if _, down := app.oliveTinCooling(time.Now()); down {
 		t.Fatal("a fresh organizer should still check OliveTin")
 	}
-	if !oliveTinOutage(errors.New("OliveTin 返回 HTTP 404")) || !oliveTinOutage(context.DeadlineExceeded) {
-		t.Fatal("transport and HTTP failures should cool down")
+	if !oliveTinOutage(errors.New("OliveTin 返回 HTTP 404")) {
+		t.Fatal("HTTP failures should cool down")
+	}
+	if oliveTinOutage(context.DeadlineExceeded) || oliveTinOutage(errors.New("调用 OliveTin 失败: context deadline exceeded")) {
+		t.Fatal("a slow OliveTin should stay retryable")
 	}
 	if oliveTinOutage(errors.New("OliveTin action 失败（exitCode=1, timedOut=false）")) {
 		t.Fatal("a finished action should stay retryable")
