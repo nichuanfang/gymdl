@@ -53,6 +53,26 @@ func TestNeteaseSearchRequestUsesEAPIAndContext(t *testing.T) {
 	}
 }
 
+func TestNeteaseSearchCode405OpensCooldown(t *testing.T) {
+	previous := neteaseSearchCircuit
+	neteaseSearchCircuit = &neteaseSearchCooldown{}
+	t.Cleanup(func() { neteaseSearchCircuit = previous })
+
+	err := neteaseSearchResultError(405, true)
+	if err == nil || !strings.Contains(err.Error(), "暂时受限") {
+		t.Fatalf("405 result = %v", err)
+	}
+	if neteaseSearchCircuit.remaining(time.Now()) <= 0 {
+		t.Fatal("405 did not open the cooldown")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = searchNeteaseWithContext(ctx, "keyword", 1, 0)
+	if err == nil || !strings.Contains(err.Error(), "暂时受限") {
+		t.Fatalf("cooldown did not stop the follow-up: %v", err)
+	}
+}
+
 func TestNeteaseAndQQSearchRequestsHonorCancellation(t *testing.T) {
 	for _, platform := range []string{"netease", "qq"} {
 		t.Run(platform, func(t *testing.T) {

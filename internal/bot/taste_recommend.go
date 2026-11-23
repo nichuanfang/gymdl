@@ -155,7 +155,7 @@ func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.Tast
 				card.Taste.Notice += "\n" + result.Notice
 			} else if filter != "" {
 				card.Taste.Notice += "可换个场景或回到「按口味」。"
-			} else {
+			} else if !strings.Contains(card.Taste.Notice, "后台") {
 				card.Taste.Notice += "可以再试一次或换个平台。"
 			}
 		}

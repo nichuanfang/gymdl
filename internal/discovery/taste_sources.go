@@ -24,6 +24,7 @@ type TasteSources struct {
 	TrackTags    func(context.Context, Track) ([]string, error)
 	LibraryTags  func(context.Context) ([]musicrag.Song, error)
 	HistoryOwner int64 // The configured Last.fm history represents one listener.
+	Daily        func(ctx context.Context) ([]Track, error)
 }
 
 func NewTasteSources(cfg *config.Config, libraryTags func(context.Context) ([]musicrag.Song, error)) *TasteSources {
@@ -46,6 +47,17 @@ func NewTasteSources(cfg *config.Config, libraryTags func(context.Context) ([]mu
 	}
 	sources.Search = func(ctx context.Context, platform, artist string) ([]Track, error) {
 		return sources.SearchPage(ctx, platform, artist, 0)
+	}
+	sources.Daily = func(ctx context.Context) ([]Track, error) {
+		items, err := web.NeteaseDailySongs(ctx)
+		if err != nil {
+			return nil, err
+		}
+		tracks := make([]Track, 0, len(items))
+		for _, item := range items {
+			tracks = append(tracks, fromSearch(item))
+		}
+		return tracks, nil
 	}
 	if cfg.Lastfm == nil || strings.TrimSpace(cfg.Lastfm.APIKey) == "" {
 		return sources

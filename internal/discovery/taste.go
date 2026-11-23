@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nichuanfang/gymdl/utils"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -62,6 +63,9 @@ func (s *Service) RecommendTaste(ctx context.Context, user int64, req TasteReque
 	if err != nil {
 		return TasteResult{}, errors.New("暂时无法核对入库队列，请稍后重试")
 	}
+	if s.SlowNetease && req.Platform == "netease" {
+		return s.recommendPooledTaste(ctx, user, req)
+	}
 	explore := s.similarTasteArtists(ctx, artists, familiar)
 	platforms := []string{req.Platform}
 	if req.Platform == TasteBoth {
@@ -69,6 +73,15 @@ func (s *Service) RecommendTaste(ctx context.Context, user int64, req TasteReque
 		if req.ExploreFirst {
 			platforms[0], platforms[1] = platforms[1], platforms[0]
 		}
+	}
+	if s.SlowNetease {
+		filtered := platforms[:0]
+		for _, platform := range platforms {
+			if platform != "netease" {
+				filtered = append(filtered, platform)
+			}
+		}
+		platforms = filtered
 	}
 	known := tasteKnownTracks(history, favorites)
 	if req.Page < 0 {
@@ -117,6 +130,25 @@ func (s *Service) RecommendTaste(ctx context.Context, user int64, req TasteReque
 	}
 	if reason := tasteEmptyReason(dropped); reason != "" {
 		notices = append(notices, reason)
+	}
+	if s.SlowNetease && req.Platform == TasteBoth {
+		pooled, err := s.recommendPooledTaste(ctx, user, req)
+		if err != nil {
+			return TasteResult{}, err
+		}
+		if pooled.Track != nil {
+			if note := strings.Join(notices, " · "); note != "" {
+				if pooled.Notice != "" {
+					pooled.Notice = note + " · " + pooled.Notice
+				} else {
+					pooled.Notice = note
+				}
+			}
+			return pooled, nil
+		}
+		if pooled.Notice != "" {
+			notices = append(notices, pooled.Notice)
+		}
 	}
 	return TasteResult{Notice: strings.Join(notices, " · ")}, nil
 }
@@ -294,11 +326,22 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 	}
 	var group errgroup.Group
 	group.SetLimit(4)
+	// NetEase rejects bursts with code 405. Keep its in-flight searches small.
+	neteaseSlots := make(chan struct{}, 2)
 	for i := range searches {
 		group.Go(func() error {
+			search := &searches[i]
+			if search.platform == "netease" {
+				select {
+				case neteaseSlots <- struct{}{}:
+					defer func() { <-neteaseSlots }()
+				case <-ctx.Done():
+					search.err = ctx.Err()
+					return nil
+				}
+			}
 			query, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
-			search := &searches[i]
 			search.tracks, search.err = s.searchTaste(query, search.platform, search.artist.name, offset)
 			return nil
 		})
@@ -307,6 +350,16 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 	succeeded := map[string]bool{}
 	empty := map[string]bool{}
 	failed := map[string]bool{}
+	rejected := map[string]int{}
+	for _, search := range searches {
+		if search.err == nil {
+			continue
+		}
+		failed[search.platform] = true
+		if tasteSearchRejected(search.err) {
+			rejected[search.platform]++
+		}
+	}
 	seen := map[string][]Track{}
 	var dropped tasteDrops
 	var out []tasteCandidate
@@ -314,7 +367,6 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 	for rank := 0; rank < tasteSearchPage; rank++ {
 		for _, search := range searches {
 			if search.err != nil {
-				failed[search.platform] = true
 				continue
 			}
 			if len(search.tracks) == 0 {
@@ -350,12 +402,28 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 			name = "QQ 音乐"
 		}
 		if failed[platform] || !empty[platform] {
+			if rejected[platform] > 0 {
+				utils.WarnWithFormat("[Discovery] 个性化推荐搜索异常 platform=%s failed=%t rejected=%d", platform, failed[platform], rejected[platform])
+				unavailable = append(unavailable, name+"搜索暂时受限，请稍后重试")
+				continue
+			}
+			if failed[platform] {
+				utils.WarnWithFormat("[Discovery] 个性化推荐搜索异常 platform=%s failed=%t rejected=0", platform, failed[platform])
+			}
 			unavailable = append(unavailable, name+"暂未完成搜索")
 			continue
 		}
 		unavailable = append(unavailable, name+"没有返回单曲")
 	}
 	return out, unavailable, dropped
+}
+
+func tasteSearchRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := err.Error()
+	return strings.Contains(text, "暂时受限") || strings.Contains(text, "上游响应 code=405")
 }
 
 func (s *Service) searchTaste(ctx context.Context, platform, artist string, offset int) ([]Track, error) {

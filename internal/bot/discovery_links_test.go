@@ -63,6 +63,41 @@ func TestDiscoveryListenURLLeavesUnsupportedOrUnsafeLinksAlone(t *testing.T) {
 	}
 }
 
+func TestDiscoveryCardPreviewUsesYouTubeWatchPage(t *testing.T) {
+	card := discovery.Card{Tracks: []discovery.Track{{
+		Platform: "youtube", ID: "dQw4w9WgXcQ", Title: "示例", Artist: "艺人",
+		URL: "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+	}}}
+	if got, want := discoveryCardPreviewURL(card, 0, "https://webapp.example.com"), "https://music.youtube.com/watch?v=dQw4w9WgXcQ"; got != want {
+		t.Fatalf("YouTube preview = %q, want %q", got, want)
+	}
+	card.Tracks[0].ID = "短"
+	if got := discoveryCardPreviewURL(card, 0, "https://webapp.example.com"); got != "" {
+		t.Fatalf("short YouTube id preview = %q", got)
+	}
+}
+
+func TestDiscoveryCardPreviewUsesNeteaseSongPage(t *testing.T) {
+	card := discovery.Card{Tracks: []discovery.Track{{
+		Platform: "netease", ID: "186016", Title: "我的回忆不是我的", Artist: "张悬",
+		URL: "https://music.163.com/song?id=186016",
+	}}}
+	if got, want := discoveryCardPreviewURL(card, 0, ""), "https://music.163.com/song?id=186016"; got != want {
+		t.Fatalf("NetEase preview = %q, want %q", got, want)
+	}
+	card.Tracks[0].ID = "186016 "
+	if got := discoveryCardPreviewURL(card, 0, ""); got != "" {
+		t.Fatalf("unsafe NetEase id preview = %q", got)
+	}
+	if got := discoveryLinkPreview(""); got["is_disabled"] != true {
+		t.Fatalf("empty preview options = %#v", got)
+	}
+	options := discoveryLinkPreview("https://music.163.com/song?id=186016")
+	if options["is_disabled"] == true || options["url"] != "https://music.163.com/song?id=186016" {
+		t.Fatalf("NetEase preview was disabled: %#v", options)
+	}
+}
+
 func TestDiscoveryCardPreviewAcceptsQQAlbumPMIDVariant(t *testing.T) {
 	const coverURL = "https://y.gtimg.cn/music/photo_new/T002R300x300M000002ef2VB0Qfb30_2.jpg"
 	card := discovery.Card{Tracks: []discovery.Track{{

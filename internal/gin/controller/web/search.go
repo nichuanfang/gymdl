@@ -412,19 +412,25 @@ func searchNetease(keyword string, limit, offset int) ([]SearchResultItem, error
 }
 
 func searchNeteaseWithContext(ctx context.Context, keyword string, limit, offset int) ([]SearchResultItem, error) {
+	if remaining := neteaseSearchCircuit.remaining(time.Now()); remaining > 0 {
+		seconds := int((remaining + time.Second - 1) / time.Second)
+		utils.WarnWithFormat("[WebSearch] NCM request skipped reason=cooldown retry_after_seconds=%d", seconds)
+		return nil, fmt.Errorf("网易云搜索暂时受限，请约 %d 秒后重试", seconds)
+	}
 	cookiePath, musicU := neteaseSearchCookie()
 	if musicU == "" && cookiePath != "" {
 		utils.WarnWithFormat("[WebSearch] NCM Cookie 未找到: path=%s", cookiePath)
 	}
 	result, err := requestNeteaseSearch(ctx, "https://music.163.com/eapi/v1/search/song/get", keyword, limit, offset, musicU)
 	if err != nil {
+		utils.WarnWithFormat("[WebSearch] NCM request failed category=%s hasCookie=%t", neteaseSearchErrorCategory(err), musicU != "")
 		return nil, fmt.Errorf("网易云搜索失败: %w", err)
 	}
 	if utils.Logger() != nil {
 		utils.DebugWithFormat("[WebSearch] NCM code=%d, songs=%d, hasCookie=%v, cookiePath=%s", result.Code, len(result.Result.Songs), musicU != "", cookiePath)
 	}
-	if result.Code != 200 {
-		return nil, fmt.Errorf("网易云搜索失败: 上游响应 code=%d", result.Code)
+	if err = neteaseSearchResultError(result.Code, musicU != ""); err != nil {
+		return nil, err
 	}
 	items := make([]SearchResultItem, 0, len(result.Result.Songs))
 	for _, song := range result.Result.Songs {
@@ -440,6 +446,34 @@ func searchNeteaseWithContext(ctx context.Context, keyword string, limit, offset
 		})
 	}
 	return items, nil
+}
+
+func neteaseSearchResultError(code int, hasCookie bool) error {
+	if code == 200 {
+		return nil
+	}
+	if code == 405 {
+		until := neteaseSearchCircuit.block(time.Now(), neteaseSearchCooldownDuration)
+		utils.WarnWithFormat("[WebSearch] NCM upstream restricted code=405 hasCookie=%t cooldown_seconds=%d", hasCookie, int(time.Until(until).Seconds()))
+		return fmt.Errorf("网易云搜索暂时受限，请稍后重试")
+	}
+	utils.WarnWithFormat("[WebSearch] NCM upstream rejected code=%d hasCookie=%t", code, hasCookie)
+	return fmt.Errorf("网易云搜索失败: 上游响应 code=%d", code)
+}
+
+func neteaseSearchErrorCategory(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case strings.Contains(err.Error(), "网易云 API HTTP 状态码"):
+		return "http_status"
+	case strings.Contains(err.Error(), "解析网易云响应失败"):
+		return "invalid_response"
+	default:
+		return "transport_or_request"
+	}
 }
 
 func neteaseSearchCookie() (string, string) {

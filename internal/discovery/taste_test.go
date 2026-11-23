@@ -148,6 +148,19 @@ func TestRecommendTasteUsesHistoryStyleAndFreshVerifiedSingles(t *testing.T) {
 	}
 }
 
+func TestTasteCandidatesNamesNeteaseRestriction(t *testing.T) {
+	svc := &Service{Taste: &TasteSources{SearchPage: func(_ context.Context, platform, artist string, _ int) ([]Track, error) {
+		if platform == "netease" {
+			return nil, errors.New("网易云搜索暂时受限，请稍后重试")
+		}
+		return []Track{tasteTestTrack("qq", "001kG0Ys4JRmMa", "新歌", artist)}, nil
+	}}}
+	_, unavailable, _ := svc.tasteCandidates(t.Context(), []tasteArtist{{name: "歌手甲"}}, nil, []string{"netease", "qq"}, nil, nil, 0)
+	if len(unavailable) != 1 || unavailable[0] != "网易云搜索暂时受限，请稍后重试" {
+		t.Fatalf("unavailable = %#v", unavailable)
+	}
+}
+
 func TestRecommendTasteKeepsHealthyPlatformAndIsolatesHistory(t *testing.T) {
 	store := testStore(t)
 	ctx := t.Context()

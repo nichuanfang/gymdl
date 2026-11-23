@@ -46,7 +46,7 @@ func (app *BotApp) initDiscovery() {
 	})
 	taste.HistoryOwner = tasteHistoryOwner(app.cfg.Telegram)
 	app.discovery = &discovery.Service{Store: store, Provider: &discovery.Providers{Config: app.cfg}, Library: &discovery.NavidromeLibrary{Config: app.cfg.PlaylistOrganizer}, Enabled: settings.Enable, PollInterval: time.Duration(settings.PollIntervalMinutes) * time.Minute, SummaryInterval: time.Duration(settings.SummaryIntervalMinutes) * time.Minute,
-		Taste: taste,
+		Taste: taste, SlowNetease: true,
 		History: func(ctx context.Context) ([]discovery.Track, error) {
 			if app.cfg.AI == nil {
 				return nil, fmt.Errorf("尚未配置收听历史")
@@ -633,6 +633,12 @@ func discoveryCardPreviewURL(card discovery.Card, page int, webAppURL string) st
 		return ""
 	}
 	track := card.Tracks[page]
+	if songURL := neteaseSongPreviewURL(track); songURL != "" {
+		return songURL
+	}
+	if watchURL := youtubePreviewURL(track); watchURL != "" {
+		return watchURL
+	}
 	const coverPrefix = "https://y.gtimg.cn/music/photo_new/T002R300x300M000"
 	if track.Platform != "qq" || !strings.HasPrefix(track.CoverURL, coverPrefix) || !strings.HasSuffix(track.CoverURL, ".jpg") {
 		return ""
@@ -667,6 +673,37 @@ func discoveryCardPreviewURL(card discovery.Card, page int, webAppURL string) st
 		return ""
 	}
 	return previewURL
+}
+
+func neteaseSongPreviewURL(track discovery.Track) string {
+	if track.Platform != "netease" {
+		return ""
+	}
+	id, err := strconv.ParseUint(track.ID, 10, 64)
+	if err != nil || id == 0 || strconv.FormatUint(id, 10) != track.ID {
+		return ""
+	}
+	// The visible button opens the app. Telegram still needs the public song
+	// page, because the app-link page has no cover preview.
+	return "https://music.163.com/song?id=" + strconv.FormatUint(id, 10)
+}
+
+func youtubePreviewURL(track discovery.Track) string {
+	if track.Platform != "youtube" {
+		return ""
+	}
+	id := strings.TrimSpace(track.ID)
+	if len(id) != 11 {
+		return ""
+	}
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		default:
+			return ""
+		}
+	}
+	return "https://music.youtube.com/watch?v=" + id
 }
 
 func discoveryPreviewQueryText(value string, maxRunes int) string {

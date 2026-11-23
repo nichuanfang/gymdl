@@ -43,6 +43,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("prepare stored discovery file metadata: %w", err)
 	}
+	if err = s.ensureTastePool(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 

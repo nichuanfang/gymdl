@@ -47,6 +47,10 @@ type Service struct {
 	historyReady         bool
 	resolveCache         map[string]resolveCacheEntry
 	neteaseRefreshCursor map[string]int
+	tasteRefillUser      int
+	// SlowNetease serves NetEase recommendations from a local pool. A background
+	// pass searches one artist at a time so a button click cannot burst the API.
+	SlowNetease bool
 }
 
 const (
@@ -810,6 +814,13 @@ func (s *Service) Run(ctx context.Context) error {
 		defer polls.Done()
 		s.runFavoritePoll(ctx, poll)
 	}()
+	if s.SlowNetease {
+		polls.Add(1)
+		go func() {
+			defer polls.Done()
+			s.runTasteRefill(ctx)
+		}()
+	}
 	defer polls.Wait()
 	nextSummary := time.Now().Add(summary)
 	ticker := time.NewTicker(3 * time.Second)
