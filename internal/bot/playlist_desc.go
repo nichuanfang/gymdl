@@ -345,19 +345,19 @@ func (app *BotApp) syncPlaylistDesc(c tb.Context, session pendingPlaylistDesc) e
 	if app.playlistCatalog == nil {
 		return c.Respond(&tb.CallbackResponse{Text: "歌单库还没准备好", ShowAlert: true})
 	}
-	if !app.discoveryCommandMu.TryLock() {
+	if !app.playlistDescCommandMu.TryLock() {
 		return c.Respond(&tb.CallbackResponse{Text: "正在处理上一条请求", ShowAlert: true})
 	}
 	if err := c.Respond(&tb.CallbackResponse{Text: "正在同步歌单列表…"}); err != nil {
-		app.discoveryCommandMu.Unlock()
+		app.playlistDescCommandMu.Unlock()
 		return err
 	}
 	if c.Message() == nil {
-		app.discoveryCommandMu.Unlock()
+		app.playlistDescCommandMu.Unlock()
 		return c.Send("找不到原来的消息，请重新发送 /playlist_desc。")
 	}
 	if err := editPlaylistDescCard(c, "⌛ 正在从 Navidrome 同步歌单列表…\n完成后会回到这张卡片。", nil, false); err != nil {
-		app.discoveryCommandMu.Unlock()
+		app.playlistDescCommandMu.Unlock()
 		return err
 	}
 	session.editingID = ""
@@ -370,7 +370,7 @@ func (app *BotApp) syncPlaylistDesc(c tb.Context, session pendingPlaylistDesc) e
 				utils.WarnWithFormat("[Playlist] 同步歌单列表失败: %v", recovered)
 			}
 		}()
-		defer app.discoveryCommandMu.Unlock()
+		defer app.playlistDescCommandMu.Unlock()
 		defer app.setPlaylistDescSyncing(session.token, false)
 		ctx, cancel := context.WithTimeout(context.Background(), playlistDescSyncTimeout)
 		defer cancel()

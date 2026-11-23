@@ -31,6 +31,8 @@ const (
 	playlistAssignmentCallbackUnique = "playlist_assign"
 	playlistAssignmentTTL            = 20 * time.Minute
 	playlistAssignmentTimeout        = 90 * time.Second
+	oliveTinDownCooldown             = 10 * time.Minute
+	playlistAICooldown               = 30 * time.Minute
 	playlistOrganizerHTTPTimeout     = 35 * time.Second
 	maxPlaylistOptions               = 100
 )
@@ -409,6 +411,71 @@ func (s *playlistOrganizerService) replaceAIPlaylistTracks(ctx context.Context, 
 		remaining -= batchCount
 	}
 	return s.addSongsToPlaylist(ctx, token, playlistID, songIDs)
+}
+
+func (s *playlistOrganizerService) probeOliveTin(ctx context.Context) error {
+	_, err := s.runOliveTinAction(ctx, oliveTinActionRequest{ActionID: "songs_unplaylist"})
+	return err
+}
+
+func oliveTinOutage(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "调用 olivetin 失败") ||
+		strings.Contains(text, "olivetin 返回 http") ||
+		strings.Contains(text, "构造 olivetin") ||
+		strings.Contains(text, "deadline") ||
+		strings.Contains(text, "timeout") ||
+		strings.Contains(text, "超时")
+}
+
+func (app *BotApp) oliveTinCooling(now time.Time) (string, bool) {
+	app.oliveTinMu.Lock()
+	defer app.oliveTinMu.Unlock()
+	if app.oliveTinDownUntil.IsZero() || !now.Before(app.oliveTinDownUntil) {
+		return "", false
+	}
+	return "OliveTin 暂时不可用。这段时间不会反复请求，稍后再发 /assign_playlist。", true
+}
+
+func (app *BotApp) noteOliveTinDown(now time.Time) {
+	app.oliveTinMu.Lock()
+	defer app.oliveTinMu.Unlock()
+	until := now.Add(oliveTinDownCooldown)
+	if until.After(app.oliveTinDownUntil) {
+		app.oliveTinDownUntil = until
+	}
+}
+
+func (app *BotApp) noteOliveTinUp() {
+	app.oliveTinMu.Lock()
+	app.oliveTinDownUntil = time.Time{}
+	app.oliveTinMu.Unlock()
+}
+
+func (app *BotApp) playlistAICooling(now time.Time) bool {
+	app.playlistAICooldownMu.Lock()
+	defer app.playlistAICooldownMu.Unlock()
+	return !app.playlistAICooldownUntil.IsZero() && now.Before(app.playlistAICooldownUntil)
+}
+
+func (app *BotApp) notePlaylistAILimit(now time.Time) {
+	app.playlistAICooldownMu.Lock()
+	defer app.playlistAICooldownMu.Unlock()
+	until := now.Add(playlistAICooldown)
+	if until.After(app.playlistAICooldownUntil) {
+		app.playlistAICooldownUntil = until
+	}
+}
+
+func aiUsageLimited(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "429") || strings.Contains(text, "usage_limit_reached") || strings.Contains(text, "rate limit")
 }
 
 func (s *playlistOrganizerService) runOliveTinAction(ctx context.Context, action oliveTinActionRequest) (string, error) {
@@ -1278,6 +1345,9 @@ func (app *BotApp) playlistAssignmentAISuggestions(ctx context.Context, song unp
 	if !playlistAssignmentUsesAI(assignment.playlistAssist, song) {
 		return nil, false
 	}
+	if app.playlistAICooling(time.Now()) {
+		return nil, true
+	}
 	if !app.playlistAssignmentAIAvailable() {
 		return nil, true
 	}
@@ -1294,6 +1364,9 @@ func (app *BotApp) playlistAssignmentAISuggestions(ctx context.Context, song unp
 		core.WithTemperature(playlistAssignmentTemperature(assignment)),
 	)
 	if err != nil {
+		if aiUsageLimited(err) {
+			app.notePlaylistAILimit(time.Now())
+		}
 		logger.Warn("[Telegram] 歌单 AI 分类失败，保留人工确认", zap.Error(err))
 		return nil, true
 	}
@@ -1333,6 +1406,9 @@ func (app *BotApp) startPlaylistAssignmentForSong(c tb.Context, target *pendingM
 	defer organizer.client.CloseIdleConnections()
 	if err := organizer.requireNavidromeCredentials(); err != nil {
 		return c.Send("歌单整理服务尚未配置：" + err.Error())
+	}
+	if note, down := app.oliveTinCooling(time.Now()); down {
+		return c.Send(note)
 	}
 	webAppBaseURL, err := playlistWebAppBaseURL(app.cfg.PlaylistOrganizer.WebAppURL)
 	if err != nil {
@@ -1425,6 +1501,17 @@ func (app *BotApp) preparePlaylistAssignment(token string) {
 		return
 	}
 	defer service.client.CloseIdleConnections()
+	if note, down := app.oliveTinCooling(time.Now()); down {
+		app.failPlaylistAssignment(token, note, nil)
+		return
+	}
+	if probeErr := service.probeOliveTin(ctx); oliveTinOutage(probeErr) {
+		app.noteOliveTinDown(time.Now())
+		app.failPlaylistAssignment(token, "OliveTin 暂时不可用。这段时间不会反复请求，稍后再发 /assign_playlist。", probeErr)
+		return
+	} else if probeErr == nil {
+		app.noteOliveTinUp()
+	}
 	var song unplaylistSong
 	if assignment.targetSong != nil {
 		song, err = service.findIngestedSong(ctx, *assignment.targetSong)
@@ -1449,8 +1536,14 @@ func (app *BotApp) preparePlaylistAssignment(token string) {
 	}
 	assignment.song = song
 	assignment.aiSuggestedPlaylists = nil
-	assignment.aiSuggestionLoading = playlistAssignmentUsesAI(assignment.playlistAssist, song) && app.playlistAssignmentAIAvailable()
-	assignment.aiSuggestionUnavailable = playlistAssignmentUsesAI(assignment.playlistAssist, song) && !assignment.aiSuggestionLoading
+	usesAI := playlistAssignmentUsesAI(assignment.playlistAssist, song)
+	if app.playlistAICooling(time.Now()) {
+		assignment.aiSuggestionLoading = false
+		assignment.aiSuggestionUnavailable = usesAI
+	} else {
+		assignment.aiSuggestionLoading = usesAI && app.playlistAssignmentAIAvailable()
+		assignment.aiSuggestionUnavailable = usesAI && !assignment.aiSuggestionLoading
+	}
 	assignment.selectionToken = strings.ReplaceAll(uuid.NewString(), "-", "")
 	assignment.lastSelectionToken = ""
 	assignment.selectionComplete = false
@@ -1570,6 +1663,9 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 		return app.editPlaylistAssignmentCard(updated.message, updated)
 
 	case "redo":
+		if app.playlistAICooling(time.Now()) {
+			return c.Respond(&tb.CallbackResponse{Text: "AI 还在限流，先直接选", ShowAlert: true})
+		}
 		updated, ok := app.beginPlaylistAssignmentReorganize(token)
 		if !ok {
 			return c.Respond(&tb.CallbackResponse{Text: "现在不能重新整理", ShowAlert: true})
@@ -1806,6 +1902,9 @@ func (app *BotApp) playlistAssignmentSuggestion(assignment pendingPlaylistAssign
 		return formatPlaylistNameList(assignment.aiSuggestedPlaylists)
 	}
 	if assignment.aiSuggestionUnavailable {
+		if app.playlistAICooling(time.Now()) {
+			return "AI 限流中，直接选即可"
+		}
 		return "这次没有建议，直接选即可"
 	}
 	if !assignment.playlistAssist {

@@ -11,6 +11,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1206,5 +1208,82 @@ func TestPlaylistAssignmentCallbackMustMatchOriginalMessage(t *testing.T) {
 				t.Fatal("mismatched callback should be rejected")
 			}
 		})
+	}
+}
+
+func TestDiscoveryCommandsDoNotShareOneLock(t *testing.T) {
+	app := &BotApp{}
+	app.favoritesCommandMu.Lock()
+	t.Cleanup(app.favoritesCommandMu.Unlock)
+	for _, lock := range []*sync.Mutex{&app.tasteCommandMu, &app.rediscoverCommandMu, &app.playlistDescCommandMu} {
+		if !lock.TryLock() {
+			t.Fatal("maintenance commands still share one lock")
+		}
+		lock.Unlock()
+	}
+}
+
+func TestOliveTinOutageIsRemembered(t *testing.T) {
+	app := &BotApp{}
+	if _, down := app.oliveTinCooling(time.Now()); down {
+		t.Fatal("a fresh organizer should still check OliveTin")
+	}
+	if !oliveTinOutage(errors.New("OliveTin 返回 HTTP 404")) || !oliveTinOutage(context.DeadlineExceeded) {
+		t.Fatal("transport and HTTP failures should cool down")
+	}
+	if oliveTinOutage(errors.New("OliveTin action 失败（exitCode=1, timedOut=false）")) {
+		t.Fatal("a finished action should stay retryable")
+	}
+	app.noteOliveTinDown(time.Now())
+	note, down := app.oliveTinCooling(time.Now())
+	if !down || !strings.Contains(note, "不会反复请求") {
+		t.Fatalf("cooldown = %q down=%v", note, down)
+	}
+	app.noteOliveTinUp()
+	if _, down = app.oliveTinCooling(time.Now()); down {
+		t.Fatal("a successful check should clear the cooldown")
+	}
+}
+
+func TestPlaylistAILimitSkipsLaterSongs(t *testing.T) {
+	oldGlobalAI := core.GlobalAI
+	oldLogger := logger
+	t.Cleanup(func() {
+		core.GlobalAI = oldGlobalAI
+		logger = oldLogger
+	})
+	logger = zap.NewNop()
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"usage_limit_reached","type":"rate_limit"}}`))
+	}))
+	defer server.Close()
+	clientConfig := openai.DefaultConfig("test-key")
+	clientConfig.BaseURL = server.URL + "/v1"
+	clientConfig.HTTPClient = server.Client()
+	core.GlobalAI = &core.AI{Config: &config.AIConfig{Model: "classifier-test", SystemPrompt: "base"}, Client: openai.NewClientWithConfig(clientConfig)}
+	app := &BotApp{cfg: &config.Config{AI: &config.AIConfig{Enable: true}}, aiMCPTools: []aichat.Tool{{
+		Name:       "mcp_webtool_websearch",
+		Parameters: map[string]any{"properties": map[string]any{"query": map[string]any{"type": "string"}}, "required": []string{"query"}},
+		Run:        func(context.Context, map[string]any) (string, error) { return "evidence", nil },
+	}}}
+	assignment := pendingPlaylistAssignment{playlistAssist: true, playlists: []config.PlaylistInfo{{Name: "华语"}}}
+	song := unplaylistSong{ID: "song-1", Title: "夜行", Artist: "歌手"}
+	if _, unavailable := app.playlistAssignmentAISuggestions(context.Background(), song, assignment); !unavailable || calls.Load() != 1 {
+		t.Fatalf("first limited call unavailable=%v calls=%d", unavailable, calls.Load())
+	}
+	if !app.playlistAICooling(time.Now()) {
+		t.Fatal("429 did not start a cooldown")
+	}
+	song.ID = "song-2"
+	if _, unavailable := app.playlistAssignmentAISuggestions(context.Background(), song, assignment); !unavailable || calls.Load() != 1 {
+		t.Fatalf("cooldown still called AI: unavailable=%v calls=%d", unavailable, calls.Load())
+	}
+	assignment.aiSuggestionUnavailable = true
+	if got := app.playlistAssignmentSuggestion(assignment); got != "AI 限流中，直接选即可" {
+		t.Fatalf("cooldown copy = %q", got)
 	}
 }

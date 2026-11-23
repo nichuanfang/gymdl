@@ -28,10 +28,10 @@ func (s webStudio) PreviewFavorite(ctx context.Context, platform string) (web.Fa
 	if platform != "netease" && platform != "qq" && platform != "youtube" {
 		return web.FavoritePreview{}, errors.New("请选择网易云、QQ 音乐或 YouTube")
 	}
-	if !s.app.discoveryCommandMu.TryLock() {
+	if !s.app.favoritesCommandMu.TryLock() {
 		return web.FavoritePreview{}, errors.New("正在处理上一条请求")
 	}
-	defer s.app.discoveryCommandMu.Unlock()
+	defer s.app.favoritesCommandMu.Unlock()
 	started := time.Now()
 	snap, err := s.app.discovery.Provider.Fetch(ctx, platform)
 	if err != nil {
@@ -141,10 +141,10 @@ func (s webStudio) SyncFavorites(ctx context.Context) (web.FavoritesPage, error)
 	if !s.app.discovery.Enabled {
 		return web.FavoritesPage{}, errors.New("自动同步未启用，新增收藏也不会自动入库")
 	}
-	if !s.app.discoveryCommandMu.TryLock() {
+	if !s.app.favoritesCommandMu.TryLock() {
 		return web.FavoritesPage{}, errors.New("正在处理上一条请求")
 	}
-	defer s.app.discoveryCommandMu.Unlock()
+	defer s.app.favoritesCommandMu.Unlock()
 	_, results, syncErr := s.app.discovery.SyncWithResults(ctx, user)
 	notice := strings.TrimPrefix(favoritesSyncResultNotice(results, syncErr), "✅ ")
 	return s.favoritePage(ctx, notice)

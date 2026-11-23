@@ -240,8 +240,8 @@ func TestWebFavoriteBindDoesNotQueueTheCurrentLibrary(t *testing.T) {
 	if _, err = studio.BindFavorite(ctx, preview.Token); err == nil {
 		t.Fatal("baseline confirmation was reusable")
 	}
-	if app.discoveryCommandMu.TryLock() {
-		app.discoveryCommandMu.Unlock()
+	if app.favoritesCommandMu.TryLock() {
+		app.favoritesCommandMu.Unlock()
 	} else {
 		t.Fatal("favorite preview kept the shared lock")
 	}

@@ -183,25 +183,25 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 	if err != nil || !validRediscoverLimit(limit) {
 		return c.Respond(&tb.CallbackResponse{Text: "重新点一下找回吧", ShowAlert: true})
 	}
-	if !app.discoveryCommandMu.TryLock() {
+	if !app.rediscoverCommandMu.TryLock() {
 		return c.Respond(&tb.CallbackResponse{Text: "上一首还在找，稍等一下", ShowAlert: true})
 	}
 	if err = c.Respond(&tb.CallbackResponse{Text: "正在查找…"}); err != nil {
-		app.discoveryCommandMu.Unlock()
+		app.rediscoverCommandMu.Unlock()
 		return err
 	}
 	if c.Message() == nil || c.Sender() == nil || c.Chat() == nil {
-		app.discoveryCommandMu.Unlock()
+		app.rediscoverCommandMu.Unlock()
 		return c.Send("找不到原来的消息，请重新发送 /rediscover。")
 	}
 	progress := fmt.Sprintf("⌛ 正在从%s帮你找歌…", aichat.PlatformLabel(platform))
 	if err = editDiscoveryMessage(c, progress, nil, false); err != nil {
-		app.discoveryCommandMu.Unlock()
+		app.rediscoverCommandMu.Unlock()
 		return err
 	}
 	user, chat := c.Sender().ID, c.Chat().ID
 	app.goDiscovery(func() {
-		defer app.discoveryCommandMu.Unlock()
+		defer app.rediscoverCommandMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		batch, findErr := app.discovery.Rediscover(ctx, user, platform, limit)
@@ -1099,31 +1099,31 @@ func (app *BotApp) previewFavoriteBinding(c tb.Context, platform string) error {
 	if c.Sender() == nil || c.Chat() == nil {
 		return answerOnCard(c, "无法读取当前会话，请重新发送 /favorites。", nil, false)
 	}
-	if !app.discoveryCommandMu.TryLock() {
+	if !app.favoritesCommandMu.TryLock() {
 		return app.presentFavorites(c, "⏳ 另一项操作正在处理，请稍后再试。")
 	}
 	if err := editDiscoveryMessage(c, "⌛ 正在读取完整收藏列表…\n这一步只预览，不会下载。", nil, false); err != nil && (c.Callback() == nil || c.Message() == nil) {
 		msg, sendErr := c.Bot().Send(c.Chat(), "⌛ 正在读取完整收藏列表…\n这一步只预览，不会下载。")
 		if sendErr != nil {
-			app.discoveryCommandMu.Unlock()
+			app.favoritesCommandMu.Unlock()
 			return sendErr
 		}
 		user, chat := c.Sender().ID, c.Chat().ID
 		enabled := app.discovery.Enabled
 		bot := c.Bot()
 		app.goDiscovery(func() {
-			defer app.discoveryCommandMu.Unlock()
+			defer app.favoritesCommandMu.Unlock()
 			app.finishFavoritePreview(bot, msg, user, chat, platform, enabled)
 		})
 		return nil
 	} else if err != nil {
-		app.discoveryCommandMu.Unlock()
+		app.favoritesCommandMu.Unlock()
 		return err
 	}
 	user, chat := c.Sender().ID, c.Chat().ID
 	enabled := app.discovery.Enabled
 	app.goDiscovery(func() {
-		defer app.discoveryCommandMu.Unlock()
+		defer app.favoritesCommandMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		started := time.Now()
@@ -1298,7 +1298,7 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 			if key != "menu" && !validRediscoverPlatform(key) {
 				return app.presentFavorites(c, "收藏平台无效。")
 			}
-			if !app.discoveryCommandMu.TryLock() {
+			if !app.favoritesCommandMu.TryLock() {
 				return app.presentFavorites(c, "⏳ 已有请求正在处理，请稍后查看状态。")
 			}
 			loading := "⌛ <b>正在同步全部平台…</b>"
@@ -1306,12 +1306,12 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 				loading = "⌛ <b>正在同步 " + aichat.PlatformLabel(key) + " 收藏…</b>"
 			}
 			if err := editDiscoveryMessage(c, loading, nil, true); err != nil {
-				app.discoveryCommandMu.Unlock()
+				app.favoritesCommandMu.Unlock()
 				return err
 			}
 			user := c.Sender().ID
 			app.goDiscovery(func() {
-				defer app.discoveryCommandMu.Unlock()
+				defer app.favoritesCommandMu.Unlock()
 				syncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
 				var results []discovery.FavoriteSyncResult
@@ -1989,7 +1989,7 @@ func (app *BotApp) switchFailedJobSource(c tb.Context, id string) error {
 	if c.Sender() == nil || c.Chat() == nil {
 		return answerOnCard(c, "无法读取当前会话。", nil, false)
 	}
-	if !app.discoveryCommandMu.TryLock() {
+	if !app.favoritesCommandMu.TryLock() {
 		return answerOnCard(c, "另一项收藏操作正在处理，请稍后再试。", discoveryFailedRecoveryMarkup(), true)
 	}
 	user := c.Sender().ID
@@ -1998,7 +1998,7 @@ func (app *BotApp) switchFailedJobSource(c tb.Context, id string) error {
 		next, _ = strconv.Atoi(c.Args()[3])
 	}
 	app.goDiscovery(func() {
-		defer app.discoveryCommandMu.Unlock()
+		defer app.favoritesCommandMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 		job, err := app.discovery.Store.Job(ctx, id)

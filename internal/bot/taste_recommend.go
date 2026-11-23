@@ -120,7 +120,7 @@ func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string
 }
 
 func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.TasteRequest, previous *discovery.Card) error {
-	if !app.discoveryCommandMu.TryLock() {
+	if !app.tasteCommandMu.TryLock() {
 		if c.Callback() != nil {
 			return c.Respond(&tb.CallbackResponse{Text: "上一首还在找，稍等一下"})
 		}
@@ -128,12 +128,12 @@ func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.Tast
 	}
 	message, err := app.tasteProgressMessage(c, previous)
 	if err != nil || message == nil {
-		app.discoveryCommandMu.Unlock()
+		app.tasteCommandMu.Unlock()
 		return err
 	}
 	api, user, chat := c.Bot(), c.Sender().ID, c.Chat().ID
 	app.goDiscovery(func() {
-		defer app.discoveryCommandMu.Unlock()
+		defer app.tasteCommandMu.Unlock()
 		query, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 		result, err := app.discovery.RecommendTaste(query, user, request)
 		cancel()

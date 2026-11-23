@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/internal/aichat"
@@ -27,7 +28,14 @@ type BotApp struct {
 	discovery                  *discovery.Service
 	discoveryCancel            context.CancelFunc
 	discoveryDone              chan struct{}
-	discoveryCommandMu         sync.Mutex
+	tasteCommandMu             sync.Mutex
+	rediscoverCommandMu        sync.Mutex
+	favoritesCommandMu         sync.Mutex
+	playlistDescCommandMu      sync.Mutex
+	oliveTinMu                 sync.Mutex
+	oliveTinDownUntil          time.Time
+	playlistAICooldownMu       sync.Mutex
+	playlistAICooldownUntil    time.Time
 	rediscoverMu               sync.Mutex
 	bot                        *tb.Bot
 	cfg                        *config.Config

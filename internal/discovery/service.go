@@ -47,6 +47,7 @@ type Service struct {
 	historyReady         bool
 	resolveCache         map[string]resolveCacheEntry
 	neteaseRefreshCursor map[string]int
+	youtubeEnrichMu      sync.Mutex
 	tasteRefillUser      int
 	// SlowNetease serves NetEase recommendations from a local pool. A background
 	// pass searches one artist at a time so a button click cannot burst the API.
@@ -392,28 +393,64 @@ func (s *Service) Rediscover(ctx context.Context, user int64, platform string, l
 	return s.recommend(ctx, user, platform, limit)
 }
 
+const youtubeFavoriteEnrichLimit = 10
+
+// scheduleYouTubeFavoriteEnrich keeps the click path on stored titles.
+// One wave runs at a time, and a failed lookup still consumes one of the ten slots.
+func (s *Service) scheduleYouTubeFavoriteEnrich(user int64, platform string, favorites []Track) {
+	if s == nil || s.Provider == nil || s.Store == nil || user == 0 {
+		return
+	}
+	if platform != "" && platform != "youtube" {
+		return
+	}
+	pending := make([]Track, 0, youtubeFavoriteEnrichLimit)
+	for _, track := range favorites {
+		if track.Platform != "youtube" || track.Verified || track.NonMusic {
+			continue
+		}
+		pending = append(pending, track)
+		if len(pending) == youtubeFavoriteEnrichLimit {
+			break
+		}
+	}
+	if len(pending) == 0 || !s.youtubeEnrichMu.TryLock() {
+		return
+	}
+	go func() {
+		defer s.youtubeEnrichMu.Unlock()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				utils.WarnWithFormat("[Discovery] YouTube 收藏补资料失败: %v", recovered)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		for _, track := range pending {
+			if ctx.Err() != nil {
+				return
+			}
+			updated, skip, err := s.Provider.Enrich(ctx, track)
+			if err != nil {
+				continue
+			}
+			updated.NonMusic = skip
+			if err = s.Store.RememberFavorite(ctx, user, updated); err != nil {
+				utils.WarnWithFormat("[Discovery] 保存 YouTube 收藏资料失败: %v", err)
+				return
+			}
+		}
+	}()
+}
+
 func (s *Service) recommend(ctx context.Context, user int64, platform string, limit int) (RediscoverBatch, error) {
 	favorites, err := s.Store.Favorites(ctx, user)
 	if err != nil {
 		return RediscoverBatch{}, err
 	}
-	// Enrich a bounded number of old YouTube favourites per request and cache
-	// the result. Unstructured video titles never become invented song names.
-	enriched := 0
-	for i, t := range favorites {
-		if (platform == "" || platform == "youtube") && t.Platform == "youtube" && !t.Verified && !t.NonMusic && enriched < 10 {
-			updated, skip, e := s.Provider.Enrich(ctx, t)
-			enriched++
-			if e != nil {
-				continue
-			}
-			updated.NonMusic = skip
-			favorites[i] = updated
-			if e = s.Store.RememberFavorite(ctx, user, updated); e != nil {
-				return RediscoverBatch{}, e
-			}
-		}
-	}
+	// YouTube metadata can take long enough to miss the click. Fill at most
+	// ten unverified favorites after this response; the next lookup uses the cache.
+	s.scheduleYouTubeFavoriteEnrich(user, platform, favorites)
 	history, historyErr := s.cachedHistory(ctx)
 	if historyErr != nil && len(favorites) == 0 {
 		return RediscoverBatch{}, historyErr

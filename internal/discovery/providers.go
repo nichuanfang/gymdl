@@ -113,6 +113,15 @@ func neteaseTimeout(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err)
 }
 
+// A hung NetEase call used to be retried three times at the 30s client limit.
+// One unanswered attempt is enough; a fast 5xx can still be retried.
+// The whole favorite snapshot also stops after neteaseSnapshotTimeout so a
+// stuck read cannot hold the favorites action for the caller's 3–5 minutes.
+var (
+	neteaseAttemptTimeout  = 20 * time.Second
+	neteaseSnapshotTimeout = 90 * time.Second
+)
+
 func retryableNetease(err error) bool {
 	var api neteaseAPIError
 	if errors.As(err, &api) {
@@ -122,7 +131,7 @@ func retryableNetease(err error) bool {
 	if !errors.As(err, &httpErr) {
 		return false
 	}
-	if errors.Is(httpErr.cause, context.Canceled) {
+	if neteaseTimeout(httpErr.cause) || errors.Is(httpErr.cause, context.Canceled) {
 		return false
 	}
 	if httpErr.status == 0 {
@@ -178,7 +187,9 @@ func (p *Providers) ncmOnce(ctx context.Context, endpoint string, input any, mus
 		return err
 	}
 	body := ncmutils.Format2Params(ncmutils.SpliceStr(endpoint, string(raw)))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://music.163.com/eapi/"+strings.TrimPrefix(endpoint, "/api/"), strings.NewReader(body))
+	attemptCtx, cancel := context.WithTimeout(ctx, neteaseAttemptTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, "https://music.163.com/eapi/"+strings.TrimPrefix(endpoint, "/api/"), strings.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -218,6 +229,8 @@ func (p *Providers) ncmOnce(ctx context.Context, endpoint string, input any, mus
 }
 
 func (p *Providers) netease(ctx context.Context) (Snapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, neteaseSnapshotTimeout)
+	defer cancel()
 	account, ids, err := p.NeteaseLikedIDs(ctx)
 	if err != nil {
 		return Snapshot{}, err

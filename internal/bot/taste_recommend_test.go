@@ -122,8 +122,8 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 		t.Helper()
 		deadline := time.Now().Add(time.Second)
 		for time.Now().Before(deadline) {
-			if app.discoveryCommandMu.TryLock() {
-				app.discoveryCommandMu.Unlock()
+			if app.tasteCommandMu.TryLock() {
+				app.tasteCommandMu.Unlock()
 				return
 			}
 			time.Sleep(time.Millisecond)

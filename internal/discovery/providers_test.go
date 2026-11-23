@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nichuanfang/gymdl/config"
 )
@@ -461,5 +462,23 @@ func TestYoutubeDependencyFailureDoesNotBlameCookie(t *testing.T) {
 	err = youtubeReadError(errors.New("exit 1"), "playlist does not exist")
 	if retryableYoutube(err) || strings.Contains(err.Error(), "登录失效") {
 		t.Fatal("missing playlist retried as a login failure", err)
+	}
+}
+
+func TestNeteaseTimeoutIsNotRetried(t *testing.T) {
+	if retryableNetease(neteaseRequestError{cause: context.DeadlineExceeded}) {
+		t.Fatal("an unanswered NetEase call should fail once")
+	}
+	if retryableNetease(neteaseRequestError{cause: context.Canceled}) {
+		t.Fatal("a canceled NetEase call should not be retried")
+	}
+	if !retryableNetease(neteaseRequestError{status: 500}) {
+		t.Fatal("a fast server error should stay retryable")
+	}
+	if neteaseAttemptTimeout <= 0 || neteaseAttemptTimeout > 20*time.Second {
+		t.Fatalf("attempt timeout = %s", neteaseAttemptTimeout)
+	}
+	if neteaseSnapshotTimeout < 45*time.Second || neteaseSnapshotTimeout > 90*time.Second {
+		t.Fatalf("snapshot timeout = %s", neteaseSnapshotTimeout)
 	}
 }

@@ -435,8 +435,8 @@ func TestPlaylistDescSyncLeavesTheUpdateLoop(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("sync never reached Navidrome")
 	}
-	if app.discoveryCommandMu.TryLock() {
-		app.discoveryCommandMu.Unlock()
+	if app.playlistDescCommandMu.TryLock() {
+		app.playlistDescCommandMu.Unlock()
 		t.Fatal("background sync released the shared lock before it finished")
 	}
 	busy := &playlistDescSyncContext{message: ctx.message}
@@ -450,8 +450,8 @@ func TestPlaylistDescSyncLeavesTheUpdateLoop(t *testing.T) {
 	ctx.waitEdited(t, "同步失败")
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		if app.discoveryCommandMu.TryLock() {
-			app.discoveryCommandMu.Unlock()
+		if app.playlistDescCommandMu.TryLock() {
+			app.playlistDescCommandMu.Unlock()
 			deadline = time.Time{}
 			break
 		}

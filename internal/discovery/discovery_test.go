@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1415,5 +1416,73 @@ func TestAlbumOnlyEditionDoesNotCollapseIntoStudioRecording(t *testing.T) {
 	compilation.Album = "Greatest Hits"
 	if !SameRecording(studio, compilation) {
 		t.Fatal("ordinary compilation was treated as a different edition")
+	}
+}
+
+func TestRediscoverDoesNotWaitForYouTubeMetadata(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	video := Track{Platform: "youtube", ID: "abc", URL: "https://music.youtube.com/watch?v=abc", Title: "Video", Artist: "Channel"}
+	if _, _, err := store.Apply(ctx, 1, 1, Snapshot{Platform: "youtube", Account: "channel", Tracks: []Track{video}, Complete: true}, true); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() {
+		once.Do(func() { close(release) })
+	})
+	svc := Service{
+		Store:   store,
+		Library: stubLibrary{},
+		Provider: stubProvider{enrich: func(track Track) (Track, bool, error) {
+			close(started)
+			<-release
+			track.Verified = true
+			return track, false, nil
+		}},
+	}
+	if _, err := svc.Rediscover(ctx, 1, "netease", 1); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+		t.Fatal("a NetEase rediscovery waited on YouTube metadata")
+	case <-time.After(150 * time.Millisecond):
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := svc.Rediscover(ctx, 1, "youtube", 1)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("YouTube rediscovery waited for metadata enrichment")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("YouTube metadata enrichment was not moved off the click")
+	}
+	once.Do(func() { close(release) })
+	deadline := time.Now().Add(time.Second)
+	for {
+		favorites, err := store.Favorites(ctx, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(favorites) == 1 && favorites[0].Verified {
+			svc.youtubeEnrichMu.Lock()
+			svc.youtubeEnrichMu.Unlock()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background enrichment did not cache the video: %#v", favorites)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

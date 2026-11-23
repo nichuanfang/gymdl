@@ -91,7 +91,7 @@ func TestNeteaseRequestKeepsTheFailureReason(t *testing.T) {
 		return nil, timeoutErr{}
 	})
 	err = p.ncm(context.Background(), "/api/w/nuser/account/get", map[string]any{}, &out)
-	if err == nil || !strings.Contains(err.Error(), "超时") || calls != 3 {
+	if err == nil || !strings.Contains(err.Error(), "超时") || calls != 1 {
 		t.Fatal(calls, err)
 	}
 }
