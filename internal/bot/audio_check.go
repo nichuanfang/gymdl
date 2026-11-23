@@ -50,11 +50,18 @@ func (app *BotApp) AudioCheckCommand(c tb.Context) error {
 	return app.startAudioCheck(c, deep, false, nil)
 }
 
-func (app *BotApp) startAudioCheck(c tb.Context, deep, full bool, previous *audioCheckSession) error {
+func missingAudioCheckTool() string {
 	for _, tool := range []string{"ffprobe", "ffmpeg"} {
 		if _, err := exec.LookPath(tool); err != nil {
-			return c.Send("曲库体检需要 " + tool + "，当前运行环境未安装。")
+			return tool
 		}
+	}
+	return ""
+}
+
+func (app *BotApp) startAudioCheck(c tb.Context, deep, full bool, previous *audioCheckSession) error {
+	if tool := missingAudioCheckTool(); tool != "" {
+		return c.Send("曲库体检需要 " + tool + "，当前运行环境未安装。")
 	}
 	cfg := config.WithLiveTaskOverrides(app.cfg)
 	if cfg.Tidy == nil {
@@ -90,27 +97,16 @@ func (app *BotApp) startAudioCheck(c tb.Context, deep, full bool, previous *audi
 		cancel()
 		return c.Send("已有一次曲库体检正在进行，请查看原卡片。")
 	}
-	if app.audioCheckSessions[c.Chat().ID].busy || app.audioCheckSessions[c.Chat().ID].running {
+	current := app.audioCheckSessions[c.Chat().ID]
+	if current.busy || current.running || (previous != nil && current.token != previous.token) {
 		app.audioCheckMu.Unlock()
 		cancel()
 		return c.Send("原卡片的操作还在处理，请稍后再试。")
 	}
 	app.audioCheckDone, app.audioCheckCancel = done, cancel
-	if app.audioCheckSessions == nil {
-		app.audioCheckSessions = make(map[int64]audioCheckSession)
-	}
-	app.audioCheckSessions[c.Chat().ID] = session
+	app.storeAudioCheckSessionLocked(sessionWithMessage(session, c.Chat()))
 	app.audioCheckMu.Unlock()
 
-	finish := func() {
-		cancel()
-		app.audioCheckMu.Lock()
-		if app.audioCheckDone == done {
-			app.audioCheckDone, app.audioCheckCancel = nil, nil
-		}
-		close(done)
-		app.audioCheckMu.Unlock()
-	}
 	text, markup := formatAudioCheckProgressCard(session)
 	api := c.Bot()
 	if message == nil {
@@ -119,17 +115,54 @@ func (app *BotApp) startAudioCheck(c tb.Context, deep, full bool, previous *audi
 		_, err = api.Edit(message, text, tb.ModeHTML, markup)
 	}
 	if err != nil {
-		app.removeAudioCheckSession(c.Chat().ID, session.token)
-		finish()
+		app.resetAudioCheckStart(c.Chat().ID, current)
+		app.finishAudioCheck(done, cancel)
 		return err
 	}
 	session.message = message
+	if err := persistAudioCheckSession(session); err != nil {
+		app.resetAudioCheckStart(c.Chat().ID, current)
+		app.finishAudioCheck(done, cancel)
+		utils.WarnWithFormat("无法保存体检进度: %v", err)
+		if previous != nil {
+			text, markup := formatAudioCheckCard(*previous)
+			_, _ = api.Edit(message, text, tb.ModeHTML, markup)
+		}
+		return c.Send("暂时无法保存体检进度，请稍后再试。")
+	}
 	app.saveRunningAudioCheckSession(c.Chat().ID, session)
 	go func() {
-		defer finish()
+		defer app.finishAudioCheck(done, cancel)
 		app.runAudioCheck(ctx, api, cfg, session)
 	}()
 	return nil
+}
+
+func sessionWithMessage(session audioCheckSession, chat *tb.Chat) audioCheckSession {
+	if session.message == nil {
+		session.message = &tb.Message{Chat: chat}
+	}
+	return session
+}
+
+func (app *BotApp) resetAudioCheckStart(chat int64, previous audioCheckSession) {
+	app.audioCheckMu.Lock()
+	defer app.audioCheckMu.Unlock()
+	if previous.message == nil {
+		delete(app.audioCheckSessions, chat)
+		return
+	}
+	app.storeAudioCheckSessionLocked(previous)
+}
+
+func (app *BotApp) finishAudioCheck(done chan struct{}, cancel context.CancelFunc) {
+	cancel()
+	app.audioCheckMu.Lock()
+	defer app.audioCheckMu.Unlock()
+	if app.audioCheckDone == done {
+		app.audioCheckDone, app.audioCheckCancel = nil, nil
+	}
+	close(done)
 }
 
 func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Config, session audioCheckSession) {
@@ -181,6 +214,12 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 	}
 
 	report := state.cachedReport()
+	if session.notice != "" && ctx.Err() == nil {
+		session.report = filterAudioCheckSkipped(report, session.skipped)
+		if err := app.editAudioCheckProgress(api, session); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+			utils.WarnWithFormat("更新已恢复的体检进度失败: %v", err)
+		}
+	}
 	var notice string
 	if session.full {
 		previous := report
@@ -305,21 +344,35 @@ func (app *BotApp) presentAudioCheck(api tb.API, session audioCheckSession) erro
 	session.expires = time.Now().Add(audioCheckTTL)
 	session.running = false
 	session.busy = false
-	chat := session.message.Chat.ID
+	if err := persistAudioCheckSession(session); err != nil {
+		utils.WarnWithFormat("保存体检结果卡片失败: %v", err)
+		if session.notice != "" {
+			session.notice += "\n"
+		}
+		session.notice += "暂时无法保存卡片进度，已检查的文件记录仍保留。"
+	}
+	app.setAudioCheckSession(session)
+	text, markup := formatAudioCheckCard(session)
+	_, err := api.Edit(session.message, text, tb.ModeHTML, markup)
+	return err
+}
+
+func (app *BotApp) setAudioCheckSession(session audioCheckSession) {
 	app.audioCheckMu.Lock()
+	defer app.audioCheckMu.Unlock()
+	app.storeAudioCheckSessionLocked(session)
+}
+
+func (app *BotApp) storeAudioCheckSessionLocked(session audioCheckSession) {
 	if app.audioCheckSessions == nil {
 		app.audioCheckSessions = make(map[int64]audioCheckSession)
 	}
 	for chatID, old := range app.audioCheckSessions {
-		if time.Now().After(old.expires) {
+		if !old.running && time.Now().After(old.expires) {
 			delete(app.audioCheckSessions, chatID)
 		}
 	}
-	app.audioCheckSessions[chat] = session
-	app.audioCheckMu.Unlock()
-	text, markup := formatAudioCheckCard(session)
-	_, err := api.Edit(session.message, text, tb.ModeHTML, markup)
-	return err
+	app.audioCheckSessions[session.message.Chat.ID] = session
 }
 
 func (app *BotApp) HandleAudioCheckCallback(c tb.Context) error {
@@ -332,7 +385,7 @@ func (app *BotApp) HandleAudioCheckCallback(c tb.Context) error {
 	app.audioCheckMu.Lock()
 	session, ok := app.audioCheckSessions[chat]
 	if !ok || session.owner != c.Sender().ID || session.token != token ||
-		time.Now().After(session.expires) || !sameMusicActionMessage(session.message, c.Message()) {
+		(!session.running && time.Now().After(session.expires)) || !sameMusicActionMessage(session.message, c.Message()) {
 		app.audioCheckMu.Unlock()
 		return c.Respond(&tb.CallbackResponse{Text: "这张卡片已过期，请重新发送 /audio_check。", ShowAlert: true})
 	}
@@ -342,12 +395,14 @@ func (app *BotApp) HandleAudioCheckCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "当前没有正在运行的体检。"})
 		}
 		cancel := app.audioCheckCancel
-		app.audioCheckMu.Unlock()
-		if err := c.Respond(&tb.CallbackResponse{Text: "正在停止并整理已完成结果…"}); err != nil {
-			return err
+		if err := persistAudioCheckPause(chat, token); err != nil {
+			app.audioCheckMu.Unlock()
+			utils.WarnWithFormat("保存体检停止状态失败: %v", err)
+			return c.Respond(&tb.CallbackResponse{Text: "暂时无法保存停止状态，请稍后再试。", ShowAlert: true})
 		}
 		cancel()
-		return nil
+		app.audioCheckMu.Unlock()
+		return c.Respond(&tb.CallbackResponse{Text: "正在停止并整理已完成结果…"})
 	}
 	if session.running || session.busy || app.audioCheckDone != nil {
 		app.audioCheckMu.Unlock()
@@ -550,6 +605,9 @@ func formatAudioCheckProgressCard(session audioCheckSession) (string, *tb.ReplyM
 		if session.report.remaining > 0 {
 			text += fmt.Sprintf(" · 剩余 %d 首", session.report.remaining)
 		}
+	}
+	if session.notice != "" {
+		text += "\n" + utils.EscapeHTML(session.notice)
 	}
 	markup := &tb.ReplyMarkup{}
 	markup.Inline(markup.Row(markup.Data("终止并查看结果", audioCheckCallback, "stop", session.token)))

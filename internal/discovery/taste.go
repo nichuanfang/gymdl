@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net/url"
 	"sort"
@@ -33,7 +34,7 @@ type tasteCandidate struct {
 }
 
 func (s *Service) RecommendTaste(ctx context.Context, user int64, req TasteRequest) (TasteResult, error) {
-	if !ValidTastePlatform(req.Platform) || s.Taste == nil || s.Taste.Search == nil {
+	if !ValidTastePlatform(req.Platform) || s.Taste == nil || (s.Taste.Search == nil && s.Taste.SearchPage == nil) {
 		return TasteResult{}, errors.New("个性化推荐暂不可用")
 	}
 	if s.Library == nil {
@@ -70,17 +71,24 @@ func (s *Service) RecommendTaste(ctx context.Context, user int64, req TasteReque
 		}
 	}
 	known := tasteKnownTracks(history, favorites)
-	candidates, unavailable := s.tasteCandidates(ctx, artists, explore, platforms, known, exclusions)
+	if req.Page < 0 {
+		req.Page = 0
+	}
+	if req.Page > 5 {
+		return TasteResult{Notice: "再往下也没有更多单曲了。可以换个场景或平台。"}, nil
+	}
+	candidates, unavailable, dropped := s.tasteCandidates(ctx, artists, explore, platforms, known, exclusions, req.Page*tasteSearchPage)
 	notices = append(notices, unavailable...)
 	if ctx.Err() != nil {
 		return TasteResult{}, errors.New("这次推荐超时，请再试一次")
 	}
 	index := s.tasteLocalTags(ctx, known)
 	preference := tasteTagPreferences(index, history, favorites)
-	lanes, err := s.shortlistTaste(ctx, candidates)
+	lanes, owned, err := s.shortlistTaste(ctx, candidates)
 	if err != nil {
 		return TasteResult{}, err
 	}
+	dropped.owned += owned
 	s.scoreTaste(ctx, lanes, req.Filter, preference, index)
 	if ctx.Err() != nil {
 		return TasteResult{}, errors.New("这次推荐超时，请再试一次")
@@ -107,7 +115,27 @@ func (s *Service) RecommendTaste(ctx context.Context, user int64, req TasteReque
 			return TasteResult{Track: &candidate.track, Explore: lane == 1, Reason: reason, Notice: strings.Join(notices, " · ")}, nil
 		}
 	}
+	if reason := tasteEmptyReason(dropped); reason != "" {
+		notices = append(notices, reason)
+	}
 	return TasteResult{Notice: strings.Join(notices, " · ")}, nil
+}
+
+const tasteSearchPage = 20
+
+type tasteDrops struct {
+	hits, known, unverified, owned int
+}
+
+func tasteEmptyReason(dropped tasteDrops) string {
+	switch {
+	case dropped.known+dropped.owned > 0:
+		return "靠前的歌已经听过或在曲库里。再点换一首会往下找。"
+	case dropped.hits > 0 && dropped.unverified == dropped.hits:
+		return "搜到的结果对不上这些艺人，没有拿来推荐。"
+	default:
+		return ""
+	}
 }
 
 func rankTasteArtists(history, favorites []Track, now time.Time) ([]tasteArtist, map[string]bool) {
@@ -249,7 +277,7 @@ func verifiedTasteTrack(track Track, platform, artist string) bool {
 }
 
 func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []tasteArtist, platforms []string,
-	known map[string][]Track, exclusions map[string]string) ([]tasteCandidate, []string) {
+	known map[string][]Track, exclusions map[string]string, offset int) ([]tasteCandidate, []string, tasteDrops) {
 	type lookup struct {
 		artist   tasteArtist
 		platform string
@@ -271,18 +299,26 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 			query, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 			search := &searches[i]
-			search.tracks, search.err = s.Taste.Search(query, search.platform, search.artist.name)
+			search.tracks, search.err = s.searchTaste(query, search.platform, search.artist.name, offset)
 			return nil
 		})
 	}
 	_ = group.Wait()
 	succeeded := map[string]bool{}
+	empty := map[string]bool{}
+	failed := map[string]bool{}
 	seen := map[string][]Track{}
+	var dropped tasteDrops
 	var out []tasteCandidate
 	// Interleave each artist/platform's search hits before taking the shortlist.
-	for rank := 0; rank < 16; rank++ {
+	for rank := 0; rank < tasteSearchPage; rank++ {
 		for _, search := range searches {
 			if search.err != nil {
+				failed[search.platform] = true
+				continue
+			}
+			if len(search.tracks) == 0 {
+				empty[search.platform] = true
 				continue
 			}
 			succeeded[search.platform] = true
@@ -290,9 +326,14 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 				continue
 			}
 			track := search.tracks[rank]
+			dropped.hits++
 			key := ownershipTitle(track.Title)
-			if exclusions[Identity(track)] != "" || !verifiedTasteTrack(track, search.platform, search.artist.name) ||
-				tasteHasSong(track, known[key]) || tasteHasSong(track, seen[key]) {
+			switch {
+			case !verifiedTasteTrack(track, search.platform, search.artist.name):
+				dropped.unverified++
+				continue
+			case exclusions[Identity(track)] != "" || tasteHasSong(track, known[key]) || tasteHasSong(track, seen[key]):
+				dropped.known++
 				continue
 			}
 			seen[key] = append(seen[key], track)
@@ -301,19 +342,42 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 	}
 	var unavailable []string
 	for _, platform := range platforms {
-		if !succeeded[platform] {
-			name := "网易云"
-			if platform == "qq" {
-				name = "QQ 音乐"
-			}
-			unavailable = append(unavailable, name+"暂未完成搜索")
+		if succeeded[platform] {
+			continue
 		}
+		name := "网易云"
+		if platform == "qq" {
+			name = "QQ 音乐"
+		}
+		if failed[platform] || !empty[platform] {
+			unavailable = append(unavailable, name+"暂未完成搜索")
+			continue
+		}
+		unavailable = append(unavailable, name+"没有返回单曲")
 	}
-	return out, unavailable
+	return out, unavailable, dropped
 }
 
-func (s *Service) shortlistTaste(ctx context.Context, candidates []tasteCandidate) ([2][]tasteCandidate, error) {
+func (s *Service) searchTaste(ctx context.Context, platform, artist string, offset int) ([]Track, error) {
+	if s.Taste != nil && s.Taste.SearchPage != nil {
+		return s.Taste.SearchPage(ctx, platform, artist, offset)
+	}
+	if s.Taste == nil || s.Taste.Search == nil {
+		return nil, errors.New("个性化推荐暂不可用")
+	}
+	tracks, err := s.Taste.Search(ctx, platform, artist)
+	if err != nil || offset <= 0 {
+		return tracks, err
+	}
+	if offset >= len(tracks) {
+		return nil, nil
+	}
+	return tracks[offset:], nil
+}
+
+func (s *Service) shortlistTaste(ctx context.Context, candidates []tasteCandidate) ([2][]tasteCandidate, int, error) {
 	var lanes [2][]tasteCandidate
+	ownedCount := 0
 	for _, candidate := range candidates {
 		lane := 0
 		if candidate.artist.seed != "" {
@@ -324,15 +388,19 @@ func (s *Service) shortlistTaste(ctx context.Context, candidates []tasteCandidat
 		}
 		owned, err := s.Library.Contains(ctx, candidate.track)
 		if err != nil {
-			return lanes, errors.New("暂时无法核对曲库，请稍后重试")
+			if _, ok := s.Library.(*NavidromeLibrary); ok {
+				return lanes, ownedCount, fmt.Errorf("暂时无法核对曲库：%w", err)
+			}
+			return lanes, ownedCount, errors.New("暂时无法核对曲库，请稍后重试")
 		}
 		if owned {
+			ownedCount++
 			continue
 		}
 		if s.Pending != nil {
 			pending, err := s.Pending(ctx, candidate.track)
 			if err != nil {
-				return lanes, errors.New("暂时无法核对待上传歌曲，请稍后重试")
+				return lanes, ownedCount, errors.New("暂时无法核对待上传歌曲，请稍后重试")
 			}
 			if pending {
 				continue
@@ -343,7 +411,7 @@ func (s *Service) shortlistTaste(ctx context.Context, candidates []tasteCandidat
 			break
 		}
 	}
-	return lanes, nil
+	return lanes, ownedCount, nil
 }
 
 func tasteTagKey(title, artist string) string {

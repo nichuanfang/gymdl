@@ -19,6 +19,7 @@ import (
 
 type TasteSources struct {
 	Search       func(ctx context.Context, platform, artist string) ([]Track, error)
+	SearchPage   func(ctx context.Context, platform, artist string, offset int) ([]Track, error)
 	Similar      func(ctx context.Context, artist string) ([]string, error)
 	TrackTags    func(context.Context, Track) ([]string, error)
 	LibraryTags  func(context.Context) ([]musicrag.Song, error)
@@ -28,11 +29,11 @@ type TasteSources struct {
 func NewTasteSources(cfg *config.Config, libraryTags func(context.Context) ([]musicrag.Song, error)) *TasteSources {
 	sources := &TasteSources{
 		LibraryTags: libraryTags,
-		Search: func(ctx context.Context, platform, artist string) ([]Track, error) {
+		SearchPage: func(ctx context.Context, platform, artist string, offset int) ([]Track, error) {
 			if platform == "qq" && (cfg.QQMusicApiConfig == nil || !cfg.QQMusicApiConfig.Enable) {
 				return nil, errors.New("QQ 音乐未启用")
 			}
-			hits, _, err := web.SearchSinglesForAgent(ctx, artist, []string{platform}, 16)
+			hits, _, err := web.SearchSinglesForAgentPage(ctx, artist, []string{platform}, offset, tasteSearchPage)
 			if err != nil {
 				return nil, err
 			}
@@ -42,6 +43,9 @@ func NewTasteSources(cfg *config.Config, libraryTags func(context.Context) ([]mu
 			}
 			return tracks, nil
 		},
+	}
+	sources.Search = func(ctx context.Context, platform, artist string) ([]Track, error) {
+		return sources.SearchPage(ctx, platform, artist, 0)
 	}
 	if cfg.Lastfm == nil || strings.TrimSpace(cfg.Lastfm.APIKey) == "" {
 		return sources

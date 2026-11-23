@@ -100,14 +100,19 @@ func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string
 	app.rediscoverMu.Unlock()
 	switch {
 	case args[0] == "next" && len(args) == 1:
+		if len(card.Tracks) == 0 {
+			request.Page++
+		}
 	case args[0] == "platform" && len(args) == 2 && discovery.ValidTastePlatform(args[1]):
 		request.Platform = args[1]
+		request.Page = 0
 	case args[0] == "scene" && len(args) == 2:
 		filter, ok := request.Filter.WithScene(args[1])
 		if !ok {
 			return c.Respond(&tb.CallbackResponse{Text: "场景无效", ShowAlert: true})
 		}
 		request.Filter = filter
+		request.Page = 0
 	default:
 		return c.Respond(&tb.CallbackResponse{Text: "按钮参数无效", ShowAlert: true})
 	}
@@ -140,12 +145,18 @@ func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.Tast
 			card.Taste.Reason, card.Taste.Notice = result.Reason, result.Notice
 			card.Taste.Request.ExploreFirst = !result.Explore
 		} else {
-			card.Taste.Notice = "这次没找到合适的新歌。可以再试一次或换个平台。"
-			if filter := request.Filter.Label(); filter != "" {
-				card.Taste.Notice = "这次没找到标签能支持「" + filter + "」的新歌。可换个场景或回到「按口味」。"
+			filter := request.Filter.Label()
+			if filter != "" {
+				card.Taste.Notice = "这次没找到标签能支持「" + filter + "」的新歌。"
+			} else {
+				card.Taste.Notice = "这次没找到合适的新歌。"
 			}
 			if result.Notice != "" {
 				card.Taste.Notice += "\n" + result.Notice
+			} else if filter != "" {
+				card.Taste.Notice += "可换个场景或回到「按口味」。"
+			} else {
+				card.Taste.Notice += "可以再试一次或换个平台。"
 			}
 		}
 		saveCtx, saveCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -156,11 +167,7 @@ func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.Tast
 			return
 		}
 		text, markup := app.renderDiscoveryCard(card, 0)
-		if previewURL := app.discoveryCardPreviewURL(card, 0); previewURL != "" {
-			err = editDiscoveryText(api, message, text, markup, true, previewURL)
-		} else {
-			_, err = api.Edit(message, text, tb.ModeHTML, markup)
-		}
+		err = editDiscoveryText(api, message, text, markup, true, app.discoveryCardPreviewURL(card, 0))
 		if err != nil {
 			utils.WarnWithFormat("[Discovery] 个性化推荐卡片发送失败")
 			return

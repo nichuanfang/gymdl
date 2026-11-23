@@ -11,6 +11,7 @@ type TasteRequest struct {
 	Platform     string      `json:"platform"`
 	Filter       TasteFilter `json:"filter,omitempty"`
 	ExploreFirst bool        `json:"explore_first,omitempty"`
+	Page         int         `json:"page,omitempty"`
 }
 
 type TasteFilter struct {

@@ -39,6 +39,10 @@ func Open(filename string) (*Store, error) {
 			library TEXT NOT NULL, path TEXT NOT NULL, user_id INTEGER NOT NULL,
 			size INTEGER NOT NULL, modified INTEGER NOT NULL,
 			PRIMARY KEY(library,path,user_id)
+		);
+		CREATE TABLE IF NOT EXISTS audio_quality_sessions(
+			chat_id INTEGER PRIMARY KEY, token TEXT NOT NULL, phase TEXT NOT NULL,
+			expires_at INTEGER NOT NULL, payload BLOB NOT NULL
 		);`)
 	if err != nil {
 		_ = db.Close()

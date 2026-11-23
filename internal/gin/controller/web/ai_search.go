@@ -56,10 +56,17 @@ func SearchForAgent(ctx context.Context, keyword string, platforms []string, lim
 	if len(valid) == 0 {
 		valid = defaultAgentPlatforms
 	}
-	search := func(ctx context.Context, platform, kw string, pageSize, offset int) ([]SearchResultItem, error) {
-		return cachedSearchPage(ctx, platform, kw, pageSize, offset, searchProviderSearch)
+	return searchForAgentWindow(ctx, keyword, valid, 0, limit)
+}
+
+func searchForAgentWindow(ctx context.Context, keyword string, platforms []string, offset, limit int) ([]SearchResultItem, error) {
+	if offset < 0 {
+		offset = 0
 	}
-	items, _, _, errs := combinedSearchPageContext(ctx, valid, keyword, 0, limit, search)
+	search := func(ctx context.Context, platform, kw string, pageSize, pageOffset int) ([]SearchResultItem, error) {
+		return cachedSearchPage(ctx, platform, kw, pageSize, pageOffset, searchProviderSearch)
+	}
+	items, _, _, errs := combinedSearchPageContext(ctx, platforms, keyword, offset, limit, search)
 	if len(items) == 0 && len(errs) > 0 {
 		parts := make([]string, 0, len(errs))
 		for platform, err := range errs {
@@ -80,7 +87,31 @@ type AgentHit struct {
 // song. Compilations and ambient uploads are returned separately so the agent
 // can mention them without turning them into download buttons.
 func SearchSinglesForAgent(ctx context.Context, keyword string, platforms []string, limit int) (single []AgentHit, other []AgentHit, err error) {
-	items, err := SearchForAgent(ctx, keyword, platforms, max(limit*3, limit))
+	return SearchSinglesForAgentPage(ctx, keyword, platforms, 0, limit)
+}
+
+// SearchSinglesForAgentPage skips offset accepted singles, so a later recommendation
+// can look past the artist's most familiar tracks.
+func SearchSinglesForAgentPage(ctx context.Context, keyword string, platforms []string, offset, limit int) (single []AgentHit, other []AgentHit, err error) {
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return nil, nil, fmt.Errorf("搜索关键词不能为空")
+	}
+	// Stay at or below 48. SearchForAgent turns anything above 50 into 10.
+	rawLimit := limit * 3
+	if rawLimit > 48 {
+		rawLimit = 48
+	}
+	items, err := searchForAgentWindow(ctx, keyword, normalizeAgentPlatforms(platforms), offset, rawLimit)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -88,7 +119,10 @@ func SearchSinglesForAgent(ctx context.Context, keyword string, platforms []stri
 		hit := AgentHit{SearchResultItem: item, Kind: ClassifyAgentResult(item)}
 		switch hit.Kind {
 		case AgentKindSingle:
-			if len(single) < limit && lyricsLikeName(item.Name) {
+			if !lyricsLikeName(item.Name) {
+				continue
+			}
+			if len(single) < limit {
 				single = append(single, hit)
 			}
 		default:
@@ -96,4 +130,26 @@ func SearchSinglesForAgent(ctx context.Context, keyword string, platforms []stri
 		}
 	}
 	return single, other, nil
+}
+
+func normalizeAgentPlatforms(platforms []string) []string {
+	if len(platforms) == 0 {
+		return append([]string(nil), defaultAgentPlatforms...)
+	}
+	valid := make([]string, 0, len(platforms))
+	seen := map[string]bool{}
+	for _, p := range platforms {
+		switch strings.ToLower(strings.TrimSpace(p)) {
+		case "netease", "qq", "youtube", "bilibili":
+			name := strings.ToLower(strings.TrimSpace(p))
+			if !seen[name] {
+				seen[name] = true
+				valid = append(valid, name)
+			}
+		}
+	}
+	if len(valid) == 0 {
+		return append([]string(nil), defaultAgentPlatforms...)
+	}
+	return valid
 }

@@ -129,6 +129,10 @@ func ReadNavidromeAudio(ctx context.Context, c *config.PlaylistOrganizerConfig, 
 		if err != nil {
 			return nil, fmt.Errorf("无法连接 Navidrome，未判断曲库缺失")
 		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("Navidrome 曲库入口返回 HTTP %d", resp.StatusCode)
+		}
 		var body struct {
 			Response struct {
 				Status string `json:"status"`
@@ -139,7 +143,7 @@ func ReadNavidromeAudio(ctx context.Context, c *config.PlaylistOrganizerConfig, 
 		}
 		err = json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&body)
 		resp.Body.Close()
-		if err != nil || resp.StatusCode != 200 || body.Response.Status != "ok" {
+		if err != nil || body.Response.Status != "ok" {
 			return nil, fmt.Errorf("Navidrome 曲库读取失败，未判断曲库缺失")
 		}
 		for _, s := range body.Response.Search.Songs {

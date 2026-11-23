@@ -219,3 +219,29 @@ func TestTasteLastFMCachesResponsesAndHidesKeysOnErrors(t *testing.T) {
 		t.Fatalf("metadata request count = %d", requests.Load())
 	}
 }
+
+func TestRecommendTasteExplainsKnownSongsAndContinuesOnTheNextPage(t *testing.T) {
+	store := testStore(t)
+	ctx := t.Context()
+	history := Track{Title: "已听", Artist: "常听艺人", Plays: 10, LastPlayed: time.Now()}
+	svc := &Service{
+		Store: store, Library: stubLibrary{},
+		History: func(context.Context) ([]Track, error) { return []Track{history}, nil },
+		Taste: &TasteSources{HistoryOwner: 1,
+			SearchPage: func(_ context.Context, platform, artist string, offset int) ([]Track, error) {
+				if offset == 0 {
+					return []Track{tasteTestTrack(platform, "1", "已听", artist)}, nil
+				}
+				return []Track{tasteTestTrack(platform, "later", "再往后的歌", artist)}, nil
+			},
+		},
+	}
+	got, err := svc.RecommendTaste(ctx, 1, TasteRequest{Platform: "netease"})
+	if err != nil || got.Track != nil || !strings.Contains(got.Notice, "已经听过或在曲库里") {
+		t.Fatalf("first page should explain the miss: %+v, %v", got, err)
+	}
+	got, err = svc.RecommendTaste(ctx, 1, TasteRequest{Platform: "netease", Page: 1})
+	if err != nil || got.Track == nil || got.Track.ID != "later" {
+		t.Fatalf("next page = %+v, %v", got, err)
+	}
+}

@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -685,15 +686,30 @@ func (app *BotApp) discoveryCardPreviewURL(card discovery.Card, page int) string
 }
 
 func (app *BotApp) editDiscoveryCard(c tb.Context, card discovery.Card, page int, text string, markup *tb.ReplyMarkup, html bool) error {
-	previewURL := app.discoveryCardPreviewURL(card, page)
-	if previewURL == "" || c.Message() == nil {
+	bot := contextBot(c)
+	if c.Message() == nil || bot == nil {
 		return editDiscoveryMessage(c, text, markup, html)
 	}
-	return editDiscoveryText(c.Bot(), c.Message(), text, markup, html, previewURL)
+	return editDiscoveryText(bot, c.Message(), text, markup, html, app.discoveryCardPreviewURL(card, page))
+}
+
+func contextBot(c tb.Context) (bot tb.API) {
+	defer func() { _ = recover() }()
+	if c == nil {
+		return nil
+	}
+	return c.Bot()
+}
+
+func discoveryLinkPreview(previewURL string) map[string]any {
+	if previewURL == "" {
+		return map[string]any{"is_disabled": true}
+	}
+	return map[string]any{"url": previewURL, "prefer_large_media": true}
 }
 
 func editDiscoveryText(bot tb.API, message tb.Editable, text string, markup *tb.ReplyMarkup, html bool, previewURL string) error {
-	if bot == nil || message == nil || previewURL == "" {
+	if bot == nil || message == nil {
 		return fmt.Errorf("无法更新歌曲卡片")
 	}
 	messageID, chatID := message.MessageSig()
@@ -701,17 +717,17 @@ func editDiscoveryText(bot tb.API, message tb.Editable, text string, markup *tb.
 		"chat_id":              chatID,
 		"message_id":           messageID,
 		"text":                 text,
-		"link_preview_options": map[string]any{"url": previewURL, "prefer_large_media": true},
+		"link_preview_options": discoveryLinkPreview(previewURL),
 	}
 	if html {
 		params["parse_mode"] = string(tb.ModeHTML)
 	}
-	if markup == nil {
-		params["reply_markup"] = &tb.ReplyMarkup{}
-	} else {
-		params["reply_markup"] = markup
+	encoded, err := telegramReplyMarkup(markup)
+	if err != nil {
+		return err
 	}
-	_, err := bot.Raw("editMessageText", params)
+	params["reply_markup"] = encoded
+	_, err = bot.Raw("editMessageText", params)
 	if err != nil && strings.Contains(err.Error(), "message is not modified") {
 		return nil
 	}
@@ -1678,11 +1694,7 @@ func (app *BotApp) refreshRediscoverMessage(token string, user, chat int64, mess
 		}
 		if app.bot != nil && message != nil {
 			text, markup := app.renderDiscoveryCard(updated, updated.Page)
-			if previewURL := app.discoveryCardPreviewURL(updated, updated.Page); previewURL != "" {
-				err = editDiscoveryText(app.bot, message, text, markup, true, previewURL)
-			} else {
-				_, err = app.bot.Edit(message, text, tb.ModeHTML, markup)
-			}
+			err = editDiscoveryText(app.bot, message, text, markup, true, app.discoveryCardPreviewURL(updated, updated.Page))
 			if err != nil && !strings.Contains(err.Error(), "not modified") {
 				utils.WarnWithFormat("[Discovery] 更新遗珠进度失败: %v", err)
 			}
@@ -1978,4 +1990,29 @@ func (app *BotApp) switchFailedJobSource(c tb.Context, id string) error {
 		_ = app.showDiscoveryFailed(c, next)
 	})
 	return nil
+}
+
+func telegramReplyMarkup(markup *tb.ReplyMarkup) (string, error) {
+	if markup == nil {
+		markup = &tb.ReplyMarkup{}
+	}
+	cloned := *markup
+	cloned.InlineKeyboard = make([][]tb.InlineButton, len(markup.InlineKeyboard))
+	for i, row := range markup.InlineKeyboard {
+		cloned.InlineKeyboard[i] = append([]tb.InlineButton(nil), row...)
+		for j := range cloned.InlineKeyboard[i] {
+			key := &cloned.InlineKeyboard[i][j]
+			if key.Unique == "" {
+				continue
+			}
+			if key.Data == "" {
+				key.Data = "\f" + key.Unique
+			} else {
+				key.Data = "\f" + key.Unique + "|" + key.Data
+			}
+			key.Unique = ""
+		}
+	}
+	raw, err := json.Marshal(cloned)
+	return string(raw), err
 }

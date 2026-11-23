@@ -18,6 +18,7 @@ import (
 	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/internal/audioquality"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
+	"github.com/nichuanfang/gymdl/internal/storage"
 	"github.com/nichuanfang/gymdl/utils"
 	"github.com/studio-b12/gowebdav"
 	tb "gopkg.in/telebot.v4"
@@ -236,6 +237,7 @@ func (c *audioCheckCallbackTestContext) Respond(response ...*tb.CallbackResponse
 }
 
 func TestAudioCheckStopCallbackCancelsCurrentRun(t *testing.T) {
+	t.Chdir(t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	message := &tb.Message{ID: 42, Chat: &tb.Chat{ID: 7, Type: tb.ChatPrivate}}
@@ -245,6 +247,9 @@ func TestAudioCheckStopCallbackCancelsCurrentRun(t *testing.T) {
 			token: "token", expires: time.Now().Add(time.Minute), owner: 7, message: message, running: true,
 		}},
 		audioCheckDone: make(chan struct{}), audioCheckCancel: cancel,
+	}
+	if err := persistAudioCheckSession(app.audioCheckSessions[7]); err != nil {
+		t.Fatal(err)
 	}
 	callback := &audioCheckCallbackTestContext{
 		args: []string{"stop", "token"}, sender: &tb.User{ID: 7}, chat: message.Chat,
@@ -258,6 +263,15 @@ func TestAudioCheckStopCallbackCancelsCurrentRun(t *testing.T) {
 	}
 	if callback.answer == nil || !strings.Contains(callback.answer.Text, "正在停止") {
 		t.Fatalf("stop callback response = %#v", callback.answer)
+	}
+	store, err := audioquality.Open(storage.DefaultDatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	records, err := store.Sessions(t.Context())
+	if err != nil || len(records) != 1 || records[0].Phase != audioquality.SessionPaused {
+		t.Fatalf("stop was not saved: %+v, %v", records, err)
 	}
 }
 

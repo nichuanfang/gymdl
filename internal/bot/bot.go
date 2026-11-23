@@ -200,6 +200,7 @@ func signalWebhookStop(stop chan struct{}) {
 
 // Start 启动机器人
 func (app *BotApp) Start() {
+	app.restoreAudioChecks(app.bot)
 	if app.discovery != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		app.discoveryCancel = cancel
