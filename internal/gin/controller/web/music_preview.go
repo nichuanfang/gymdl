@@ -20,7 +20,7 @@ const qqMusicPreviewTemplateSource = `<!doctype html>
   <meta name="robots" content="noindex,nofollow">
   <title>{{.Title}} - {{.Artist}}</title>
   <meta property="og:type" content="music.song">
-  <meta property="og:site_name" content="QQ 音乐">
+  <meta property="og:site_name" content="QQ音乐">
   <meta property="og:title" content="{{.Title}}">
   <meta property="og:description" content="{{.Description}}">
   <meta property="og:image" content="{{.CoverURL}}">

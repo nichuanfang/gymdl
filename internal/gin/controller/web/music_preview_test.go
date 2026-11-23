@@ -28,6 +28,7 @@ func TestHandleQQMusicPreviewRendersTelegramMetadataAndSafeAppLink(t *testing.T)
 	}
 	body := response.Body.String()
 	for _, want := range []string{
+		`<meta property="og:site_name" content="QQ音乐">`,
 		`<meta property="og:title" content="Get Up">`,
 		`<meta property="og:description" content="歌手：阿肆 · 专辑：预谋邂逅 · 时长：3:20">`,
 		`https://y.gtimg.cn/music/photo_new/T002R300x300M000002ef2VB0Qfb30_2.jpg`,

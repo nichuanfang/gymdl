@@ -181,6 +181,41 @@ func TestRecommendTasteKeepsHealthyPlatformAndIsolatesHistory(t *testing.T) {
 	}
 }
 
+func TestTasteCandidateSearchTimeoutAndFailureClassification(t *testing.T) {
+	service := &Service{Taste: &TasteSources{Search: func(ctx context.Context, _, _ string) ([]Track, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) < tasteSearchTimeout-time.Second {
+			t.Errorf("search deadline = %v, want at least %s remaining", deadline, tasteSearchTimeout-time.Second)
+		}
+		return nil, nil
+	}}}
+	_, unavailable := service.tasteCandidates(t.Context(), []tasteArtist{{name: "test artist"}}, nil,
+		[]string{"netease"}, nil, nil)
+	if len(unavailable) != 0 {
+		t.Fatalf("successful empty search marked unavailable: %v", unavailable)
+	}
+	if tasteSearchTimeout < 10*time.Second {
+		t.Fatalf("taste search timeout = %s, want at least 10s", tasteSearchTimeout)
+	}
+
+	for _, test := range []struct {
+		name       string
+		err        error
+		contextErr error
+		want       string
+	}{
+		{name: "deadline", err: errors.New("provider returned error"), contextErr: context.DeadlineExceeded, want: "timeout"},
+		{name: "cancel", contextErr: context.Canceled, want: "canceled"},
+		{name: "upstream", err: errors.New("provider returned error"), want: "upstream"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := tasteSearchFailureClass(test.err, test.contextErr); got != test.want {
+				t.Fatalf("failure class = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestTasteLastFMCachesResponsesAndHidesKeysOnErrors(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

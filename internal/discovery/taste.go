@@ -9,8 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nichuanfang/gymdl/utils"
 	"golang.org/x/sync/errgroup"
 )
+
+const tasteSearchTimeout = 12 * time.Second
 
 type TasteResult struct {
 	Track   *Track
@@ -255,6 +258,7 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 		platform string
 		tracks   []Track
 		err      error
+		ctxErr   error
 	}
 	var searches []lookup
 	for _, lane := range [][]tasteArtist{familiar, explore} {
@@ -268,17 +272,47 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 	group.SetLimit(4)
 	for i := range searches {
 		group.Go(func() error {
-			query, cancel := context.WithTimeout(ctx, 5*time.Second)
+			query, cancel := context.WithTimeout(ctx, tasteSearchTimeout)
 			defer cancel()
 			search := &searches[i]
 			search.tracks, search.err = s.Taste.Search(query, search.platform, search.artist.name)
+			search.ctxErr = query.Err()
 			return nil
 		})
 	}
 	_ = group.Wait()
 	succeeded := map[string]bool{}
 	seen := map[string][]Track{}
+	type failureCounts struct {
+		total    int
+		timeout  int
+		canceled int
+		upstream int
+	}
+	failures := map[string]failureCounts{}
 	var out []tasteCandidate
+	for _, search := range searches {
+		if search.err == nil {
+			continue
+		}
+		counts := failures[search.platform]
+		counts.total++
+		switch tasteSearchFailureClass(search.err, search.ctxErr) {
+		case "timeout":
+			counts.timeout++
+		case "canceled":
+			counts.canceled++
+		default:
+			counts.upstream++
+		}
+		failures[search.platform] = counts
+	}
+	for _, platform := range platforms {
+		if counts, ok := failures[platform]; ok {
+			utils.WarnWithFormat("[Discovery] 个性化推荐搜索异常 platform=%s failed=%d timeout=%d canceled=%d upstream=%d",
+				platform, counts.total, counts.timeout, counts.canceled, counts.upstream)
+		}
+	}
 	// Interleave each artist/platform's search hits before taking the shortlist.
 	for rank := 0; rank < 16; rank++ {
 		for _, search := range searches {
@@ -310,6 +344,18 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 		}
 	}
 	return out, unavailable
+}
+
+func tasteSearchFailureClass(err, contextErr error) string {
+	for _, cause := range []error{contextErr, err} {
+		switch {
+		case errors.Is(cause, context.DeadlineExceeded):
+			return "timeout"
+		case errors.Is(cause, context.Canceled):
+			return "canceled"
+		}
+	}
+	return "upstream"
 }
 
 func (s *Service) shortlistTaste(ctx context.Context, candidates []tasteCandidate) ([2][]tasteCandidate, error) {
