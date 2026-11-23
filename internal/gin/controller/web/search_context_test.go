@@ -53,6 +53,26 @@ func TestNeteaseSearchRequestUsesEAPIAndContext(t *testing.T) {
 	}
 }
 
+func TestNeteaseSearchErrorCategory(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "timeout", err: context.DeadlineExceeded, want: "timeout"},
+		{name: "canceled", err: context.Canceled, want: "canceled"},
+		{name: "http status", err: errors.New("网易云 API HTTP 状态码: 503"), want: "http_status"},
+		{name: "invalid response", err: errors.New("解析网易云响应失败"), want: "invalid_response"},
+		{name: "transport", err: errors.New("connection refused"), want: "transport_or_request"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := neteaseSearchErrorCategory(test.err); got != test.want {
+				t.Fatalf("category = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestNeteaseAndQQSearchRequestsHonorCancellation(t *testing.T) {
 	for _, platform := range []string{"netease", "qq"} {
 		t.Run(platform, func(t *testing.T) {

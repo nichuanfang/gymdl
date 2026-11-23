@@ -216,6 +216,34 @@ func TestTasteCandidateSearchTimeoutAndFailureClassification(t *testing.T) {
 	}
 }
 
+func TestTasteCandidateLimitsConcurrentNetEaseSearches(t *testing.T) {
+	var active atomic.Int32
+	var peak atomic.Int32
+	service := &Service{Taste: &TasteSources{Search: func(context.Context, string, string) ([]Track, error) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			observed := peak.Load()
+			if current <= observed || peak.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		return nil, nil
+	}}}
+	artists := make([]tasteArtist, 8)
+	for i := range artists {
+		artists[i] = tasteArtist{name: fmt.Sprintf("artist-%d", i)}
+	}
+	_, unavailable := service.tasteCandidates(t.Context(), artists, nil, []string{"netease"}, nil, nil)
+	if len(unavailable) != 0 {
+		t.Fatalf("successful empty searches marked unavailable: %v", unavailable)
+	}
+	if got := peak.Load(); got > tasteNeteaseSearchConcurrency {
+		t.Fatalf("peak NetEase search concurrency = %d, want <= %d", got, tasteNeteaseSearchConcurrency)
+	}
+}
+
 func TestTasteLastFMCachesResponsesAndHidesKeysOnErrors(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

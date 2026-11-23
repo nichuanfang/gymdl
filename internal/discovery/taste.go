@@ -14,6 +14,7 @@ import (
 )
 
 const tasteSearchTimeout = 12 * time.Second
+const tasteNeteaseSearchConcurrency = 2
 
 type TasteResult struct {
 	Track   *Track
@@ -270,11 +271,24 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 	}
 	var group errgroup.Group
 	group.SetLimit(4)
+	// Keep NetEase bursts small; selecting it alone would otherwise send four
+	// concurrent requests, while mixed-platform searches send at most two.
+	neteaseSlots := make(chan struct{}, tasteNeteaseSearchConcurrency)
 	for i := range searches {
 		group.Go(func() error {
+			search := &searches[i]
+			if search.platform == "netease" {
+				select {
+				case neteaseSlots <- struct{}{}:
+					defer func() { <-neteaseSlots }()
+				case <-ctx.Done():
+					search.err = ctx.Err()
+					search.ctxErr = ctx.Err()
+					return nil
+				}
+			}
 			query, cancel := context.WithTimeout(ctx, tasteSearchTimeout)
 			defer cancel()
-			search := &searches[i]
 			search.tracks, search.err = s.Taste.Search(query, search.platform, search.artist.name)
 			search.ctxErr = query.Err()
 			return nil
