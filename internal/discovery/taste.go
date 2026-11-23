@@ -75,6 +75,14 @@ func (s *Service) RecommendTaste(ctx context.Context, user int64, req TasteReque
 	}
 	known := tasteKnownTracks(history, favorites)
 	candidates, unavailable := s.tasteCandidates(ctx, artists, explore, platforms, known, exclusions)
+	if req.Platform == "netease" && len(candidates) == 0 && hasNeteaseSearchRejection(unavailable) {
+		qqCandidates, qqUnavailable := s.tasteCandidates(ctx, artists, explore, []string{"qq"}, known, exclusions)
+		if len(qqCandidates) > 0 {
+			candidates = qqCandidates
+			unavailable = qqUnavailable
+			notices = append(notices, "网易云搜索暂时受限，本次先用 QQ 音乐继续推荐")
+		}
+	}
 	notices = append(notices, unavailable...)
 	if ctx.Err() != nil {
 		return TasteResult{}, errors.New("这次推荐超时，请再试一次")
@@ -302,6 +310,7 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 		timeout  int
 		canceled int
 		upstream int
+		rejected int
 	}
 	failures := map[string]failureCounts{}
 	var out []tasteCandidate
@@ -316,6 +325,8 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 			counts.timeout++
 		case "canceled":
 			counts.canceled++
+		case "rejected":
+			counts.rejected++
 		default:
 			counts.upstream++
 		}
@@ -323,8 +334,8 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 	}
 	for _, platform := range platforms {
 		if counts, ok := failures[platform]; ok {
-			utils.WarnWithFormat("[Discovery] 个性化推荐搜索异常 platform=%s failed=%d timeout=%d canceled=%d upstream=%d",
-				platform, counts.total, counts.timeout, counts.canceled, counts.upstream)
+			utils.WarnWithFormat("[Discovery] 个性化推荐搜索异常 platform=%s failed=%d timeout=%d canceled=%d upstream=%d rejected=%d",
+				platform, counts.total, counts.timeout, counts.canceled, counts.upstream, counts.rejected)
 		}
 	}
 	// Interleave each artist/platform's search hits before taking the shortlist.
@@ -354,7 +365,11 @@ func (s *Service) tasteCandidates(ctx context.Context, familiar, explore []taste
 			if platform == "qq" {
 				name = "QQ 音乐"
 			}
-			unavailable = append(unavailable, name+"暂未完成搜索")
+			if platform == "netease" && failures[platform].rejected > 0 {
+				unavailable = append(unavailable, "网易云搜索暂时受限，请稍后重试")
+			} else {
+				unavailable = append(unavailable, name+"暂未完成搜索")
+			}
 		}
 	}
 	return out, unavailable
@@ -369,7 +384,19 @@ func tasteSearchFailureClass(err, contextErr error) string {
 			return "canceled"
 		}
 	}
+	if err != nil && (strings.Contains(err.Error(), "暂时受限") || strings.Contains(err.Error(), "上游响应 code=405")) {
+		return "rejected"
+	}
 	return "upstream"
+}
+
+func hasNeteaseSearchRejection(unavailable []string) bool {
+	for _, message := range unavailable {
+		if strings.HasPrefix(message, "网易云搜索暂时受限") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) shortlistTaste(ctx context.Context, candidates []tasteCandidate) ([2][]tasteCandidate, error) {

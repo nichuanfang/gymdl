@@ -11,7 +11,7 @@ import (
 )
 
 func (s *Service) notifyFresh(items []FreshFavorite) {
-	if s == nil || s.Notify == nil || len(items) == 0 {
+	if s == nil || (s.Notify == nil && s.NotifyFresh == nil) || len(items) == 0 {
 		return
 	}
 	users := map[int64]int64{}
@@ -19,6 +19,7 @@ func (s *Service) notifyFresh(items []FreshFavorite) {
 		users[item.Chat] = item.User
 	}
 	notices := formatFreshFavoriteNotices(items)
+	tracksByChat := formatFreshFavoritePreviewTracks(items)
 	chats := make([]int64, 0, len(notices))
 	for chat := range notices {
 		chats = append(chats, chat)
@@ -28,10 +29,50 @@ func (s *Service) notifyFresh(items []FreshFavorite) {
 		if s.Authorized != nil && !s.Authorized(users[chat], chat) {
 			continue
 		}
-		if err := s.Notify(chat, notices[chat]); err != nil {
+		var err error
+		if s.NotifyFresh != nil {
+			err = s.NotifyFresh(chat, notices[chat], tracksByChat[chat])
+		} else {
+			err = s.Notify(chat, notices[chat])
+		}
+		if err != nil {
 			utils.WarnWithFormat("[Discovery] 新收藏通知发送失败: %v", err)
 		}
 	}
+}
+
+func formatFreshFavoritePreviewTracks(items []FreshFavorite) map[int64][]Track {
+	type bucket struct {
+		order []string
+		by    map[string][]Track
+	}
+	buckets := map[int64]*bucket{}
+	for _, item := range items {
+		b := buckets[item.Chat]
+		if b == nil {
+			b = &bucket{by: map[string][]Track{}}
+			buckets[item.Chat] = b
+		}
+		if _, ok := b.by[item.Platform]; !ok {
+			b.order = append(b.order, item.Platform)
+		}
+		b.by[item.Platform] = append(b.by[item.Platform], item.Track)
+	}
+	out := make(map[int64][]Track, len(buckets))
+	for chat, b := range buckets {
+		for _, platform := range orderFreshPlatforms(b.order) {
+			for _, track := range b.by[platform] {
+				if len(out[chat]) == 8 {
+					break
+				}
+				out[chat] = append(out[chat], track)
+			}
+			if len(out[chat]) == 8 {
+				break
+			}
+		}
+	}
+	return out
 }
 
 func formatFreshFavoriteNotices(items []FreshFavorite) map[int64]string {

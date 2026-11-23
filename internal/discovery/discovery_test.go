@@ -400,6 +400,43 @@ func TestFreshFavoriteNoticeKeepsAShortList(t *testing.T) {
 	}
 }
 
+func TestFreshFavoritePreviewTracksFollowNoticeOrderAndLimit(t *testing.T) {
+	qqTrack := testTrack("q1", "QQ 1", "歌手")
+	qqTrack.Platform = "qq"
+	items := []FreshFavorite{
+		{Chat: 3, Platform: "qq", Track: qqTrack},
+		{Chat: 3, Platform: "netease", Track: testTrack("n1", "网易云 1", "歌手")},
+	}
+	tracks := formatFreshFavoritePreviewTracks(items)[3]
+	if len(tracks) != 2 || tracks[0].Platform != "netease" || tracks[1].Platform != "qq" {
+		t.Fatalf("preview tracks = %#v", tracks)
+	}
+	for i := 0; i < 9; i++ {
+		track := testTrack(fmt.Sprint(i), fmt.Sprintf("歌%d", i), "歌手")
+		track.Platform = "qq"
+		items = append(items, FreshFavorite{Chat: 3, Platform: "qq", Track: track})
+	}
+	if got := len(formatFreshFavoritePreviewTracks(items)[3]); got != 8 {
+		t.Fatalf("preview track count = %d, want 8", got)
+	}
+}
+
+func TestNotifyFreshPassesTracksToPreviewAwareNotifier(t *testing.T) {
+	wantTrack := testTrack("186016", "晴天", "周杰伦")
+	called := false
+	svc := Service{NotifyFresh: func(chat int64, text string, tracks []Track) error {
+		called = true
+		if chat != 7 || !strings.Contains(text, "收藏有新歌") || len(tracks) != 1 || tracks[0].ID != wantTrack.ID {
+			t.Fatalf("fresh notice chat=%d text=%q tracks=%#v", chat, text, tracks)
+		}
+		return nil
+	}}
+	svc.notifyFresh([]FreshFavorite{{User: 7, Chat: 7, Platform: "netease", Track: wantTrack}})
+	if !called {
+		t.Fatal("preview-aware notifier was not called")
+	}
+}
+
 func TestFreshFavoriteNoticeLinksAndEscapesTheTitle(t *testing.T) {
 	track := testTrack("1", "A & B <C>", "甲&乙")
 	text := formatFreshFavoriteNotices([]FreshFavorite{{Chat: 1, Platform: "netease", Track: track}})[1]

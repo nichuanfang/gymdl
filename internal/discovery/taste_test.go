@@ -181,6 +181,29 @@ func TestRecommendTasteKeepsHealthyPlatformAndIsolatesHistory(t *testing.T) {
 	}
 }
 
+func TestRecommendTasteFallsBackToQQWhenNetEaseIsRateLimited(t *testing.T) {
+	store := testStore(t)
+	ctx := t.Context()
+	favorite := testTrack("1", "旧收藏", "歌手甲")
+	if _, _, err := store.Apply(ctx, 2, 2, snapshot("qq-account", favorite), true); err != nil {
+		t.Fatal(err)
+	}
+	service := &Service{Store: store, Library: stubLibrary{}, Taste: &TasteSources{
+		Search: func(_ context.Context, platform, artist string) ([]Track, error) {
+			if platform == "netease" {
+				return nil, errors.New("平台搜索失败: netease: 网易云搜索暂时受限，请稍后重试")
+			}
+			return []Track{tasteTestTrack("qq", "song", "新歌", artist)}, nil
+		},
+	}}
+
+	got, err := service.RecommendTaste(ctx, 2, TasteRequest{Platform: "netease"})
+	if err != nil || got.Track == nil || got.Track.Platform != "qq" || !strings.Contains(got.Notice, "网易云搜索暂时受限") ||
+		!strings.Contains(got.Notice, "QQ 音乐") {
+		t.Fatalf("expected a clear QQ fallback recommendation: %+v, %v", got, err)
+	}
+}
+
 func TestTasteCandidateSearchTimeoutAndFailureClassification(t *testing.T) {
 	service := &Service{Taste: &TasteSources{Search: func(ctx context.Context, _, _ string) ([]Track, error) {
 		deadline, ok := ctx.Deadline()
@@ -206,6 +229,8 @@ func TestTasteCandidateSearchTimeoutAndFailureClassification(t *testing.T) {
 	}{
 		{name: "deadline", err: errors.New("provider returned error"), contextErr: context.DeadlineExceeded, want: "timeout"},
 		{name: "cancel", contextErr: context.Canceled, want: "canceled"},
+		{name: "netease rate limit", err: errors.New("网易云搜索失败: 上游响应 code=405"), want: "rejected"},
+		{name: "netease cooldown", err: errors.New("网易云搜索暂时受限，请稍后重试"), want: "rejected"},
 		{name: "upstream", err: errors.New("provider returned error"), want: "upstream"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

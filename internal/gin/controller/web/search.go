@@ -412,6 +412,11 @@ func searchNetease(keyword string, limit, offset int) ([]SearchResultItem, error
 }
 
 func searchNeteaseWithContext(ctx context.Context, keyword string, limit, offset int) ([]SearchResultItem, error) {
+	if remaining := neteaseSearchCircuit.remaining(time.Now()); remaining > 0 {
+		seconds := int((remaining + time.Second - 1) / time.Second)
+		utils.WarnWithFormat("[WebSearch] NCM request skipped reason=cooldown retry_after_seconds=%d", seconds)
+		return nil, fmt.Errorf("网易云搜索暂时受限，请约 %d 秒后重试", seconds)
+	}
 	cookiePath, musicU := neteaseSearchCookie()
 	if musicU == "" && cookiePath != "" {
 		utils.WarnWithFormat("[WebSearch] NCM Cookie 未找到: path=%s", cookiePath)
@@ -423,6 +428,11 @@ func searchNeteaseWithContext(ctx context.Context, keyword string, limit, offset
 	}
 	if utils.Logger() != nil {
 		utils.DebugWithFormat("[WebSearch] NCM code=%d, songs=%d, hasCookie=%v, cookiePath=%s", result.Code, len(result.Result.Songs), musicU != "", cookiePath)
+	}
+	if result.Code == 405 {
+		until := neteaseSearchCircuit.block(time.Now(), neteaseSearchCooldownDuration)
+		utils.WarnWithFormat("[WebSearch] NCM upstream restricted code=405 hasCookie=%t cooldown_seconds=%d", musicU != "", int(time.Until(until).Seconds()))
+		return nil, fmt.Errorf("网易云搜索暂时受限，请稍后重试")
 	}
 	if result.Code != 200 {
 		utils.WarnWithFormat("[WebSearch] NCM upstream rejected code=%d hasCookie=%t", result.Code, musicU != "")
@@ -477,8 +487,8 @@ func requestNeteaseSearch(ctx context.Context, endpoint, keyword string, limit, 
 		return result, err
 	}
 	cookies := map[string]string{
-		"appver": "8.9.70", "buildver": strconv.FormatInt(time.Now().Unix(), 10),
-		"resolution": "1920x1080", "os": "android",
+		"appver": "9.3.40", "buildver": strconv.FormatInt(time.Now().Unix(), 10),
+		"resolution": "1920x1080", "os": "Android", "deviceId": ncmutils.DeviceId,
 	}
 	if musicU != "" {
 		cookies["MUSIC_U"] = musicU

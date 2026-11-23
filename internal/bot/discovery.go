@@ -74,6 +74,10 @@ func (app *BotApp) initDiscovery() {
 			_, err := app.bot.Send(tb.ChatID(chat), text, tb.ModeHTML)
 			return err
 		},
+		NotifyFresh: func(chat int64, text string, tracks []discovery.Track) error {
+			previewURL := freshFavoritePreviewURL(app, tracks)
+			return sendDiscoveryFreshNotice(app.bot, chat, text, previewURL)
+		},
 		NotifyIngested: app.sendDiscoveryIngested,
 	}
 }

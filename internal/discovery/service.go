@@ -31,7 +31,10 @@ type Service struct {
 	Taste    *TasteSources
 	// Notify returns an error on delivery failure so digests remain unacknowledged.
 	// Sync failures are logged and are not sent through Notify.
-	Notify               func(int64, string) error
+	Notify func(int64, string) error
+	// NotifyFresh can attach preview metadata for the newly discovered tracks.
+	// It is separate from Notify because the other notices don't carry tracks.
+	NotifyFresh          func(int64, string, []Track) error
 	NotifyIngested       func(Job) error
 	OnError              func(error)
 	Authorized           func(int64, int64) bool

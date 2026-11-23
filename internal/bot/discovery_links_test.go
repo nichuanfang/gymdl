@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/internal/discovery"
+	tb "gopkg.in/telebot.v4"
 )
 
 func TestDiscoveryListenURLUsesPlatformAppLinks(t *testing.T) {
@@ -120,5 +122,51 @@ func TestDiscoveryCardPreviewUsesNetEaseSongPage(t *testing.T) {
 	card.Tracks[0].ID = "186016"
 	if got := discoveryCardPreviewURL(card, 0, ""); got != "" {
 		t.Fatalf("non-personalized NetEase card preview URL = %q, want empty", got)
+	}
+}
+
+func TestFreshFavoritePreviewUsesCanonicalNetEaseSongPage(t *testing.T) {
+	app := &BotApp{cfg: &config.Config{}}
+	tracks := []discovery.Track{
+		{Platform: "netease", ID: "not-an-id", Title: "坏链接"},
+		{Platform: "netease", ID: "186016", Title: "晴天", Artist: "周杰伦"},
+	}
+	if got, want := freshFavoritePreviewURL(app, tracks), "https://music.163.com/song?id=186016"; got != want {
+		t.Fatalf("fresh favorite preview URL = %q, want %q", got, want)
+	}
+}
+
+type freshNoticeAPIFake struct {
+	tb.API
+	method  string
+	payload any
+}
+
+func (f *freshNoticeAPIFake) Raw(method string, payload interface{}) ([]byte, error) {
+	f.method, f.payload = method, payload
+	return []byte(`{"ok":true}`), nil
+}
+
+func TestFreshNoticeSetsTelegramPreviewURL(t *testing.T) {
+	api := &freshNoticeAPIFake{}
+	if err := sendDiscoveryFreshNotice(api, 42, "<b>收藏有新歌</b>", "https://music.163.com/song?id=186016"); err != nil {
+		t.Fatal(err)
+	}
+	if api.method != "sendMessage" {
+		t.Fatalf("Telegram method = %q", api.method)
+	}
+	payload, ok := api.payload.(map[string]any)
+	if !ok {
+		t.Fatalf("payload type = %T", api.payload)
+	}
+	preview, ok := payload["link_preview_options"].(map[string]any)
+	if !ok || preview["url"] != "https://music.163.com/song?id=186016" || preview["prefer_large_media"] != true {
+		t.Fatalf("link preview options = %#v", payload["link_preview_options"])
+	}
+	if payload["chat_id"] != int64(42) || payload["parse_mode"] != string(tb.ModeHTML) {
+		t.Fatalf("send payload = %#v", payload)
+	}
+	if _, err := json.Marshal(payload); err != nil {
+		t.Fatalf("payload is not JSON encodable: %v", err)
 	}
 }

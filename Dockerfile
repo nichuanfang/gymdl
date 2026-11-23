@@ -7,7 +7,7 @@ COPY webui/ ./
 RUN npm run build
 
 # Build the Linux/amd64 service used by the published Docker image.
-FROM golang:1.24 AS builder
+FROM golang:1.26 AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download

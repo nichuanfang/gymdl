@@ -23,8 +23,16 @@ func TestNeteaseSearchRequestUsesEAPIAndContext(t *testing.T) {
 		if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" || r.Header.Get("User-Agent") == "" {
 			t.Errorf("missing NetEase request headers: %#v", r.Header)
 		}
-		if !strings.Contains(r.Header.Get("Cookie"), "MUSIC_U=test%20music%20cookie") {
-			t.Errorf("MUSIC_U cookie was not preserved: %q", r.Header.Get("Cookie"))
+		cookieHeader := r.Header.Get("Cookie")
+		for _, expected := range []string{
+			"MUSIC_U=test%20music%20cookie",
+			"appver=9.3.40",
+			"os=Android",
+			"deviceId=" + ncmutils.DeviceId,
+		} {
+			if !strings.Contains(cookieHeader, expected) {
+				t.Errorf("NetEase cookie missing %q", expected)
+			}
 		}
 		if err := r.ParseForm(); err != nil || r.Form.Get("params") == "" {
 			t.Errorf("expected encrypted EAPI params: %q err=%v", r.Form.Get("params"), err)
@@ -70,6 +78,39 @@ func TestNeteaseSearchErrorCategory(t *testing.T) {
 				t.Fatalf("category = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestNeteaseSearchCooldownBlocksAndExpires(t *testing.T) {
+	var cooldown neteaseSearchCooldown
+	now := time.Date(2026, 11, 23, 10, 0, 0, 0, time.UTC)
+	until := cooldown.block(now, neteaseSearchCooldownDuration)
+	if want := neteaseSearchCooldownDuration; !until.Equal(now.Add(want)) {
+		t.Fatalf("cooldown expiry = %v, want %v", until, now.Add(want))
+	}
+	if got := cooldown.remaining(now.Add(time.Minute)); got != time.Minute {
+		t.Fatalf("remaining cooldown = %s, want 1m", got)
+	}
+	if got := cooldown.remaining(until); got != 0 {
+		t.Fatalf("expired cooldown = %s, want 0", got)
+	}
+}
+
+func TestNeteaseSearchSkipsRequestsDuringCooldown(t *testing.T) {
+	neteaseSearchCircuit.mu.Lock()
+	previous := neteaseSearchCircuit.until
+	neteaseSearchCircuit.until = time.Time{}
+	neteaseSearchCircuit.mu.Unlock()
+	t.Cleanup(func() {
+		neteaseSearchCircuit.mu.Lock()
+		neteaseSearchCircuit.until = previous
+		neteaseSearchCircuit.mu.Unlock()
+	})
+	neteaseSearchCircuit.block(time.Now(), neteaseSearchCooldownDuration)
+
+	_, err := searchNeteaseWithContext(context.Background(), "test artist", 10, 0)
+	if err == nil || !strings.Contains(err.Error(), "网易云搜索暂时受限") {
+		t.Fatalf("cooldown error = %v, want a clear temporary restriction", err)
 	}
 }
 
