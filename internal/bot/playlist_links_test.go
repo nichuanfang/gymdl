@@ -36,3 +36,25 @@ func TestPlaylistAssignmentSongLinkUsesPlatformAppLinks(t *testing.T) {
 		})
 	}
 }
+
+func TestPlaylistAssignmentPreviewUsesThePublicSongPage(t *testing.T) {
+	tests := []struct {
+		comment string
+		want    string
+	}{
+		{"https://music.163.com/#/song?id=186016", "https://music.163.com/song?id=186016"},
+		{"https://music.163.com/song?id=186016", "https://music.163.com/song?id=186016"},
+		{"https://music.youtube.com/watch?v=dQw4w9WgXcQ", "https://music.youtube.com/watch?v=dQw4w9WgXcQ"},
+		{"https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://music.youtube.com/watch?v=dQw4w9WgXcQ"},
+		{"来源 https://y.qq.com/n/ryqq/songDetail/0039MnYb0qxYhV", "https://y.qq.com/n/ryqq/songDetail/0039MnYb0qxYhV"},
+		{"https://m.music.163.com/m/applink/?scheme=orpheus%3A%2F%2Fsong%2F186016", ""},
+		{"", ""},
+		{"not a link", ""},
+	}
+	for _, test := range tests {
+		got := playlistAssignmentPreviewURL(unplaylistSong{Title: "Only Time", Comment: test.comment})
+		if got != test.want {
+			t.Fatalf("comment %q preview = %q, want %q", test.comment, got, test.want)
+		}
+	}
+}

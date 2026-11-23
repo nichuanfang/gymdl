@@ -2000,6 +2000,16 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 	return text.String()
 }
 
+func playlistAssignmentPreviewURL(song unplaylistSong) string {
+	source, platform := audioCheckSource(song.Comment)
+	switch platform {
+	case "netease", "youtube", "qq":
+		return source
+	default:
+		return ""
+	}
+}
+
 func playlistAssignmentTitle(song unplaylistSong) string {
 	title := utils.EscapeHTML(displaySongValue(song.Title))
 	sourceURL := discoveryListenURL(playlistAssignmentSourceURL(song.Comment))
@@ -2122,7 +2132,12 @@ func (app *BotApp) editPlaylistAssignmentCard(message *tb.Message, assignment pe
 		current.aiSuggestionSeq != assignment.aiSuggestionSeq {
 		return nil
 	}
-	return app.editPlaylistAssignmentText(message, formatPlaylistAssignment(current), playlistAssignmentMarkup(current), tb.ModeHTML)
+	if message == nil || app.bot == nil {
+		return nil
+	}
+	// The title stays an app link. Telegram only renders a cover when the
+	// preview target is the public song page, same as the recommendation card.
+	return editDiscoveryText(app.bot, message, formatPlaylistAssignment(current), playlistAssignmentMarkup(current), true, playlistAssignmentPreviewURL(current.song))
 }
 
 func (app *BotApp) editPlaylistAssignmentText(message *tb.Message, text string, markup *tb.ReplyMarkup, mode tb.ParseMode) error {
