@@ -600,6 +600,30 @@ func (s *Store) RetryJob(ctx context.Context, id string, user int64) (bool, erro
 	return n == 1, err
 }
 
+// RetryJobWithSource requeues a failed job only if it still matches the
+// source and state seen before the alternate lookup.
+func (s *Store) RetryJobWithSource(ctx context.Context, job Job, alternate Track) (bool, error) {
+	original, err := json.Marshal(job.Track)
+	if err != nil {
+		return false, err
+	}
+	alternate.SourceCard = job.Track.SourceCard
+	alternate.TasteRecommended = job.Track.TasteRecommended
+	payload, err := json.Marshal(alternate)
+	if err != nil {
+		return false, err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE discovery_jobs
+		SET track_json=?,state='queued',attempts=0,next_run=0,last_error='',result='',notified=0,source_account='',updated=?,stored_file_json='null'
+		WHERE id=? AND user_id=? AND chat_id=? AND state='failed' AND updated=? AND attempts=? AND track_json=?`,
+		string(payload), time.Now().Unix(), job.ID, job.User, job.Chat, job.Updated, job.Attempts, string(original))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 // DismissFailedJob records an explicit user decision for one failed song.
 // Favorites polling and rediscover both already exclude ignored jobs.
 func (s *Store) DismissFailedJob(ctx context.Context, id string, user int64) (bool, error) {

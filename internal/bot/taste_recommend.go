@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/internal/aichat"
 	"github.com/nichuanfang/gymdl/internal/discovery"
 	"github.com/nichuanfang/gymdl/utils"
 	tb "gopkg.in/telebot.v4"
@@ -95,7 +96,15 @@ func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string
 			return app.editDiscoveryCard(c, card, 0, text, markup, true)
 		}
 		text, _ := app.renderDiscoveryCard(card, 0)
-		text += "\n\n<b>更多设置</b>\n选择推荐场景或来源。"
+		platform := aichat.PlatformLabel(request.Platform)
+		if request.Platform == "" || request.Platform == discovery.TasteBoth {
+			platform = "自动选择（网易云 / QQ）"
+		}
+		scene := request.Filter.Scene
+		if scene == "" {
+			scene = "按口味"
+		}
+		text += "\n\n<b>更多设置</b>\n选择推荐场景或来源。\n当前平台：" + utils.EscapeHTML(platform) + "\n当前场景：" + utils.EscapeHTML(scene)
 		return app.editDiscoveryCard(c, card, 0, text, tasteSettingsMarkup(token), true)
 	}
 	app.rediscoverMu.Unlock()
@@ -160,7 +169,7 @@ func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.Tast
 		query, cancel := context.WithTimeout(context.Background(), 55*time.Second)
 		result, err := app.discovery.RecommendTaste(query, user, request)
 		cancel()
-		card := discovery.Card{User: user, Chat: chat, Kind: discovery.TasteCardKind, Taste: &discovery.TasteCard{Request: request}}
+		card := discovery.Card{User: user, Chat: chat, Kind: discovery.TasteCardKind, MessageID: message.ID, Taste: &discovery.TasteCard{Request: request}}
 		if err != nil {
 			card.Taste.Notice = err.Error()
 		} else if result.Track != nil {

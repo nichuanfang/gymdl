@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -344,17 +345,19 @@ func (app *BotApp) presentAudioCheck(api tb.API, session audioCheckSession) erro
 	session.expires = time.Now().Add(audioCheckTTL)
 	session.running = false
 	session.busy = false
+	text, markup := formatAudioCheckCard(session)
+	if _, err := api.Edit(session.message, text, tb.ModeHTML, markup); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+		message, sendErr := api.Send(session.message.Chat, text, tb.ModeHTML, markup)
+		if sendErr != nil {
+			return fmt.Errorf("更新体检卡片失败: %v，补发失败: %w", err, sendErr)
+		}
+		session.message = message
+	}
 	if err := persistAudioCheckSession(session); err != nil {
 		utils.WarnWithFormat("保存体检结果卡片失败: %v", err)
-		if session.notice != "" {
-			session.notice += "\n"
-		}
-		session.notice += "暂时无法保存卡片进度，已检查的文件记录仍保留。"
 	}
 	app.setAudioCheckSession(session)
-	text, markup := formatAudioCheckCard(session)
-	_, err := api.Edit(session.message, text, tb.ModeHTML, markup)
-	return err
+	return nil
 }
 
 func (app *BotApp) setAudioCheckSession(session audioCheckSession) {
@@ -437,6 +440,7 @@ func (app *BotApp) HandleAudioCheckCallback(c tb.Context) error {
 	switch action {
 	case "skip":
 		_ = c.Respond()
+		session.skipped = maps.Clone(session.skipped)
 		session.skipped[audioFileVersion(finding.file)] = struct{}{}
 		session.index++
 		return app.presentAudioCheck(c.Bot(), session)

@@ -100,14 +100,11 @@ func TestDiscoveryButtonsThroughTelebotRoute(t *testing.T) {
 	if !excluded[discovery.Identity(tracks[1])] {
 		t.Fatal("ignore not persisted")
 	}
+	before, cardEdits := responses, edits
 	click(20, "download", card.Token, "0")
-	if edits == 0 {
-		t.Fatal("wrong-owner callback did not give visible expiry feedback")
-	}
-	before := responses
 	click(10, "download", "expired", "0")
-	if responses != before+1 || edits < 2 {
-		t.Fatal("expired callback silent")
+	if responses != before+2 || edits != cardEdits {
+		t.Fatal("wrong-owner and expired callbacks should acknowledge without editing the current card")
 	}
 	if jobs, _ = store.Jobs(context.Background(), 20, false); len(jobs) != 0 {
 		t.Fatal("cross-user queue modified")
@@ -412,7 +409,7 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	if got := buttonRowTexts(markup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "重新拾遗" || got[1][1] != "取消" {
 		t.Fatalf("button rows = %#v", got)
 	}
-	if markup.InlineKeyboard[0][0].Data != "download|card|0" || markup.InlineKeyboard[1][0].Data != "find|netease|1" || markup.InlineKeyboard[1][1].Data != "cancel|card" {
+	if markup.InlineKeyboard[0][0].Data != "download|card|0" || markup.InlineKeyboard[1][0].Data != "find|netease|1|card" || markup.InlineKeyboard[1][1].Data != "cancel|card" {
 		t.Fatalf("callbacks = %s / %s / %s", markup.InlineKeyboard[0][0].Data, markup.InlineKeyboard[1][0].Data, markup.InlineKeyboard[1][1].Data)
 	}
 	second, secondMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 1)
@@ -761,7 +758,7 @@ func TestRediscoverAllSettledOffersTheSameBatchAgain(t *testing.T) {
 		{Platform: "netease", ID: "2", Title: "二", Artist: "乙", CardAction: "dismissed"},
 	}
 	_, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks, Requested: 1}, 0)
-	if markup.InlineKeyboard[len(markup.InlineKeyboard)-1][0].Data != "find|netease|1" {
+	if markup.InlineKeyboard[len(markup.InlineKeyboard)-1][0].Data != "find|netease|1|card" {
 		t.Fatalf("settled card did not offer the same batch: %#v", markup.InlineKeyboard)
 	}
 }
@@ -933,6 +930,21 @@ func TestFailedJobCardActionsRetryAndDismissOnlyThatSong(t *testing.T) {
 			t.Fatal(err)
 		}
 		return ctx
+	}
+	failedTrack := discovery.Track{Platform: "netease", CardAction: discovery.Failed, IngestID: ids[0]}
+	_, markup := discoveryRecommendationCard(discovery.Card{Tracks: []discovery.Track{failedTrack}}, 0)
+	button := markup.InlineKeyboard[0][0]
+	if button.Text != "查看入库异常" || button.Data != "failed_song|"+ids[0] {
+		t.Fatalf("failed song button = %+v", button)
+	}
+	opened := click("failed_song")
+	if len(opened.sent) != 1 || !strings.Contains(opened.sent[0], "First") || strings.Contains(opened.sent[0], "Second") || opened.edited != "" {
+		t.Fatalf("failed song detail did not open separately: sent=%v edited=%q", opened.sent, opened.edited)
+	}
+	actions, ok := opened.sendOpts[0][1].(*tb.ReplyMarkup)
+	if !ok || actions.InlineKeyboard[0][0].Data != "retry|"+ids[0] ||
+		actions.InlineKeyboard[0][1].Data != "switch_source|"+ids[0]+"|0" {
+		t.Fatalf("failed song recovery actions = %+v", opened.sendOpts)
 	}
 	click("retry", "0")
 	retriedJob, _ := store.Job(ctx, ids[0])
@@ -1365,27 +1377,68 @@ func TestCompletedRecommendationOffersTheIngestedCard(t *testing.T) {
 	}
 }
 
-func TestCardProgressDoesNotPushAnotherSuccessMessage(t *testing.T) {
-	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	card, err := store.SaveCard(context.Background(), discovery.Card{
-		User: 1, Chat: 1, Kind: discovery.TasteCardKind,
-		Taste:  &discovery.TasteCard{Request: discovery.TasteRequest{Platform: "netease"}},
-		Tracks: []discovery.Track{{Platform: "netease", ID: "1", Title: "No One Like You", Artist: "Nujabes", IngestID: "job1"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	app := &BotApp{discovery: &discovery.Service{Store: store}}
-	discoveryCardWatchers.Store(card.Token, struct{}{})
-	defer discoveryCardWatchers.Delete(card.Token)
-	err = app.sendDiscoveryIngested(discovery.Job{User: 1, Chat: 1, File: &discovery.IngestedFile{Path: "a.flac", Storage: "LOCAL", Extension: "flac"},
-		Track: discovery.Track{Title: "No One Like You", Artist: "Nujabes", TasteRecommended: true, SourceCard: card.Token}})
-	if err != nil {
-		t.Fatal(err)
+func TestIngestedNotificationDependsOnTheOriginalCardEdit(t *testing.T) {
+	for _, editOK := range []bool{true, false} {
+		name := "fallback after rejected edit"
+		if editOK {
+			name = "successful edit"
+		}
+		t.Run(name, func(t *testing.T) {
+			store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			card, err := store.SaveCard(t.Context(), discovery.Card{
+				User: 1, Chat: 1, Kind: "recommend", MessageID: 42,
+				Tracks: []discovery.Track{{Platform: "netease", Title: "测试歌曲", IngestID: "job1", CardAction: discovery.Running}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests := make(chan string, 3)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload map[string]json.RawMessage
+				_ = json.NewDecoder(r.Body).Decode(&payload)
+				if strings.HasSuffix(r.URL.Path, "/editMessageText") {
+					requests <- "edit"
+					if string(payload["message_id"]) != `"42"` || !strings.Contains(string(payload["reply_markup"]), "查看歌曲") {
+						t.Errorf("wrong completion edit: %v", payload)
+					}
+					if !editOK {
+						fmt.Fprint(w, `{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}`)
+						return
+					}
+				} else {
+					requests <- "send"
+				}
+				fmt.Fprint(w, `{"ok":true,"result":{"message_id":42,"chat":{"id":1,"type":"private"}}}`)
+			}))
+			defer server.Close()
+			bot, err := tb.NewBot(tb.Settings{Offline: true, Token: "1:test", URL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			app := &BotApp{bot: bot, discovery: &discovery.Service{Store: store}}
+			err = app.sendDiscoveryIngested(discovery.Job{ID: "job1", User: 1, Chat: 1, State: discovery.Completed,
+				File:  &discovery.IngestedFile{Path: "a.flac", Storage: "LOCAL", Extension: "flac"},
+				Track: discovery.Track{Title: "测试歌曲", SourceCard: card.Token}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			close(requests)
+			var got []string
+			for request := range requests {
+				got = append(got, request)
+			}
+			want := []string{"edit"}
+			if !editOK {
+				want = append(want, "send")
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("Telegram requests = %v, want %v", got, want)
+			}
+		})
 	}
 }
 
@@ -1443,5 +1496,60 @@ func TestViewIngestedSongSendsTheActionCard(t *testing.T) {
 	}
 	if got := buttonRowTexts(&markup); len(got) != 1 || len(got[0]) != 4 || got[0][0] != "▶️ 播放" {
 		t.Fatalf("ingested card rows = %#v", got)
+	}
+}
+
+func TestRediscoverStartsNextSearchOnAnotherMessageWhileIngesting(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	card, err := store.SaveCard(t.Context(), discovery.Card{
+		User: 1, Chat: 1, Kind: "recommend", MessageID: 42,
+		Tracks: []discovery.Track{{Platform: "netease", IngestID: "job1", CardAction: discovery.Running}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edits := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/answerCallbackQuery"):
+			fmt.Fprint(w, `{"ok":true,"result":true}`)
+			return
+		case strings.HasSuffix(r.URL.Path, "/editMessageText"):
+			var payload map[string]json.RawMessage
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			edits <- string(payload["message_id"])
+		}
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":43,"chat":{"id":1,"type":"private"}}}`)
+	}))
+	defer server.Close()
+	bot, err := tb.NewBot(tb.Settings{Offline: true, Synchronous: true, Token: "1:test", URL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{bot: bot, cfg: &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"1"}}},
+		discovery: &discovery.Service{Store: store}}
+	bot.Handle(&discoveryEndpoint, app.HandleDiscoveryCallback)
+	_, markup := discoveryRecommendationCard(card, 0)
+	button := markup.InlineKeyboard[0][0]
+	data := "\f" + button.Unique + "|" + button.Data
+	if len(data) > 64 {
+		t.Fatalf("find callback exceeds 64 bytes: %d", len(data))
+	}
+	bot.ProcessUpdate(tb.Update{Callback: &tb.Callback{ID: "find", Data: data, Sender: &tb.User{ID: 1},
+		Message: &tb.Message{ID: 42, Chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate}}}})
+	select {
+	case id := <-edits:
+		if id != `"43"` {
+			t.Fatalf("updated the old card: message %s", id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("next search did not update its new message")
+	}
+	if _, err := store.Card(t.Context(), card.Token, 1, 1); err != nil {
+		t.Fatalf("original card no longer available: %v", err)
 	}
 }

@@ -401,3 +401,47 @@ func TestAudioCheckUsesFilenameForDamagedSongWithoutTags(t *testing.T) {
 		t.Fatalf("could not reconstruct an alternate source query: %#v", song)
 	}
 }
+
+func TestAudioCheckReplacesAnUneditableResultCard(t *testing.T) {
+	t.Chdir(t.TempDir())
+	requests := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/editMessageText") {
+			requests <- "edit"
+			fmt.Fprint(w, `{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}`)
+			return
+		}
+		requests <- "send"
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":43,"chat":{"id":7,"type":"private"}}}`)
+	}))
+	defer server.Close()
+	bot, err := tb.NewBot(tb.Settings{Offline: true, Token: "1:test", URL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := audioCheckSession{owner: 7, index: 1, library: "test", message: &tb.Message{ID: 42, Chat: &tb.Chat{ID: 7}}}
+	app := &BotApp{}
+	if err := app.presentAudioCheck(bot, original); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 || <-requests != "edit" || <-requests != "send" {
+		t.Fatal("expected one edit followed by a replacement card")
+	}
+	session := app.audioCheckSessions[7]
+	if session.message.ID != 43 || session.index != 1 || session.token == "" {
+		t.Fatalf("replacement session = %+v", session)
+	}
+	store, err := audioquality.Open(storage.DefaultDatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	records, err := store.Sessions(t.Context())
+	if err != nil || len(records) != 1 {
+		t.Fatalf("saved replacement sessions = %v, %v", records, err)
+	}
+	restored, err := decodeAudioCheckSession(records[0])
+	if err != nil || restored.message.ID != 43 || restored.token != session.token {
+		t.Fatalf("restored replacement = %+v, %v", restored, err)
+	}
+}

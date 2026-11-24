@@ -120,13 +120,14 @@ type Job struct {
 	SourceAccount string        `json:"-"`
 }
 type Card struct {
-	Token    string
-	User     int64
-	Chat     int64
-	Kind     string
-	Tracks   []Track
-	Snapshot *Snapshot
-	Expires  int64
+	Token     string
+	User      int64
+	Chat      int64
+	Kind      string
+	MessageID int `json:"message_id,omitempty"`
+	Tracks    []Track
+	Snapshot  *Snapshot
+	Expires   int64
 	// SkippedOwned is how many distinct library works were left off this card.
 	SkippedOwned int `json:"skipped_owned,omitempty"`
 	// Unconfirmed is how many distinct works had no single version on the chosen platform.

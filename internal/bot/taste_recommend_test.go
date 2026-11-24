@@ -202,6 +202,10 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 
 	click(1, button(second, "更多设置"))
 	settings := next("editMessageText", "text", "选择推荐场景或来源")
+	if !strings.Contains(settings["text"], "当前平台：") || !strings.Contains(settings["text"], "当前场景：按口味") {
+		t.Fatalf("settings did not show the active platform and scene: %s", settings["text"])
+	}
+
 	if got := buttonRows(settings); len(got) != 5 || got[0][0] != "通勤" || got[1][1] != "按口味" || got[2][0] != "网易云" || got[3][0] != "自动选择（网易云 / QQ）" || got[4][0] != "返回歌曲卡片" {
 		t.Fatalf("recommendation settings buttons = %v", got)
 	}
@@ -217,6 +221,10 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 	waitReady()
 	click(1, button(third, "更多设置"))
 	settings = next("editMessageText", "text", "选择推荐场景或来源")
+	if !strings.Contains(settings["text"], "当前场景：放松") {
+		t.Fatalf("settings did not show the updated scene: %s", settings["text"])
+	}
+
 	click(1, button(settings, "自动选择（网易云 / QQ）"))
 	fourth := next("editMessageText", "text", "个性化推荐 ·")
 	if !strings.Contains(fourth["text"], "放松 · 粤语 · 爵士") {
