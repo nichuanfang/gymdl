@@ -30,6 +30,9 @@ type Track struct {
 	Verified         bool `json:"verified"`
 	Approved         bool `json:"approved,omitempty"`
 	TasteRecommended bool `json:"taste_recommended,omitempty"`
+	// SourceCard is the recommendation card that queued this download.
+	// Empty for favorites sync and manual downloads. It is not shown to the user.
+	SourceCard string `json:"source_card,omitempty"`
 	// CardAction is only for a saved recommendation card.
 	// Empty means undecided. "dismissed" is permanent. Other values mirror job
 	// states such as queued, running, and completed. Clear it before enqueueing.

@@ -937,8 +937,10 @@ func (s *Service) ProcessOne(ctx context.Context) (resultErr error) {
 		}
 	}()
 	tasteRecommended := j.Track.TasteRecommended
+	sourceCard := j.Track.SourceCard
 	finish := func(state, message, result string, next int64) error {
 		j.Track.TasteRecommended = tasteRecommended
+		j.Track.SourceCard = sourceCard
 		err := s.Store.Finish(ctx, j, state, message, result, next)
 		logDiscoveryJob(j, state, message, err)
 		return err

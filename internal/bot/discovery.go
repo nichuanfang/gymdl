@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
@@ -80,6 +81,13 @@ func (app *BotApp) initDiscovery() {
 }
 
 func (app *BotApp) sendDiscoveryIngested(job discovery.Job) error {
+	if app.discoveryCardShowsProgress(job) {
+		return nil
+	}
+	return app.deliverIngestedSong(job)
+}
+
+func (app *BotApp) deliverIngestedSong(job discovery.Job) error {
 	song := &music.SongInfo{
 		SongName: job.Track.Title, SongArtists: job.Track.Artist, SongAlbum: job.Track.Album,
 		MusicPath: job.File.Path, Tidy: job.File.Storage, FileExt: job.File.Extension,
@@ -102,6 +110,39 @@ func (app *BotApp) sendDiscoveryIngested(job discovery.Job) error {
 	}
 	app.setMusicActionMessages([]string{token}, message, markup, job.User, job.Chat)
 	return nil
+}
+
+var discoveryCardWatchers sync.Map
+
+func discoveryCardIsWatched(token string) bool {
+	_, ok := discoveryCardWatchers.Load(token)
+	return ok
+}
+
+func (app *BotApp) discoveryCardShowsProgress(job discovery.Job) bool {
+	if app == nil || app.discovery == nil || app.discovery.Store == nil || job.Track.SourceCard == "" || !discoveryCardIsWatched(job.Track.SourceCard) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	card, err := app.discovery.Store.Card(ctx, job.Track.SourceCard, job.User, job.Chat)
+	return err == nil && card.IsSongCard()
+}
+
+func (app *BotApp) viewIngestedSong(c tb.Context, jobID string) error {
+	if c.Sender() == nil || c.Chat() == nil {
+		return c.Respond(&tb.CallbackResponse{Text: "这张卡片已过期，请重新找一首", ShowAlert: true})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	job, err := app.discovery.Store.Job(ctx, jobID)
+	if err != nil || job.User != c.Sender().ID || job.Chat != c.Chat().ID || job.State != discovery.Completed || job.File == nil {
+		return c.Respond(&tb.CallbackResponse{Text: "入库卡片还没准备好", ShowAlert: true})
+	}
+	if err = c.Respond(); err != nil {
+		return err
+	}
+	return app.deliverIngestedSong(job)
 }
 
 func (app *BotApp) discoveryAuthorized(c tb.Context) bool {
@@ -323,6 +364,11 @@ func discoverySongButtons(markup *tb.ReplyMarkup, card discovery.Card, page int)
 	if track.CardAction == "dismissed" {
 		appendDiscoveryRows(markup, markup.Row(
 			markup.Data("恢复推荐", discoveryCallbackUnique, "restore", card.Token, index),
+		))
+	}
+	if track.CardAction == discovery.Completed && track.IngestID != "" {
+		appendDiscoveryRows(markup, markup.Row(
+			markup.Data("查看歌曲", discoveryCallbackUnique, "view", track.IngestID),
 		))
 	}
 	if card.Taste != nil {
@@ -1214,6 +1260,8 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 	switch action {
 	case "taste":
 		return app.handleTasteCallback(c, key, args[2:])
+	case "view":
+		return app.viewIngestedSong(c, key)
 	case "card_yes", "card_no":
 		if len(args) != 3 {
 			return c.Respond(&tb.CallbackResponse{Text: "按钮参数无效", ShowAlert: true})
@@ -1596,6 +1644,9 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		} else {
 			var id string
 			track.TasteRecommended = card.Kind == discovery.TasteCardKind
+			if card.IsSongCard() {
+				track.SourceCard = card.Token
+			}
 			id, err = app.discovery.Store.Enqueue(context.Background(), card.User, card.Chat, track)
 			if err == nil {
 				queued++
@@ -1688,10 +1739,12 @@ func (app *BotApp) resolveRediscoverJob(c tb.Context, token string, index int, a
 }
 
 func (app *BotApp) watchRediscoverCard(token string, user, chat int64, message *tb.Message) {
-	if app == nil || app.bot == nil || message == nil {
+	if app == nil || app.bot == nil || message == nil || token == "" {
 		return
 	}
-	deadline := time.NewTimer(12 * time.Minute)
+	discoveryCardWatchers.Store(token, struct{}{})
+	defer discoveryCardWatchers.Delete(token)
+	deadline := time.NewTimer(30 * time.Minute)
 	defer deadline.Stop()
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()

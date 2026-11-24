@@ -1486,3 +1486,38 @@ func TestRediscoverDoesNotWaitForYouTubeMetadata(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestProcessOneKeepsTheSourceCardAfterEnrich(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	track := testTrack("1", "执迷不悔", "谭咏麟")
+	track.Verified = true
+	track.Approved = true
+	track.TasteRecommended = true
+	track.SourceCard = "cardtoken123456"
+	id, err := store.Enqueue(ctx, 7, 7, track)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notified Job
+	svc := &Service{
+		Store: store,
+		Provider: stubProvider{enrich: func(Track) (Track, bool, error) {
+			return testTrack("9", "执迷不悔", "谭咏麟"), false, nil
+		}},
+		Library: stubLibrary{},
+		Download: func(context.Context, Track) (DownloadResult, error) {
+			return DownloadResult{File: &IngestedFile{Path: "a.flac", Storage: "LOCAL", Extension: "flac", Bitrate: "890"}}, nil
+		},
+		NotifyIngested: func(job Job) error {
+			notified = job
+			return nil
+		},
+	}
+	if err = svc.ProcessOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if notified.ID != id || !notified.Track.TasteRecommended || notified.Track.SourceCard != "cardtoken123456" {
+		t.Fatalf("ingested job lost its source: %+v", notified.Track)
+	}
+}

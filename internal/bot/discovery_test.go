@@ -1341,3 +1341,107 @@ func TestRediscoverProgressFollowsTheDownload(t *testing.T) {
 		t.Fatalf("failure = %#v changed=%t pending=%t err=%v", failed.Tracks, changed, pending, err)
 	}
 }
+
+func TestCompletedRecommendationOffersTheIngestedCard(t *testing.T) {
+	track := discovery.Track{Platform: "netease", ID: "1", Title: "执迷不悔", Artist: "谭咏麟", IngestID: "job123456789abc", CardAction: discovery.Completed}
+	_, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: []discovery.Track{track}, Requested: 1}, 0)
+	if got := buttonRowTexts(markup); len(got) != 2 || len(got[0]) != 1 || got[0][0] != "查看歌曲" || got[1][0] != "重新拾遗" || got[1][1] != "取消" {
+		t.Fatalf("completed rediscover rows = %#v", got)
+	}
+	if markup.InlineKeyboard[0][0].Data != "view|job123456789abc" {
+		t.Fatalf("view callback = %s", markup.InlineKeyboard[0][0].Data)
+	}
+	tasteTrack := track
+	tasteTrack.CardAction = discovery.Completed
+	_, tasteMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Kind: discovery.TasteCardKind, Taste: &discovery.TasteCard{}, Tracks: []discovery.Track{tasteTrack}}, 0)
+	if got := buttonRowTexts(tasteMarkup); len(got) != 2 || got[0][0] != "查看歌曲" || got[1][0] != "换一首" || got[1][1] != "更多设置" {
+		t.Fatalf("completed taste rows = %#v", got)
+	}
+	running := track
+	running.CardAction = discovery.Running
+	_, runningMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: []discovery.Track{running}, Requested: 1}, 0)
+	if buttonTexts(runningMarkup)["查看歌曲"] {
+		t.Fatalf("in-progress card offered the ingested song: %#v", buttonRowTexts(runningMarkup))
+	}
+}
+
+func TestCardProgressDoesNotPushAnotherSuccessMessage(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	card, err := store.SaveCard(context.Background(), discovery.Card{
+		User: 1, Chat: 1, Kind: discovery.TasteCardKind,
+		Taste:  &discovery.TasteCard{Request: discovery.TasteRequest{Platform: "netease"}},
+		Tracks: []discovery.Track{{Platform: "netease", ID: "1", Title: "No One Like You", Artist: "Nujabes", IngestID: "job1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{discovery: &discovery.Service{Store: store}}
+	discoveryCardWatchers.Store(card.Token, struct{}{})
+	defer discoveryCardWatchers.Delete(card.Token)
+	err = app.sendDiscoveryIngested(discovery.Job{User: 1, Chat: 1, File: &discovery.IngestedFile{Path: "a.flac", Storage: "LOCAL", Extension: "flac"},
+		Track: discovery.Track{Title: "No One Like You", Artist: "Nujabes", TasteRecommended: true, SourceCard: card.Token}})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestViewIngestedSongSendsTheActionCard(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	track := discovery.Track{Platform: "netease", ID: "1", Title: "执迷不悔", Artist: "谭咏麟", TasteRecommended: false, Verified: true, Approved: true}
+	id, err := store.Enqueue(context.Background(), 1, 1, track)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.Job(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job.File = &discovery.IngestedFile{Path: "music/song.flac", Storage: "LOCAL", Extension: "flac", Bitrate: "890"}
+	if err = store.Finish(context.Background(), job, discovery.Completed, "", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	var sent map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/sendMessage") {
+			if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+				t.Errorf("decode: %v", err)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/answerCallbackQuery") {
+			fmt.Fprint(w, `{"ok":true,"result":true}`)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":99,"chat":{"id":1,"type":"private"}}}`)
+	}))
+	defer server.Close()
+	bot, err := tb.NewBot(tb.Settings{Offline: true, Synchronous: true, Token: "1:test", URL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{bot: bot, cfg: &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"1"}}}, discovery: &discovery.Service{Store: store}}
+	bot.Handle(&discoveryEndpoint, app.HandleDiscoveryCallback)
+	chat := &tb.Chat{ID: 1, Type: tb.ChatPrivate}
+	bot.ProcessUpdate(tb.Update{Callback: &tb.Callback{
+		ID: "cb", Sender: &tb.User{ID: 1}, Message: &tb.Message{ID: 7, Chat: chat, Text: "原推荐卡片"},
+		Data: "\f" + discoveryCallbackUnique + "|view|" + id,
+	}})
+	if sent == nil || !strings.Contains(sent["text"], "遗珠入库成功") || strings.Contains(sent["text"], "原推荐卡片") {
+		t.Fatalf("view sent %#v", sent)
+	}
+	var markup tb.ReplyMarkup
+	if err := json.Unmarshal([]byte(sent["reply_markup"]), &markup); err != nil {
+		t.Fatal(err)
+	}
+	if got := buttonRowTexts(&markup); len(got) != 1 || len(got[0]) != 4 || got[0][0] != "▶️ 播放" {
+		t.Fatalf("ingested card rows = %#v", got)
+	}
+}
