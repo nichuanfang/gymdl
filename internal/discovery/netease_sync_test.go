@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nichuanfang/gymdl/config"
 )
@@ -77,6 +78,71 @@ func TestNeteaseEnrichAddsCoverToAnOlderFavorite(t *testing.T) {
 	track, skip, err := p.Enrich(t.Context(), Track{Platform: "netease", ID: "186016", Verified: true})
 	if err != nil || skip || track.CoverURL != detailCover+"?param=500y500" {
 		t.Fatalf("enriched track = %+v, skip=%t, err=%v", track, skip, err)
+	}
+}
+
+func TestRediscoverHydratesSelectedNeteaseCover(t *testing.T) {
+	const detailCover = "https://p2.music.126.net/plxJSryfxvIi55cOd4CPQg==/49478023262269.jpg"
+	const qqCover = "https://y.gtimg.cn/music/photo_new/T002R500x500M000002ef2VB0Qfb30.jpg"
+	for _, tc := range []struct {
+		name, platform, existingCover, wantCover string
+		buffered, cached                         bool
+		wantRequests                             int
+	}{
+		{name: "read-only", platform: "netease", wantCover: detailCover + "?param=500y500", wantRequests: 1},
+		{name: "buffer miss", platform: "netease", buffered: true, wantCover: detailCover + "?param=500y500", wantRequests: 1},
+		{name: "buffer hit", platform: "netease", buffered: true, cached: true, wantCover: detailCover + "?param=500y500", wantRequests: 1},
+		{name: "old size", platform: "netease", buffered: true, cached: true, existingCover: detailCover + "?param=800y800", wantCover: detailCover + "?param=500y500", wantRequests: 1},
+		{name: "already usable", platform: "netease", buffered: true, cached: true, existingCover: detailCover, wantCover: detailCover},
+		{name: "qq", platform: "qq", buffered: true, cached: true, existingCover: qqCover, wantCover: qqCover},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			store := testStore(t)
+			track := testTrack("130097", "赵子龙", "黎允文")
+			track.Album = "三国之见龙卸甲"
+			track.CoverURL = tc.existingCover
+			if tc.platform == "qq" {
+				track = tasteTestTrack("qq", "001kG0Ys4JRmMa", track.Title, track.Artist)
+				track.CoverURL = tc.existingCover
+			}
+			if !tc.cached {
+				if _, _, err := store.Apply(ctx, 7, 7, snapshot("netease-account", track), true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			requests := 0
+			p := neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+				requests++
+				if r.URL.Path != "/eapi/v3/song/detail" {
+					t.Fatalf("unexpected request %s", r.URL.Path)
+				}
+				body := `{"code":200,"songs":[{"id":130097,"name":"赵子龙","ar":[{"name":"黎允文"}],"al":{"picUrl":"` + detailCover + `"}}]}`
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+			})
+			service := &Service{Store: store, Provider: p, Library: stubLibrary{}}
+			if tc.cached {
+				pool := &service.rediscoverPool
+				pool.queueLocked()
+				pool.entries[rediscoverPoolKey{user: 7, platform: tc.platform}] = &rediscoverPoolEntry{
+					candidates: []bufferedRediscoverCandidate{{
+						rediscoverCandidate: rediscoverCandidate{source: track, track: track},
+						expires:             time.Now().Add(time.Minute),
+					}},
+				}
+			}
+			rediscover := service.Rediscover
+			if tc.buffered {
+				rediscover = service.RediscoverBuffered
+			}
+			batch, err := rediscover(ctx, 7, tc.platform, 1)
+			if err != nil || len(batch.Tracks) != 1 || batch.Tracks[0].ID != track.ID || batch.Tracks[0].CoverURL != tc.wantCover {
+				t.Fatalf("rediscover = %+v, err=%v, want cover %q", batch, err, tc.wantCover)
+			}
+			if requests != tc.wantRequests {
+				t.Fatalf("detail requests = %d, want %d", requests, tc.wantRequests)
+			}
+		})
 	}
 }
 

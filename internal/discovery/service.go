@@ -483,7 +483,13 @@ func (s *Service) searchRediscover(ctx context.Context, user int64, platform str
 	if err := s.pickTracks(ctx, state, ranked, limit, platform, budget); err != nil {
 		return RediscoverBatch{}, err
 	}
-	return state.batch(), nil
+	return s.rediscoverBatch(ctx, state), nil
+}
+
+func (s *Service) rediscoverBatch(ctx context.Context, state *recommendPick) RediscoverBatch {
+	batch := state.batch()
+	batch.Tracks = s.hydrateNeteaseCovers(ctx, batch.Tracks, len(batch.Tracks))
+	return batch
 }
 
 func (s *Service) rankRediscover(ctx context.Context, user int64, platform string, state *recommendPick, enrichYouTube bool) ([]Track, error) {
@@ -560,7 +566,6 @@ func (s *Service) rankRediscover(ctx context.Context, user int64, platform strin
 		}
 		return Identity(a) < Identity(b)
 	})
-	ranked = s.hydrateNeteaseCovers(ctx, ranked, 30)
 	return ranked, nil
 }
 
@@ -580,7 +585,7 @@ func (s *Service) hydrateNeteaseCovers(ctx context.Context, tracks []Track, limi
 	ids := make([]string, 0, min(limit, len(tracks)))
 	seen := map[string]bool{}
 	for i, track := range tracks {
-		if track.Platform != "netease" || track.CoverURL != "" || !netease.ValidSongID(track.ID) {
+		if track.Platform != "netease" || !netease.ValidSongID(track.ID) || netease.CoverURL(track.CoverURL) != "" {
 			continue
 		}
 		positions[track.ID] = append(positions[track.ID], i)

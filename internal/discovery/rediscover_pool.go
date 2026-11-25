@@ -118,7 +118,7 @@ func (s *Service) RediscoverBuffered(ctx context.Context, user int64, platform s
 		}
 		if s.rediscoverPool.remove(key, candidate) && eligible {
 			state.picks = append(state.picks, candidate.rediscoverCandidate)
-			return state.batch(), nil
+			return s.rediscoverBatch(ctx, state), nil
 		}
 	}
 	return s.searchRediscover(ctx, user, platform, limit, state)
