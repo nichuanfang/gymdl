@@ -221,7 +221,7 @@ func TestSyncAnnouncesOnlyNewFavorites(t *testing.T) {
 		t.Fatalf("fresh = %#v err=%v", fresh, err)
 	}
 	svc.notifyFresh(fresh)
-	if len(notes) != 1 || !strings.Contains(notes[0], "收藏有新歌") || !strings.Contains(notes[0], "网易云 1 首") || !strings.Contains(notes[0], "新歌") || strings.Contains(notes[0], "旧歌") || !strings.Contains(notes[0], "已排队入库") {
+	if len(notes) != 1 || !strings.Contains(notes[0], "收藏有新歌 · 网易云") || !strings.Contains(notes[0], "歌曲:") || !strings.Contains(notes[0], "新歌") || strings.Contains(notes[0], "旧歌") || !strings.Contains(notes[0], "已排队入库") {
 		t.Fatalf("notice = %#v", notes)
 	}
 	fresh, err = svc.Sync(ctx, 1)
@@ -386,30 +386,33 @@ func TestFavoritePollRoundTimeoutReleasesTheNextRound(t *testing.T) {
 	}
 }
 
-func TestFreshFavoriteNoticeKeepsAShortList(t *testing.T) {
+func TestFreshFavoriteNoticeUsesOnePreviewCardPerSong(t *testing.T) {
 	items := make([]FreshFavorite, 0, 9)
 	for i := 1; i <= 9; i++ {
 		items = append(items, FreshFavorite{Chat: 3, Platform: "qq", Track: testTrack(fmt.Sprint(i), fmt.Sprintf("歌%d", i), "歌手")})
 	}
 	items = append(items, FreshFavorite{Chat: 3, Platform: "netease", Track: testTrack("n", "网易新歌", "另一人")})
-	text := formatFreshFavoriteNotices(items)[3]
-	if !strings.Contains(text, "网易云 1 首 · QQ 音乐 9 首") || !strings.Contains(text, "还有 2 首") || strings.Count(text, "\n· ") > 8 {
-		t.Fatal(text)
+	cards := formatFreshFavoriteNotices(items)[3]
+	if len(cards) != 10 {
+		t.Fatalf("cards = %d", len(cards))
 	}
-	if !strings.Contains(text, "<b>收藏有新歌</b>") || !strings.Contains(text, "已排队入库") {
-		t.Fatal(text)
+	if !strings.Contains(cards[0].Text, "收藏有新歌 · 网易云") || !strings.Contains(cards[0].Text, "网易新歌") || strings.Contains(cards[0].Text, "歌1") {
+		t.Fatal(cards[0].Text)
+	}
+	if !strings.Contains(cards[1].Text, "收藏有新歌 · QQ 音乐") || !strings.Contains(cards[1].Text, "歌曲:") || !strings.Contains(cards[1].Text, "已排队入库") {
+		t.Fatal(cards[1].Text)
 	}
 }
 
 func TestFreshFavoriteNoticeLinksAndEscapesTheTitle(t *testing.T) {
 	track := testTrack("1", "A & B <C>", "甲&乙")
-	text := formatFreshFavoriteNotices([]FreshFavorite{{Chat: 1, Platform: "netease", Track: track}})[1]
-	if !strings.Contains(text, `<a href="https://m.music.163.com/m/applink/?scheme=orpheus%3A%2F%2Fsong%2F1">A &amp; B &lt;C&gt;</a>`) || !strings.Contains(text, "甲&amp;乙") || strings.Contains(text, "A & B") {
+	text := formatFreshFavoriteNotices([]FreshFavorite{{Chat: 1, Platform: "netease", Track: track}})[1][0].Text
+	if !strings.Contains(text, `<a href="https://m.music.163.com/m/applink/?scheme=orpheus%3A%2F%2Fsong%2F1">A &amp; B &lt;C&gt;</a>`) || !strings.Contains(text, "艺人: 甲&amp;乙") || strings.Contains(text, "A & B") {
 		t.Fatal(text)
 	}
 
 	track = Track{Platform: "qq", ID: "001kG0Ys4JRmMa", URL: "https://y.qq.com/n/ryqq/songDetail/001kG0Ys4JRmMa", Title: "QQ 歌曲", Artist: "阿肆"}
-	text = formatFreshFavoriteNotices([]FreshFavorite{{Chat: 1, Platform: "qq", Track: track}})[1]
+	text = formatFreshFavoriteNotices([]FreshFavorite{{Chat: 1, Platform: "qq", Track: track}})[1][0].Text
 	if !strings.Contains(text, `<a href="https://music.qq.com/unilink/download.html?scheme=qqmusic%3A%2F%2F`) {
 		t.Fatal(text)
 	}
@@ -1021,24 +1024,20 @@ func TestEnrichedVideoMergesCrossPlatformAndDigestDelivery(t *testing.T) {
 	if downloads != 1 {
 		t.Fatal("cross-platform duplicate downloaded twice", downloads)
 	}
-	svc.Notify = func(int64, string) error { return errors.New("telegram down") }
-	svc.Digest(ctx)
-	jobs, _ := s.Jobs(ctx, 1, true)
-	if len(jobs) != 2 {
-		t.Fatal("failed delivery acknowledged")
-	}
+	var sent []string
 	svc.Notify = func(_ int64, msg string) error {
-		if !strings.Contains(msg, "已入库") {
-			t.Fatal(msg)
-		}
-		return nil
+		sent = append(sent, msg)
+		return errors.New("telegram down")
 	}
 	if err := svc.Digest(ctx); err != nil {
 		t.Fatal(err)
 	}
-	jobs, _ = s.Jobs(ctx, 1, true)
-	if len(jobs) != 0 {
-		t.Fatal("digest did not acknowledge")
+	if len(sent) != 0 {
+		t.Fatalf("digest sent a summary: %v", sent)
+	}
+	jobs, err := s.Jobs(ctx, 1, true)
+	if err != nil || len(jobs) != 0 {
+		t.Fatal("digest left terminal jobs unacknowledged", len(jobs), err)
 	}
 }
 
@@ -1215,7 +1214,7 @@ func TestTraditionalMetadataAndExplicitYoutubeMusicMode(t *testing.T) {
 	}
 }
 
-func TestDigestDoesNotAcknowledgeNewStateAtSameTimestamp(t *testing.T) {
+func TestDigestAcknowledgesTerminalJobsWithoutSummary(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	tr := testTrack("1", "Song", "Artist")
@@ -1224,17 +1223,23 @@ func TestDigestDoesNotAcknowledgeNewStateAtSameTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Finish(ctx, j, PendingUpload, "", "", 0)
-	svc := Service{Store: s, Library: stubLibrary{}, Notify: func(int64, string) error {
-		_, err := s.db.Exec(`UPDATE discovery_jobs SET state='completed' WHERE id=?`, j.ID)
-		return err
+	if err = s.Finish(ctx, j, PendingUpload, "", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	var sent []string
+	svc := Service{Store: s, Library: stubLibrary{}, Notify: func(_ int64, msg string) error {
+		sent = append(sent, msg)
+		return nil
 	}}
 	if err := svc.Digest(ctx); err != nil {
 		t.Fatal(err)
 	}
+	if len(sent) != 0 {
+		t.Fatalf("summary = %v", sent)
+	}
 	jobs, err := s.Jobs(ctx, 1, true)
-	if err != nil || len(jobs) != 1 || jobs[0].State != Completed {
-		t.Fatal("notification raced with state transition", jobs, err)
+	if err != nil || len(jobs) != 0 {
+		t.Fatal("terminal job was still waiting for a summary", jobs, err)
 	}
 }
 func TestWorkerProcessorPanicBecomesVisibleFailure(t *testing.T) {

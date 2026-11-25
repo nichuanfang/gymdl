@@ -11,7 +11,7 @@ import (
 )
 
 func (s *Service) notifyFresh(items []FreshFavorite) {
-	if s == nil || s.Notify == nil || len(items) == 0 {
+	if s == nil || len(items) == 0 || (s.Notify == nil && s.NotifySong == nil) {
 		return
 	}
 	users := map[int64]int64{}
@@ -28,13 +28,26 @@ func (s *Service) notifyFresh(items []FreshFavorite) {
 		if s.Authorized != nil && !s.Authorized(users[chat], chat) {
 			continue
 		}
-		if err := s.Notify(chat, notices[chat]); err != nil {
-			utils.WarnWithFormat("[Discovery] 新收藏通知发送失败: %v", err)
+		for _, notice := range notices[chat] {
+			var err error
+			if s.NotifySong != nil {
+				err = s.NotifySong(chat, notice.Text, notice.Track)
+			} else {
+				err = s.Notify(chat, notice.Text)
+			}
+			if err != nil {
+				utils.WarnWithFormat("[Discovery] 新收藏通知发送失败: %v", err)
+			}
 		}
 	}
 }
 
-func formatFreshFavoriteNotices(items []FreshFavorite) map[int64]string {
+type freshNotice struct {
+	Text  string
+	Track Track
+}
+
+func formatFreshFavoriteNotices(items []FreshFavorite) map[int64][]freshNotice {
 	type bucket struct {
 		order []string
 		by    map[string][]Track
@@ -51,9 +64,15 @@ func formatFreshFavoriteNotices(items []FreshFavorite) map[int64]string {
 		}
 		b.by[item.Platform] = append(b.by[item.Platform], item.Track)
 	}
-	out := make(map[int64]string, len(buckets))
+	out := make(map[int64][]freshNotice, len(buckets))
 	for chat, b := range buckets {
-		out[chat] = renderFreshFavorites(orderFreshPlatforms(b.order), b.by)
+		var cards []freshNotice
+		for _, platform := range orderFreshPlatforms(b.order) {
+			for _, track := range b.by[platform] {
+				cards = append(cards, freshNotice{Text: renderFreshFavoriteCard(platform, track), Track: track})
+			}
+		}
+		out[chat] = cards
 	}
 	return out
 }
@@ -75,45 +94,22 @@ func orderFreshPlatforms(platforms []string) []string {
 	return ordered
 }
 
-func renderFreshFavorites(platforms []string, by map[string][]Track) string {
-	var heads []string
-	var sections []string
-	shown := 0
-	extra := 0
-	for _, platform := range platforms {
-		tracks := by[platform]
-		label := freshPlatformLabel(platform)
-		heads = append(heads, fmt.Sprintf("%s %d 首", label, len(tracks)))
-		lines := []string{"<b>" + utils.EscapeHTML(label) + "</b>"}
-		for _, track := range tracks {
-			if shown >= 8 {
-				extra++
-				continue
-			}
-			shown++
-			line := "· " + freshListenTitle(track.Title, track.URL)
-			if artist := strings.TrimSpace(track.Artist); artist != "" {
-				line += " — " + utils.EscapeHTML(truncateRunes(artist, 18))
-			}
-			lines = append(lines, line)
-		}
-		if len(lines) > 1 {
-			sections = append(sections, strings.Join(lines, "\n"))
-		}
-	}
+func renderFreshFavoriteCard(platform string, track Track) string {
 	var text strings.Builder
-	text.WriteString("🎵 <b>收藏有新歌</b>\n")
+	fmt.Fprintf(&text, "🎵 <b>收藏有新歌 · %s</b>\n", utils.EscapeHTML(freshPlatformLabel(platform)))
 	text.WriteString("──────────────────\n")
-	text.WriteString(strings.Join(heads, " · "))
-	if len(sections) > 0 {
-		text.WriteString("\n\n")
-		text.WriteString(strings.Join(sections, "\n\n"))
+	fmt.Fprintf(&text, "歌曲: %s\n", freshListenTitle(track.Title, track.URL))
+	if artist := strings.TrimSpace(track.Artist); artist != "" {
+		fmt.Fprintf(&text, "艺人: %s\n", utils.EscapeHTML(truncateRunes(artist, 32)))
 	}
-	if extra > 0 {
-		fmt.Fprintf(&text, "\n\n还有 %d 首", extra)
+	if album := strings.TrimSpace(track.Album); album != "" {
+		fmt.Fprintf(&text, "专辑: %s\n", utils.EscapeHTML(truncateRunes(album, 32)))
 	}
-	text.WriteString("\n\n已排队入库。")
-	return text.String()
+	if track.Duration > 0 {
+		fmt.Fprintf(&text, "时长: %d:%02d\n", track.Duration/60, track.Duration%60)
+	}
+	text.WriteString("\n已排队入库。")
+	return strings.TrimRight(text.String(), "\n")
 }
 
 func freshListenTitle(title, rawURL string) string {

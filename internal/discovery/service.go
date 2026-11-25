@@ -29,9 +29,11 @@ type Service struct {
 	Download func(context.Context, Track) (DownloadResult, error)
 	Pending  func(context.Context, Track) (bool, error)
 	Taste    *TasteSources
-	// Notify returns an error on delivery failure so digests remain unacknowledged.
-	// Sync failures are logged and are not sent through Notify.
+	// Notify delivers plain HTML. NotifySong delivers one fresh favorite and
+	// can attach the same link preview used by rediscover cards.
+	// Sync failures are logged and are not sent through either callback.
 	Notify               func(int64, string) error
+	NotifySong           func(chat int64, text string, track Track) error
 	NotifyIngested       func(Job) error
 	OnError              func(error)
 	Authorized           func(int64, int64) bool
@@ -883,7 +885,7 @@ func (s *Service) Run(ctx context.Context) error {
 			}
 			if time.Now().After(nextSummary) {
 				if err := s.Digest(ctx); err != nil {
-					utils.WarnWithFormat("[Discovery] 收藏入库汇总失败: %v", err)
+					utils.WarnWithFormat("[Discovery] 确认收藏入库状态失败: %v", err)
 				}
 				nextSummary = time.Now().Add(summary)
 			}
@@ -1170,34 +1172,17 @@ func (s *Service) Digest(ctx context.Context) error {
 			groups[j.Chat] = append(groups[j.Chat], j)
 		}
 	}
-	if s.Notify == nil {
+	if s.Notify == nil && s.NotifySong == nil {
 		return nil
 	}
 	for chat, list := range groups {
 		if s.Authorized != nil && !s.Authorized(list[0].User, chat) {
 			continue
 		}
-		counts := map[string]int{}
 		for _, j := range list {
-			counts[StateLabel(j.State)]++
-		}
-		keys := []string{}
-		for key := range counts {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		var b strings.Builder
-		b.WriteString("🎵 <b>收藏入库汇总</b>\n")
-		b.WriteString("──────────────────\n")
-		for _, key := range keys {
-			fmt.Fprintf(&b, "%s：%d 首\n", utils.EscapeHTML(key), counts[key])
-		}
-		b.WriteString("发送 /favorites 查看详情、待确认和失败任务。")
-		if err = s.Notify(chat, b.String()); err != nil {
-			utils.WarnWithFormat("[Discovery] 收藏入库汇总发送失败: %v", err)
-			continue
-		}
-		for _, j := range list {
+			if j.State == Failed || j.State == NeedsConfirmation {
+				utils.InfoWithFormat("[Discovery] %s未再推送汇总，可在 /favorites 查看：%s", StateLabel(j.State), discoveryTrackLabel(j.Track))
+			}
 			if err = s.Store.NotifyDone(ctx, j.ID, j.Updated, j.State); err != nil {
 				return err
 			}

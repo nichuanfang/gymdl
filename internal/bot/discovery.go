@@ -75,6 +75,13 @@ func (app *BotApp) initDiscovery() {
 			_, err := app.bot.Send(tb.ChatID(chat), text, tb.ModeHTML)
 			return err
 		},
+		NotifySong: func(chat int64, text string, track discovery.Track) error {
+			preview := ""
+			if app.cfg != nil && app.cfg.PlaylistOrganizer != nil {
+				preview = discoveryCardPreviewURL(discovery.Card{Tracks: []discovery.Track{track}}, 0, app.cfg.PlaylistOrganizer.WebAppURL)
+			}
+			return sendDiscoveryHTML(app.bot, chat, text, preview)
+		},
 		NotifyIngested: app.sendDiscoveryIngested,
 	}
 }
@@ -838,6 +845,20 @@ func contextBot(c tb.Context) (bot tb.API) {
 		return nil
 	}
 	return c.Bot()
+}
+
+func sendDiscoveryHTML(bot tb.API, chat int64, text, previewURL string) error {
+	if bot == nil {
+		return fmt.Errorf("无法发送歌曲卡片")
+	}
+	params := map[string]any{
+		"chat_id":              chat,
+		"text":                 text,
+		"parse_mode":           string(tb.ModeHTML),
+		"link_preview_options": discoveryLinkPreview(previewURL),
+	}
+	_, err := bot.Raw("sendMessage", params)
+	return err
 }
 
 func discoveryLinkPreview(previewURL string) map[string]any {
