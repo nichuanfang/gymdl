@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/internal/gin/response"
+	"github.com/nichuanfang/gymdl/internal/netease"
 	"github.com/nichuanfang/gymdl/internal/qqmusic"
 	"github.com/nichuanfang/gymdl/utils"
 	"golang.org/x/sync/singleflight"
@@ -441,6 +442,7 @@ func searchNeteaseWithContext(ctx context.Context, keyword string, limit, offset
 		items = append(items, SearchResultItem{
 			Platform: "netease", SongID: strconv.Itoa(song.Id), Name: song.Name,
 			Artists: strings.Join(artists, " / "), Album: song.Album.Name,
+			CoverURL:    netease.CoverURLFromPictureID(song.Album.PicId),
 			DurationSec: song.Duration / 1000,
 			URL:         fmt.Sprintf("https://music.163.com/song?id=%d", song.Id), IsVIP: song.Fee == 1,
 		})

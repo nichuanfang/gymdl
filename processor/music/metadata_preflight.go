@@ -22,6 +22,7 @@ type ytDLPMusicMetadata struct {
 	Ext          string `json:"ext"`
 	ExtractorKey string `json:"extractor_key"`
 	ID           string `json:"id"`
+	WebpageURL   string `json:"webpage_url"`
 }
 
 // ResolveYTDLPMusicMetadata reads single-track metadata without downloading
@@ -61,6 +62,7 @@ func ResolveYTDLPMusicMetadata(cfg *config.Config, rawURL string) (*SongInfo, er
 		SongArtists: strings.TrimSpace(artist),
 		SongAlbum:   strings.TrimSpace(metadata.Album),
 		FileExt:     strings.TrimPrefix(strings.TrimSpace(metadata.Ext), "."),
+		SourceURL:   strings.TrimSpace(metadata.WebpageURL),
 	}, nil
 }
 

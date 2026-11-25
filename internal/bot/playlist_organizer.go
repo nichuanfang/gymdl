@@ -19,6 +19,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/internal/discovery"
+	"github.com/nichuanfang/gymdl/internal/musiclink"
 	"github.com/nichuanfang/gymdl/internal/musicrag"
 	"github.com/nichuanfang/gymdl/internal/storage"
 	"github.com/nichuanfang/gymdl/utils"
@@ -71,6 +73,7 @@ type pendingPlaylistAssignment struct {
 	hiddenPlaylistCount     int
 	processedCount          int
 	skippedCount            int
+	progressTotal           int
 	addedCount              int
 	ragSyncWarningCount     int
 	handledSongIDs          map[string]struct{}
@@ -1542,7 +1545,7 @@ func (app *BotApp) preparePlaylistAssignment(token string) {
 		app.failPlaylistAssignment(token, "❌ 读取待整理歌曲失败，请重试。", err)
 		return
 	}
-	assignment.song = song
+	assignment.setCurrentSong(song)
 	assignment.aiSuggestedPlaylists = nil
 	usesAI := playlistAssignmentUsesAI(assignment.playlistAssist, song)
 	if app.playlistAICooling(time.Now()) {
@@ -1921,18 +1924,20 @@ func (app *BotApp) playlistAssignmentSuggestion(assignment pendingPlaylistAssign
 	return "没有明显合适的，直接选即可"
 }
 
-func playlistAssignmentProgress(assignment pendingPlaylistAssignment) string {
-	if assignment.song.ID == "" || assignment.targetSong != nil {
-		return ""
+func playlistAssignmentHeading(assignment pendingPlaylistAssignment) string {
+	heading := "🎵 <b>整理歌单</b>"
+	current := assignment.processedCount + assignment.skippedCount + 1
+	if assignment.song.ID == "" || assignment.targetSong != nil || current > assignment.progressTotal {
+		return heading
 	}
-	parts := []string{fmt.Sprintf("第 %d 首", assignment.processedCount+assignment.skippedCount+1)}
-	if assignment.song.RemainingCount > 0 {
-		parts = append(parts, fmt.Sprintf("还剩 %d", assignment.song.RemainingCount))
+	return fmt.Sprintf("%s · %d/%d", heading, current, assignment.progressTotal)
+}
+
+func (assignment *pendingPlaylistAssignment) setCurrentSong(song unplaylistSong) {
+	assignment.song = song
+	if assignment.targetSong == nil && assignment.progressTotal == 0 && song.RemainingCount > 0 {
+		assignment.progressTotal = assignment.processedCount + assignment.skippedCount + song.RemainingCount
 	}
-	if assignment.processedCount > 0 || assignment.skippedCount > 0 {
-		parts = append(parts, fmt.Sprintf("已归档 %d", assignment.processedCount), fmt.Sprintf("跳过 %d", assignment.skippedCount))
-	}
-	return strings.Join(parts, " · ")
 }
 
 func formatPlaylistNameList(names []string) string {
@@ -1957,8 +1962,8 @@ func formatPlaylistNameList(names []string) string {
 
 func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 	var text strings.Builder
-	text.WriteString("🎵 <b>整理歌单</b>\n")
-	text.WriteString("──────────────────\n")
+	text.WriteString(playlistAssignmentHeading(assignment))
+	text.WriteString("\n──────────────────\n")
 	if assignment.song.ID == "" {
 		if assignment.statusNote != "" {
 			text.WriteString(utils.EscapeHTML(assignment.statusNote))
@@ -1967,12 +1972,7 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 		}
 		return text.String()
 	}
-	if progress := playlistAssignmentProgress(assignment); progress != "" {
-		text.WriteString(progress)
-		text.WriteString("\n")
-	}
 	if assignment.aiSuggestionLoading {
-		text.WriteString("\n")
 		if assignment.aiSuggestionManual {
 			text.WriteString("正在重新整理…")
 		} else {
@@ -1980,7 +1980,6 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 		}
 		return text.String()
 	}
-	text.WriteString("\n")
 	fmt.Fprintf(&text, "<b>%s</b>\n", playlistAssignmentTitle(assignment.song))
 	fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(displaySongValue(assignment.song.Artist)))
 	album := strings.TrimSpace(assignment.song.Album)
@@ -2008,14 +2007,17 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 	return text.String()
 }
 
-func playlistAssignmentPreviewURL(song unplaylistSong) string {
-	source, platform := audioCheckSource(song.Comment)
-	switch platform {
-	case "netease", "youtube", "qq":
-		return source
-	default:
-		return ""
+func playlistAssignmentPreviewURL(song unplaylistSong, webAppURL string) string {
+	if platform, id, cover := musiclink.SourceSong(playlistAssignmentSourceURL(song.Comment)); platform != "" {
+		return discoveryTrackPreviewURL(discovery.Track{
+			Platform: platform, ID: id, CoverURL: cover,
+			Title: song.Title, Artist: song.Artist, Album: song.Album,
+		}, webAppURL)
 	}
+	if source, platform := audioCheckSource(song.Comment); platform == "youtube" {
+		return source
+	}
+	return ""
 }
 
 // The loading card only says the suggestions are still being written. Showing
@@ -2024,7 +2026,7 @@ func playlistAssignmentCardPreviewURL(assignment pendingPlaylistAssignment) stri
 	if assignment.aiSuggestionLoading || assignment.song.ID == "" {
 		return ""
 	}
-	return playlistAssignmentPreviewURL(assignment.song)
+	return playlistAssignmentPreviewURL(assignment.song, assignment.webAppBaseURL)
 }
 
 func playlistAssignmentTitle(song unplaylistSong) string {
@@ -2152,8 +2154,6 @@ func (app *BotApp) editPlaylistAssignmentCard(message *tb.Message, assignment pe
 	if message == nil || app.bot == nil {
 		return nil
 	}
-	// The title stays an app link. Telegram only renders a cover when the
-	// preview target is the public song page, same as the recommendation card.
 	return editDiscoveryText(app.bot, message, formatPlaylistAssignment(current), playlistAssignmentMarkup(current), true, playlistAssignmentCardPreviewURL(current))
 }
 

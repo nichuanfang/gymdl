@@ -781,9 +781,10 @@ func TestPlaylistAssignmentUsesLegacyWebAppForEachSong(t *testing.T) {
 		token:           "01234567890123456789012345678901",
 		playlists:       []config.PlaylistInfo{{Name: "华语"}, {Name: "摇滚"}},
 		song:            unplaylistSong{ID: "song-1", Title: "Song", Artist: "Artist"},
+		progressTotal:   2,
 		webAppButtonURL: "https://webapp.example.com/?data=%7B%7D",
 	}
-	if text := formatPlaylistAssignment(menu); !strings.Contains(text, "第 1 首") || strings.Contains(text, "还没选歌单") || strings.Contains(text, "打开歌单选择页面") {
+	if text := formatPlaylistAssignment(menu); !strings.HasPrefix(text, "🎵 <b>整理歌单</b> · 1/2\n──────────────────\n<b>Song</b>") || strings.Contains(text, "还没选歌单") || strings.Contains(text, "打开歌单选择页面") {
 		t.Fatalf("per-song selection copy = %q", text)
 	}
 	menuMarkup := playlistAssignmentMarkup(menu)
@@ -867,11 +868,12 @@ func TestPlaylistAssignmentMessageIsCompactAndDoesNotRepeatButtonInstructions(t 
 		playlistAssist:       true,
 		aiSuggestedPlaylists: []string{"中文", "弦乐"},
 		processedCount:       2,
+		progressTotal:        14,
 		addedCount:           2,
 	}
 	message := formatPlaylistAssignment(assignment)
 	for _, expected := range []string{
-		"🎵 <b>整理歌单</b>\n──────────────────\n第 3 首 · 还剩 12 · 已归档 2 · 跳过 0\n\n<b>雨下一整晚</b>",
+		"🎵 <b>整理歌单</b> · 3/14\n──────────────────\n<b>雨下一整晚</b>",
 		"周杰伦",
 		"《跨时代》 · 2010",
 	} {
@@ -884,6 +886,34 @@ func TestPlaylistAssignmentMessageIsCompactAndDoesNotRepeatButtonInstructions(t 
 	}
 	if strings.Contains(message, "打开歌单选择页面") || strings.Contains(message, "同歌手歌单：") {
 		t.Fatalf("message repeats the button action: %q", message)
+	}
+}
+
+func TestPlaylistAssignmentProgressKeepsTheInitialTotal(t *testing.T) {
+	app := &BotApp{}
+	session := pendingPlaylistAssignment{token: "progress", expiresAt: time.Now().Add(time.Minute)}
+	session.setCurrentSong(unplaylistSong{ID: "first", RemainingCount: 3})
+	if !strings.HasSuffix(playlistAssignmentHeading(session), " · 1/3") || !app.registerPlaylistAssignment(session) {
+		t.Fatal("expected first song at 1/3")
+	}
+	session, ok := app.skipPlaylistAssignmentSong(session.token)
+	if !ok {
+		t.Fatal("skip failed")
+	}
+	// The skipped song may still be counted by Navidrome.
+	session.setCurrentSong(unplaylistSong{ID: "second", RemainingCount: 3})
+	if got := playlistAssignmentHeading(session); !strings.HasSuffix(got, " · 2/3") {
+		t.Fatalf("heading after skip: %q", got)
+	}
+	app.updatePlaylistAssignment(session)
+	app.markPlaylistAssignmentProcessed(session.token, true)
+	session, ok = app.clearCurrentPlaylistAssignmentSong(session.token)
+	if !ok {
+		t.Fatal("could not advance after confirmation")
+	}
+	session.setCurrentSong(unplaylistSong{ID: "third", RemainingCount: 2})
+	if got := playlistAssignmentHeading(session); !strings.HasSuffix(got, " · 3/3") {
+		t.Fatalf("heading after confirmation: %q", got)
 	}
 }
 

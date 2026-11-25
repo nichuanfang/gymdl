@@ -53,6 +53,9 @@ func (app *BotApp) musicActionMarkup(song *music.SongInfo, sourceURL string) (st
 	}
 
 	token := strings.ReplaceAll(uuid.NewString(), "-", "")
+	if song.SourceURL != "" {
+		sourceURL = song.SourceURL
+	}
 	action := pendingMusicAction{
 		path:      song.MusicPath,
 		title:     song.SongName,

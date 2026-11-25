@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/nichuanfang/gymdl/internal/netease"
 	"github.com/nichuanfang/gymdl/internal/qqmusic"
 )
 
@@ -11,53 +12,50 @@ import (
 // official app-aware links. Unknown and malformed URLs are returned unchanged.
 func DirectAppLink(rawURL string) string {
 	rawURL = strings.TrimSpace(rawURL)
+	platform, id, _ := SourceSong(rawURL)
+	switch platform {
+	case "netease":
+		return netease.SongAppLink(id)
+	case "qq":
+		link, _ := qqmusic.SongUniversalLink(id)
+		return link
+	}
+	return rawURL
+}
+
+// SourceSong parses a provider song page with an optional validated cover.
+func SourceSong(rawURL string) (platform, id, cover string) {
 	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Fragment != "" || parsed.RawFragment != "" {
-		return rawURL
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Fragment != "" || parsed.ForceQuery {
+		return "", "", ""
 	}
 	if port := parsed.Port(); port != "" && port != "443" {
-		return rawURL
+		return "", "", ""
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return "", "", ""
+	}
+	if values, present := query["cover"]; present {
+		if len(values) != 1 || values[0] == "" {
+			return "", "", ""
+		}
+		cover = values[0]
+		delete(query, "cover")
 	}
 	switch strings.ToLower(parsed.Hostname()) {
 	case "music.163.com", "m.music.163.com":
-		if parsed.Path != "/song" {
-			return rawURL
+		if ids := query["id"]; parsed.Path == "/song" && len(query) == 1 && len(ids) == 1 && netease.ValidSongID(ids[0]) {
+			if normalized := netease.CoverURL(cover); cover == "" || normalized != "" {
+				return "netease", ids[0], normalized
+			}
 		}
-		ids := parsed.Query()["id"]
-		if len(ids) != 1 || !validNumericSongID(ids[0]) {
-			return rawURL
-		}
-		appLink := "orpheus://song/" + ids[0]
-		return "https://m.music.163.com/m/applink/?scheme=" + url.QueryEscape(appLink)
 	case "y.qq.com":
-		const prefix = "/n/ryqq/songDetail/"
-		if !strings.HasPrefix(parsed.Path, prefix) {
-			return rawURL
-		}
-		mid := strings.TrimPrefix(parsed.Path, prefix)
-		if !qqmusic.ValidSongMID(mid) || parsed.RawQuery != "" || parsed.ForceQuery {
-			return rawURL
-		}
-		link, ok := qqmusic.SongUniversalLink(mid)
-		if !ok {
-			return rawURL
-		}
-		return link
-	default:
-		// YouTube Music, Bilibili, and other platform links retain their
-		// existing platform URL and association behavior.
-		return rawURL
-	}
-}
-
-func validNumericSongID(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		if r < '0' || r > '9' {
-			return false
+		if mid, ok := strings.CutPrefix(parsed.Path, qqmusic.SongPagePath); ok && len(query) == 0 && qqmusic.ValidSongMID(mid) {
+			if cover == "" || qqmusic.ValidAlbumCoverID(cover) {
+				return "qq", mid, qqmusic.AlbumCoverURL(cover, "")
+			}
 		}
 	}
-	return true
+	return "", "", ""
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core/linkparser"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
+	"github.com/nichuanfang/gymdl/internal/netease"
 	"github.com/nichuanfang/gymdl/processor/music"
 	"github.com/nichuanfang/gymdl/utils"
 )
@@ -378,7 +379,7 @@ func (p *Providers) NeteaseTracks(ctx context.Context, ids []string) ([]Track, e
 			for _, a := range s.Ar {
 				artists = append(artists, a.Name)
 			}
-			found[s.Id] = Track{Platform: "netease", ID: strconv.Itoa(s.Id), URL: fmt.Sprintf("https://music.163.com/song?id=%d", s.Id), Title: s.Name, Artist: strings.Join(artists, " / "), Album: s.Al.Name, Duration: s.Dt / 1000, Verified: s.Name != "" && len(artists) > 0}
+			found[s.Id] = Track{Platform: "netease", ID: strconv.Itoa(s.Id), URL: fmt.Sprintf("https://music.163.com/song?id=%d", s.Id), CoverURL: netease.CoverURL(s.Al.PicUrl), Title: s.Name, Artist: strings.Join(artists, " / "), Album: s.Al.Name, Duration: s.Dt / 1000, Verified: s.Name != "" && len(artists) > 0}
 		}
 		if len(expected) > 0 {
 			return nil, fmt.Errorf("网易云有收藏歌曲详情缺失，未更新基线")

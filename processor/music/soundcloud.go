@@ -171,6 +171,7 @@ func (p *SoundCloudProcessor) DownloadCommand(url string) *exec.Cmd {
 		"-x",
 
 		"--embed-metadata",
+		"--parse-metadata", "webpage_url:meta_comment",
 		"--embed-thumbnail",
 
 		"--concurrent-fragments", "8",

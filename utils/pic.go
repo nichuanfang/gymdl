@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/disintegration/imaging"
+	"github.com/nichuanfang/gymdl/internal/musiccover"
 )
 
 var client = &http.Client{
@@ -41,14 +42,17 @@ func FetchImage(url string) ([]byte, error) {
 		return nil, err
 	}
 
-	// 解码图片
+	return ResizeMusicCover(data)
+}
+
+// ResizeMusicCover encodes an image as a square JPEG for audio tags.
+func ResizeMusicCover(data []byte) ([]byte, error) {
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
 
-	//缩放到目标尺寸 320x320
-	resized := imaging.Resize(img, 320, 320, imaging.Lanczos)
+	resized := imaging.Fill(img, musiccover.Size, musiccover.Size, imaging.Center, imaging.Lanczos)
 
 	// 编码为 JPEG 格式，压缩质量设为85以平衡性能与质量
 	buf := new(bytes.Buffer)

@@ -50,7 +50,8 @@ type SongInfo struct {
 	MusicSize       int64  // 音乐大小
 	Bitrate         string // 码率
 	Duration        int    // 时长
-	Url             string // 下载地址
+	Url             string `json:"-"` // 下载地址，仅在下载流程中使用
+	SourceURL       string // 公开歌曲页
 	MusicPath       string // 音乐文件路径
 	PicUrl          string // 封面图url
 	Lyric           string // 歌词
@@ -193,6 +194,9 @@ func ReadTags(path string) (*SongInfo, error) {
 	if ge, ok := tags[taglib.Genre]; ok && len(ge) > 0 {
 		songInfo.Genre = ge[0]
 	}
+	if comment := tags[taglib.Comment]; len(comment) > 0 {
+		songInfo.SourceURL = strings.TrimSpace(comment[0])
+	}
 
 	return songInfo, nil
 }
@@ -290,9 +294,7 @@ func FillDefaultTags(path string, info *SongInfo) {
 	}
 }
 
-// WriteTags 嵌入标签
-func WriteTags(song *SongInfo, filePath string) error {
-	// 写入文本标签
+func songTags(song *SongInfo) map[string][]string {
 	tags := map[string][]string{
 		taglib.Title:       {song.SongName},
 		taglib.Artist:      {song.SongArtists},
@@ -301,8 +303,16 @@ func WriteTags(song *SongInfo, filePath string) error {
 		taglib.Date:        {strconv.Itoa(song.Year)},
 		taglib.Lyrics:      {song.Lyric},
 	}
+	if source := strings.TrimSpace(song.SourceURL); source != "" {
+		tags[taglib.Comment] = []string{source}
+	}
+	return tags
+}
+
+// WriteTags 嵌入标签
+func WriteTags(song *SongInfo, filePath string) error {
 	// 写入文本标签（opts传taglib.Clear则清除原标签，传0则不清除）
-	if err := taglib.WriteTags(filePath, tags, 0); err != nil {
+	if err := taglib.WriteTags(filePath, songTags(song), 0); err != nil {
 		return fmt.Errorf("write metadata failed for %s: %w", filePath, err)
 	}
 	return nil
@@ -310,23 +320,16 @@ func WriteTags(song *SongInfo, filePath string) error {
 
 // WriteTagsWithCoverFile 嵌入标签(封面通过文件嵌入)
 func WriteTagsWithCoverFile(song *SongInfo, filePath string, coverFilePath string) error {
-	// 写入文本标签
-	tags := map[string][]string{
-		taglib.Title:       {song.SongName},
-		taglib.Artist:      {song.SongArtists},
-		taglib.Album:       {song.SongAlbum},
-		taglib.AlbumArtist: {song.SongArtists},
-		taglib.Date:        {strconv.Itoa(song.Year)},
-		taglib.Lyrics:      {song.Lyric},
-		taglib.Comment:     {song.Url},
-	}
-	var err error
-	// 写入文本标签（opts传taglib.Clear则清除原标签，传0则不清除）
-	if err = taglib.WriteTags(filePath, tags, 0); err != nil {
-		return fmt.Errorf("write metadata failed for %s: %w", filePath, err)
+	if err := WriteTags(song, filePath); err != nil {
+		return err
 	}
 	data, err := os.ReadFile(coverFilePath)
 	if err == nil && len(data) > 0 {
+		data, err = utils.ResizeMusicCover(data)
+		if err != nil {
+			utils.WarnWithFormat("resize cover failed for %s: %v", filePath, err)
+			return nil
+		}
 		if err = taglib.WriteImage(filePath, data); err != nil {
 			return fmt.Errorf("write image failed for %s: %w", filePath, err)
 		}
@@ -348,19 +351,8 @@ func WriteTagsWithCoverURL(song *SongInfo, filePath string) error {
 		imageCh <- imageResult{}
 	}
 
-	// 写入文本标签
-	tags := map[string][]string{
-		taglib.Title:       {song.SongName},
-		taglib.Artist:      {song.SongArtists},
-		taglib.Album:       {song.SongAlbum},
-		taglib.AlbumArtist: {song.SongArtists},
-		taglib.Date:        {strconv.Itoa(song.Year)},
-		taglib.Lyrics:      {song.Lyric},
-	}
-
-	// opts传taglib.Clear则会清除原标签 传0则不清除
-	if err := taglib.WriteTags(filePath, tags, 0); err != nil {
-		return fmt.Errorf("write metadata failed for %s: %w", filePath, err)
+	if err := WriteTags(song, filePath); err != nil {
+		return err
 	}
 
 	// 等待图片下载完成

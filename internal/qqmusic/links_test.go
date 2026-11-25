@@ -39,7 +39,7 @@ func TestSongUniversalLinkEncodesQQMusicHandoff(t *testing.T) {
 }
 
 func TestAlbumCoverURLAcceptsPMIDVariantAndFallsBackSafely(t *testing.T) {
-	const prefix = "https://y.gtimg.cn/music/photo_new/T002R300x300M000"
+	const prefix = "https://y.gtimg.cn/music/photo_new/T002R500x500M000"
 	if got, want := AlbumCoverURL(" 002ef2VB0Qfb30_2 ", "002ef2VB0Qfb30"), prefix+"002ef2VB0Qfb30_2.jpg"; got != want {
 		t.Fatalf("cover URL = %q, want %q", got, want)
 	}

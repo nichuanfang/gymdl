@@ -13,6 +13,7 @@ import (
 	ncmapi "github.com/XiaoMengXinX/Music163Api-Go/api"
 	ncmtypes "github.com/XiaoMengXinX/Music163Api-Go/types"
 	ncmutils "github.com/XiaoMengXinX/Music163Api-Go/utils"
+	"github.com/nichuanfang/gymdl/internal/netease"
 	"github.com/nichuanfang/gymdl/utils"
 )
 
@@ -53,7 +54,7 @@ func NeteaseDailySongs(ctx context.Context) ([]SearchResultItem, error) {
 		items = append(items, SearchResultItem{
 			Platform: "netease", SongID: strconv.Itoa(song.Id), Name: song.Name,
 			Artists: strings.Join(artists, " / "), Album: song.Al.Name,
-			CoverURL: song.Al.PicUrl, DurationSec: song.Dt / 1000,
+			CoverURL: netease.CoverURL(song.Al.PicUrl), DurationSec: song.Dt / 1000,
 			URL: fmt.Sprintf("https://music.163.com/song?id=%d", song.Id), IsVIP: song.Fee == 1,
 		})
 	}

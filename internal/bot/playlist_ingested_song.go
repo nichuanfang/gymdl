@@ -70,7 +70,9 @@ func (s *playlistOrganizerService) findIngestedSong(ctx context.Context, target 
 			return unplaylistSong{}, errIngestedSongAmbiguous
 		}
 		match = hit.unplaylistSong
-		match.Comment = target.sourceURL
+		if strings.TrimSpace(match.Comment) == "" {
+			match.Comment = target.sourceURL
+		}
 		match.CreatedAt = hit.Created
 	}
 	if len(result.Response.Search.Songs) >= pageSize {

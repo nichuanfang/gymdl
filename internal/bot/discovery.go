@@ -15,6 +15,7 @@ import (
 	"github.com/nichuanfang/gymdl/internal/discovery"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
 	"github.com/nichuanfang/gymdl/internal/musicrag"
+	"github.com/nichuanfang/gymdl/internal/netease"
 	"github.com/nichuanfang/gymdl/internal/qqmusic"
 	"github.com/nichuanfang/gymdl/internal/storage"
 	"github.com/nichuanfang/gymdl/processor/music"
@@ -766,22 +767,29 @@ func discoveryCardPreviewURL(card discovery.Card, page int, webAppURL string) st
 	if len(card.Tracks) == 0 {
 		return ""
 	}
-	track := card.Tracks[page]
-	if songURL := neteaseSongPreviewURL(track); songURL != "" {
-		return songURL
-	}
+	return discoveryTrackPreviewURL(card.Tracks[page], webAppURL)
+}
+
+func discoveryTrackPreviewURL(track discovery.Track, webAppURL string) string {
 	if watchURL := youtubePreviewURL(track); watchURL != "" {
 		return watchURL
 	}
-	const coverPrefix = "https://y.gtimg.cn/music/photo_new/T002R300x300M000"
-	if track.Platform != "qq" || !strings.HasPrefix(track.CoverURL, coverPrefix) || !strings.HasSuffix(track.CoverURL, ".jpg") {
+	var idKey, cover string
+	switch track.Platform {
+	case "qq":
+		if !qqmusic.ValidSongMID(track.ID) {
+			return ""
+		}
+		idKey, cover = "mid", qqmusic.AlbumCoverID(track.CoverURL)
+	case "netease":
+		if !netease.ValidSongID(track.ID) {
+			return ""
+		}
+		idKey, cover = "id", netease.CoverURL(track.CoverURL)
+	default:
 		return ""
 	}
-	coverID := strings.TrimSuffix(strings.TrimPrefix(track.CoverURL, coverPrefix), ".jpg")
-	if !qqmusic.ValidAlbumCoverID(coverID) || track.CoverURL != coverPrefix+coverID+".jpg" {
-		return ""
-	}
-	if !qqmusic.ValidSongMID(track.ID) {
+	if cover == "" {
 		return ""
 	}
 	base, err := playlistWebAppBaseURL(webAppURL)
@@ -790,8 +798,9 @@ func discoveryCardPreviewURL(card discovery.Card, page int, webAppURL string) st
 	}
 	base.Path = "/api/discovery/music-preview"
 	query := base.Query()
-	query.Set("mid", track.ID)
-	query.Set("cover", coverID)
+	query.Set("platform", track.Platform)
+	query.Set(idKey, track.ID)
+	query.Set("cover", cover)
 	query.Set("title", discoveryPreviewQueryText(track.Title, 180))
 	query.Set("artist", discoveryPreviewQueryText(track.Artist, 240))
 	query.Set("album", discoveryPreviewQueryText(track.Album, 240))
@@ -807,19 +816,6 @@ func discoveryCardPreviewURL(card discovery.Card, page int, webAppURL string) st
 		return ""
 	}
 	return previewURL
-}
-
-func neteaseSongPreviewURL(track discovery.Track) string {
-	if track.Platform != "netease" {
-		return ""
-	}
-	id, err := strconv.ParseUint(track.ID, 10, 64)
-	if err != nil || id == 0 || strconv.FormatUint(id, 10) != track.ID {
-		return ""
-	}
-	// The visible button opens the app. Telegram still needs the public song
-	// page, because the app-link page has no cover preview.
-	return "https://music.163.com/song?id=" + strconv.FormatUint(id, 10)
 }
 
 func youtubePreviewURL(track discovery.Track) string {

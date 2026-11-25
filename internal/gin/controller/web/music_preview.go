@@ -5,14 +5,17 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nichuanfang/gymdl/internal/musiccover"
+	"github.com/nichuanfang/gymdl/internal/netease"
 	"github.com/nichuanfang/gymdl/internal/qqmusic"
 )
 
-const qqMusicPreviewTemplateSource = `<!doctype html>
+const musicPreviewTemplateSource = `<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -20,22 +23,22 @@ const qqMusicPreviewTemplateSource = `<!doctype html>
   <meta name="robots" content="noindex,nofollow">
   <title>{{.Title}} - {{.Artist}}</title>
   <meta property="og:type" content="music.song">
-  <meta property="og:site_name" content="QQ 音乐">
+  <meta property="og:site_name" content="{{.Platform}}">
   <meta property="og:title" content="{{.Title}}">
   <meta property="og:description" content="{{.Description}}">
   <meta property="og:image" content="{{.CoverURL}}">
-  <meta property="og:image:width" content="300">
-  <meta property="og:image:height" content="300">
+  <meta property="og:image:width" content="{{.CoverSize}}">
+  <meta property="og:image:height" content="{{.CoverSize}}">
   <meta name="twitter:card" content="summary_large_image">
 </head>
 <body>
   <h1>{{.Title}}</h1>
   <p>{{.Artist}}{{if .Album}} · {{.Album}}{{end}}{{if .Duration}} · {{.Duration}}{{end}}</p>
-  <p><a href="{{.AppURL}}">在 QQ 音乐中打开</a></p>
+  <p><a href="{{.AppURL}}">在 {{.Platform}} 中打开</a></p>
   <script>
     (function () {
-      var appURL = {{.AppURLJSON}};
-      var webURL = {{.WebURLJSON}};
+      var appURL = {{.AppURL}};
+      var webURL = {{.WebURL}};
       var timer = window.setTimeout(function () {
         if (!document.hidden) window.location.replace(webURL);
       }, 1800);
@@ -46,21 +49,22 @@ const qqMusicPreviewTemplateSource = `<!doctype html>
 </body>
 </html>`
 
-var qqMusicPreviewPage = template.Must(template.New("qq-music-preview").Parse(qqMusicPreviewTemplateSource))
+var musicPreviewPage = template.Must(template.New("music-preview").Parse(musicPreviewTemplateSource))
 
-type qqMusicPreviewPageData struct {
+type musicPreviewPageData struct {
+	Platform    string
 	Title       string
 	Artist      string
 	Album       string
 	Duration    string
 	Description string
 	CoverURL    string
+	CoverSize   int
 	AppURL      string
-	AppURLJSON  template.JS
-	WebURLJSON  template.JS
+	WebURL      string
 }
 
-func HandleQQMusicPreview(c *gin.Context) {
+func HandleMusicPreview(c *gin.Context) {
 	c.Header("Cache-Control", "public, max-age=3600")
 	c.Header("Referrer-Policy", "no-referrer")
 	c.Header("X-Content-Type-Options", "nosniff")
@@ -68,26 +72,50 @@ func HandleQQMusicPreview(c *gin.Context) {
 	c.Header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 	c.Header("Content-Type", "text/html; charset=utf-8")
 
-	query := c.Request.URL.Query()
-	for _, key := range []string{"mid", "cover", "title", "artist"} {
-		if len(query[key]) != 1 {
-			c.Status(http.StatusBadRequest)
-			return
-		}
+	query, err := url.ParseQuery(c.Request.URL.RawQuery)
+	if err != nil {
+		c.Status(http.StatusBadRequest)
+		return
 	}
-	for _, key := range []string{"album", "duration"} {
-		if len(query[key]) > 1 {
-			c.Status(http.StatusBadRequest)
-			return
+	for key, values := range query {
+		switch key {
+		case "platform", "id", "mid", "cover", "title", "artist", "album", "duration":
+			if len(values) == 1 {
+				continue
+			}
 		}
+		c.Status(http.StatusBadRequest)
+		return
 	}
 
-	mid := query.Get("mid")
-	coverID := query.Get("cover")
+	data := musicPreviewPageData{CoverSize: musiccover.Size}
+	platform := query.Get("platform")
+	// Links sent before platform selection was introduced omit platform.
+	if !query.Has("platform") {
+		platform = "qq"
+	}
+	switch platform {
+	case "qq":
+		if !query.Has("id") {
+			mid := query.Get("mid")
+			data.Platform = "QQ 音乐"
+			data.CoverURL = qqmusic.AlbumCoverURL(query.Get("cover"), "")
+			data.AppURL, _ = qqmusic.SongUniversalLink(mid)
+			data.WebURL = qqmusic.SongPageURL(mid, "")
+		}
+	case "netease":
+		if !query.Has("mid") {
+			id := query.Get("id")
+			data.Platform = "网易云音乐"
+			data.CoverURL = netease.CoverURL(query.Get("cover"))
+			data.AppURL = netease.SongAppLink(id)
+			data.WebURL = netease.SongPageURL(id, "")
+		}
+	}
 	title, titleOK := musicPreviewText(query.Get("title"), 720)
 	artist, artistOK := musicPreviewText(query.Get("artist"), 960)
 	album, albumOK := musicPreviewText(query.Get("album"), 960)
-	if !qqmusic.ValidSongMID(mid) || !qqmusic.ValidAlbumCoverID(coverID) || !titleOK || !artistOK || !albumOK || title == "" || artist == "" {
+	if data.CoverURL == "" || data.AppURL == "" || !titleOK || !artistOK || !albumOK || title == "" || artist == "" {
 		c.Status(http.StatusBadRequest)
 		return
 	}
@@ -102,12 +130,6 @@ func HandleQQMusicPreview(c *gin.Context) {
 		duration = musicPreviewDuration(seconds)
 	}
 
-	appURL, ok := qqmusic.SongUniversalLink(mid)
-	if !ok {
-		c.Status(http.StatusBadRequest)
-		return
-	}
-	webURL := "https://y.qq.com/n/ryqq/songDetail/" + mid
 	description := "歌手：" + artist
 	if album != "" {
 		description += " · 专辑：" + album
@@ -116,12 +138,9 @@ func HandleQQMusicPreview(c *gin.Context) {
 		description += " · 时长：" + duration
 	}
 	var body bytes.Buffer
-	if err := qqMusicPreviewPage.Execute(&body, qqMusicPreviewPageData{
-		Title: title, Artist: artist, Album: album, Duration: duration,
-		Description: description, CoverURL: qqmusic.AlbumCoverURL(coverID, ""),
-		AppURL: appURL, AppURLJSON: template.JS(strconv.Quote(appURL)),
-		WebURLJSON: template.JS(strconv.Quote(webURL)),
-	}); err != nil {
+	data.Title, data.Artist, data.Album = title, artist, album
+	data.Duration, data.Description = duration, description
+	if err := musicPreviewPage.Execute(&body, data); err != nil {
 		c.Status(http.StatusInternalServerError)
 		return
 	}

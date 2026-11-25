@@ -18,6 +18,7 @@ import (
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/internal/qqmusic"
 	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/utils"
 )
@@ -368,7 +369,7 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 	utils.InfoWithFormat("[QQMusic] ⬇️ 开始下载文件: %s", tempPath)
 
 	// 并发下载封面和歌词
-	var coverUrl string
+	coverURL := qqmusic.AlbumCoverURL(songData.Album.Pmid, songData.Album.Mid)
 	var lyric string
 	var wg sync.WaitGroup
 	var coverErr, lyricErr error
@@ -376,11 +377,13 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		coverUrl = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", songData.Album.Pmid)
+		if coverURL == "" {
+			return
+		}
 		// 下载封面
 		tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, qqSongArtists(songData)))
 		utils.DebugWithFormat("[QQMusic] ⬇️ 下载封面: %s", tempCoverPath)
-		coverErr = utils.DownloadFile(qmApi.downloadClient, coverUrl, tempCoverPath)
+		coverErr = utils.DownloadFile(qmApi.downloadClient, coverURL, tempCoverPath)
 	}()
 	go func() {
 		defer wg.Done()
@@ -405,7 +408,7 @@ func (qmApi *QQMusicAPI) downloadSong(qm *QQMusicProcessor, musicid string, call
 		return lyricErr
 	}
 
-	qmApi.updateSongInfo(qm, songData, fileMetadata, lyric)
+	qmApi.updateSongInfo(qm, songData, fileMetadata, lyric, songUrl, coverURL)
 	utils.InfoWithFormat("[QQMusic] ✅ 单曲下载完成（总耗时 %v）", time.Since(start).Truncate(time.Millisecond))
 	callback(fmt.Sprintf("下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond)))
 	return nil
@@ -500,6 +503,7 @@ func (qmApi *QQMusicAPI) downloadPlaylistSong(qm *QQMusicProcessor, songData QQS
 	tempPath := filepath.Join(qm.tempDir, sanitizeFileName)
 
 	// 并发下载封面和歌词
+	coverURL := qqmusic.AlbumCoverURL(songData.Album.Pmid, songData.Album.Mid)
 	var lyric string
 	var wg sync.WaitGroup
 	var coverErr, lyricErr error
@@ -514,9 +518,11 @@ func (qmApi *QQMusicAPI) downloadPlaylistSong(qm *QQMusicProcessor, songData QQS
 	go func() {
 		// 下载封面
 		defer wg.Done()
-		var coverUrl = fmt.Sprintf("https://y.gtimg.cn/music/photo_new/T002R300x300M000%s.jpg", songData.Album.Pmid)
+		if coverURL == "" {
+			return
+		}
 		tempCoverPath := filepath.Join(qm.tempDir, qm.safeCoverFileName(songData.Title, qqSongArtists(songData)))
-		coverErr = utils.DownloadFile(qmApi.downloadClient, coverUrl, tempCoverPath)
+		coverErr = utils.DownloadFile(qmApi.downloadClient, coverURL, tempCoverPath)
 	}()
 
 	// 下载音乐文件（主任务）
@@ -532,7 +538,7 @@ func (qmApi *QQMusicAPI) downloadPlaylistSong(qm *QQMusicProcessor, songData QQS
 		return coverErr
 	}
 
-	qmApi.updateSongInfo(qm, songData, fileMetadata, lyric)
+	qmApi.updateSongInfo(qm, songData, fileMetadata, lyric, songUrl, coverURL)
 
 	utils.InfoWithFormat("[QQMusic] ✅ 下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond))
 	callback(fmt.Sprintf("下载完成（耗时 %v）", time.Since(start).Truncate(time.Millisecond)))
@@ -718,7 +724,7 @@ func (qmApi *QQMusicAPI) newGetRequest(path string, params map[string]string) (*
 }
 
 // updateSongInfo 更新元信息
-func (qmApi *QQMusicAPI) updateSongInfo(qm *QQMusicProcessor, data QQSong, fileMetadata utils.QQMusicFileMetadata, lyric string) {
+func (qmApi *QQMusicAPI) updateSongInfo(qm *QQMusicProcessor, data QQSong, fileMetadata utils.QQMusicFileMetadata, lyric, mediaURL, coverURL string) {
 	tidyType := processor.DetermineTidyType(qm.cfg)
 	if lyric == "" {
 		lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
@@ -734,6 +740,9 @@ func (qmApi *QQMusicAPI) updateSongInfo(qm *QQMusicProcessor, data QQSong, fileM
 		Bitrate:         strconv.Itoa(fileMetadata.Bitrate),
 		MusicSize:       fileMetadata.MusicSize,
 		Duration:        data.Interval,
+		Url:             mediaURL,
+		SourceURL:       qqmusic.SongPageURL(data.Mid, qqmusic.AlbumCoverID(coverURL)),
+		PicUrl:          coverURL,
 		Lyric:           lyric,
 		Tidy:            tidyType,
 	}
@@ -1115,6 +1124,7 @@ func ResolveQQSingleMetadata(cfg *config.Config, rawURL string) (*SongInfo, erro
 	if err != nil {
 		return nil, err
 	}
+	coverURL := qqmusic.AlbumCoverURL(song.Album.Pmid, song.Album.Mid)
 	info := &SongInfo{
 		SongName:    song.Title,
 		SongArtists: qqSongArtists(song),
@@ -1122,6 +1132,8 @@ func ResolveQQSingleMetadata(cfg *config.Config, rawURL string) (*SongInfo, erro
 		FileExt:     metadata.Ext,
 		MusicSize:   metadata.MusicSize,
 		Duration:    song.Interval,
+		SourceURL:   qqmusic.SongPageURL(song.Mid, qqmusic.AlbumCoverID(coverURL)),
+		PicUrl:      coverURL,
 	}
 	if info.SongName == "" || info.SongArtists == "" || info.SongAlbum == "" || info.FileExt == "" {
 		return nil, errors.New("QQ 音乐歌曲元数据不完整，无法确认是否重复")

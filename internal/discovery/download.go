@@ -93,6 +93,12 @@ func Download(ctx context.Context, cfg *config.Config, store *musicdedupe.Store,
 			actual.Artist = song.SongArtists
 			actual.Album = song.SongAlbum
 			actual.Duration = song.Duration
+			if song.SourceURL != "" {
+				actual.URL = song.SourceURL
+			}
+			if song.PicUrl != "" {
+				actual.CoverURL = song.PicUrl
+			}
 			actual.Verified = true
 			result.Track = &actual
 			if strings.EqualFold(song.Tidy, "WEBDAV_PENDING") {

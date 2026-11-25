@@ -1,9 +1,16 @@
 package bot
 
 import (
+	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/nichuanfang/gymdl/internal/netease"
+	"github.com/nichuanfang/gymdl/internal/qqmusic"
 )
+
+const playlistPreviewBase = "https://webapp.example.com"
+const playlistNeteaseCover = "https://p2.music.126.net/example/123.jpg?param=500y500"
 
 func TestPlaylistAssignmentSongLinkUsesPlatformAppLinks(t *testing.T) {
 	tests := []struct {
@@ -13,12 +20,12 @@ func TestPlaylistAssignmentSongLinkUsesPlatformAppLinks(t *testing.T) {
 	}{
 		{
 			name:    "QQ Music",
-			comment: "来源 https://y.qq.com/n/ryqq/songDetail/0039MnYb0qxYhV",
+			comment: "来源 " + qqmusic.SongPageURL("0039MnYb0qxYhV", "Example_2"),
 			want:    "https://music.qq.com/unilink/download.html?scheme=qqmusic%3A%2F%2F",
 		},
 		{
 			name:    "NetEase Cloud Music",
-			comment: "https://music.163.com/song?id=186016",
+			comment: netease.SongPageURL("186016", playlistNeteaseCover),
 			want:    "https://m.music.163.com/m/applink/?scheme=orpheus%3A%2F%2Fsong%2F186016",
 		},
 		{
@@ -37,22 +44,25 @@ func TestPlaylistAssignmentSongLinkUsesPlatformAppLinks(t *testing.T) {
 	}
 }
 
-func TestPlaylistAssignmentPreviewUsesThePublicSongPage(t *testing.T) {
+func TestPlaylistAssignmentPreviewUsesControlledPages(t *testing.T) {
+	const previewPage = playlistPreviewBase + "/api/discovery/music-preview"
 	tests := []struct {
 		comment string
 		want    string
 	}{
-		{"https://music.163.com/#/song?id=186016", "https://music.163.com/song?id=186016"},
-		{"https://music.163.com/song?id=186016", "https://music.163.com/song?id=186016"},
+		{netease.SongPageURL("186016", playlistNeteaseCover), previewPage + "?album=&artist=Enya&cover=" + url.QueryEscape(playlistNeteaseCover) + "&id=186016&platform=netease&title=Only+Time"},
+		{qqmusic.SongPageURL("0039MnYb0qxYhV", "Example_2"), previewPage + "?album=&artist=Enya&cover=Example_2&mid=0039MnYb0qxYhV&platform=qq&title=Only+Time"},
+		{"https://music.163.com/#/song?id=186016", ""},
+		{"https://music.163.com/song?id=186016", ""},
 		{"https://music.youtube.com/watch?v=dQw4w9WgXcQ", "https://music.youtube.com/watch?v=dQw4w9WgXcQ"},
 		{"https://www.youtube.com/watch?v=dQw4w9WgXcQ", "https://music.youtube.com/watch?v=dQw4w9WgXcQ"},
-		{"来源 https://y.qq.com/n/ryqq/songDetail/0039MnYb0qxYhV", "https://y.qq.com/n/ryqq/songDetail/0039MnYb0qxYhV"},
+		{"来源 https://y.qq.com/n/ryqq/songDetail/0039MnYb0qxYhV", ""},
 		{"https://m.music.163.com/m/applink/?scheme=orpheus%3A%2F%2Fsong%2F186016", ""},
 		{"", ""},
 		{"not a link", ""},
 	}
 	for _, test := range tests {
-		got := playlistAssignmentPreviewURL(unplaylistSong{Title: "Only Time", Comment: test.comment})
+		got := playlistAssignmentPreviewURL(unplaylistSong{Title: "Only Time", Artist: "Enya", Comment: test.comment}, playlistPreviewBase)
 		if got != test.want {
 			t.Fatalf("comment %q preview = %q, want %q", test.comment, got, test.want)
 		}
@@ -60,8 +70,8 @@ func TestPlaylistAssignmentPreviewUsesThePublicSongPage(t *testing.T) {
 }
 
 func TestPlaylistAssignmentPreviewWaitsForTheSongCard(t *testing.T) {
-	song := unplaylistSong{ID: "song-1", Title: "Only Time", Artist: "Enya", Comment: "https://music.163.com/song?id=186016"}
-	loading := pendingPlaylistAssignment{song: song, aiSuggestionLoading: true}
+	song := unplaylistSong{ID: "song-1", Title: "Only Time", Artist: "Enya", Comment: netease.SongPageURL("186016", playlistNeteaseCover)}
+	loading := pendingPlaylistAssignment{song: song, aiSuggestionLoading: true, webAppBaseURL: playlistPreviewBase}
 	if got := playlistAssignmentCardPreviewURL(loading); got != "" {
 		t.Fatalf("loading preview = %q, want none until the song is shown", got)
 	}
@@ -70,8 +80,8 @@ func TestPlaylistAssignmentPreviewWaitsForTheSongCard(t *testing.T) {
 	}
 	ready := loading
 	ready.aiSuggestionLoading = false
-	if got, want := playlistAssignmentCardPreviewURL(ready), "https://music.163.com/song?id=186016"; got != want {
-		t.Fatalf("ready preview = %q, want %q", got, want)
+	if got := playlistAssignmentCardPreviewURL(ready); !strings.HasPrefix(got, playlistPreviewBase+"/api/discovery/music-preview?") {
+		t.Fatalf("ready preview = %q, want controlled preview page", got)
 	}
 	if text := formatPlaylistAssignment(ready); !strings.Contains(text, "Only Time") {
 		t.Fatalf("ready card hid the song: %q", text)

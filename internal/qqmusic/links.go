@@ -3,13 +3,20 @@ package qqmusic
 import (
 	"encoding/json"
 	"net/url"
+	"strconv"
 	"strings"
+
+	"github.com/nichuanfang/gymdl/internal/musiccover"
 )
 
 const (
 	songUniversalLink = "https://music.qq.com/unilink/download.html"
-	coverURLPrefix    = "https://y.gtimg.cn/music/photo_new/T002R300x300M000"
+	coverCDNPrefix    = "https://y.gtimg.cn/music/photo_new/T002R"
+	legacyCoverPrefix = coverCDNPrefix + "300x300M000"
+	SongPagePath      = "/n/ryqq/songDetail/"
 )
+
+var coverURLPrefix = coverCDNPrefix + strconv.Itoa(musiccover.Size) + "x" + strconv.Itoa(musiccover.Size) + "M000"
 
 type songOpenPayload struct {
 	Action      string          `json:"action"`
@@ -102,6 +109,31 @@ func AlbumCoverURL(pmid, mid string) string {
 		return ""
 	}
 	return coverURLPrefix + coverID + ".jpg"
+}
+
+// AlbumCoverID accepts cached legacy URLs as well as current cover URLs.
+func AlbumCoverID(raw string) string {
+	for _, prefix := range []string{coverURLPrefix, legacyCoverPrefix} {
+		id, ok := strings.CutPrefix(raw, prefix)
+		if ok {
+			id, hasSuffix := strings.CutSuffix(id, ".jpg")
+			if hasSuffix && ValidAlbumCoverID(id) {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+func SongPageURL(mid, coverID string) string {
+	if !ValidSongMID(mid) {
+		return ""
+	}
+	page := "https://y.qq.com" + SongPagePath + mid
+	if ValidAlbumCoverID(coverID) {
+		page += "?cover=" + coverID
+	}
+	return page
 }
 
 func isASCIIAlphaNumeric(r rune) bool {

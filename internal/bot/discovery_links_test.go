@@ -77,29 +77,35 @@ func TestDiscoveryCardPreviewUsesYouTubeWatchPage(t *testing.T) {
 	}
 }
 
-func TestDiscoveryCardPreviewUsesNeteaseSongPage(t *testing.T) {
+func TestDiscoveryCardPreviewUsesNeteasePreviewPage(t *testing.T) {
+	const base = "https://webapp.example.com"
+	const cover = "https://p2.music.126.net/example/123.jpg"
 	card := discovery.Card{Tracks: []discovery.Track{{
 		Platform: "netease", ID: "186016", Title: "我的回忆不是我的", Artist: "张悬",
-		URL: "https://music.163.com/song?id=186016",
+		URL: "https://music.163.com/song?id=186016", CoverURL: cover,
 	}}}
-	if got, want := discoveryCardPreviewURL(card, 0, ""), "https://music.163.com/song?id=186016"; got != want {
-		t.Fatalf("NetEase preview = %q, want %q", got, want)
+	preview := discoveryCardPreviewURL(card, 0, base)
+	parsed, err := url.Parse(preview)
+	if err != nil || parsed.Host != "webapp.example.com" || parsed.Path != "/api/discovery/music-preview" ||
+		parsed.Query().Get("platform") != "netease" || parsed.Query().Get("id") != "186016" ||
+		parsed.Query().Get("cover") != cover+"?param=500y500" {
+		t.Fatalf("NetEase preview = %q", preview)
 	}
 	card.Tracks[0].ID = "186016 "
-	if got := discoveryCardPreviewURL(card, 0, ""); got != "" {
+	if got := discoveryCardPreviewURL(card, 0, base); got != "" {
 		t.Fatalf("unsafe NetEase id preview = %q", got)
 	}
 	if got := discoveryLinkPreview(""); got["is_disabled"] != true {
 		t.Fatalf("empty preview options = %#v", got)
 	}
-	options := discoveryLinkPreview("https://music.163.com/song?id=186016")
-	if options["is_disabled"] == true || options["url"] != "https://music.163.com/song?id=186016" {
+	options := discoveryLinkPreview(preview)
+	if options["is_disabled"] == true || options["url"] != preview {
 		t.Fatalf("NetEase preview was disabled: %#v", options)
 	}
 }
 
 func TestDiscoveryCardPreviewAcceptsQQAlbumPMIDVariant(t *testing.T) {
-	const coverURL = "https://y.gtimg.cn/music/photo_new/T002R300x300M000002ef2VB0Qfb30_2.jpg"
+	const coverURL = "https://y.gtimg.cn/music/photo_new/T002R500x500M000002ef2VB0Qfb30_2.jpg"
 	card := discovery.Card{Tracks: []discovery.Track{{
 		Platform: "qq", ID: "001kG0Ys4JRmMa", CoverURL: coverURL,
 		Title: "Get Up", Artist: "阿肆", Album: "预谋邂逅", Duration: 200,
@@ -114,12 +120,16 @@ func TestDiscoveryCardPreviewAcceptsQQAlbumPMIDVariant(t *testing.T) {
 	}
 	query := parsed.Query()
 	for key, want := range map[string]string{
-		"mid": "001kG0Ys4JRmMa", "cover": "002ef2VB0Qfb30_2", "title": "Get Up",
+		"platform": "qq", "mid": "001kG0Ys4JRmMa", "cover": "002ef2VB0Qfb30_2", "title": "Get Up",
 		"artist": "阿肆", "album": "预谋邂逅", "duration": "200",
 	} {
 		if query.Get(key) != want {
 			t.Errorf("preview query %s = %q, want %q", key, query.Get(key), want)
 		}
+	}
+	card.Tracks[0].CoverURL = strings.Replace(coverURL, "500x500", "300x300", 1)
+	if legacy := discoveryCardPreviewURL(card, 0, "https://webapp.example.com"); legacy != got {
+		t.Fatalf("legacy QQ cover preview = %q, want %q", legacy, got)
 	}
 
 	card.Tracks[0].CoverURL = "https://y.gtimg.cn/music/photo_new/T002R300x300M000abc_2_bad.jpg"

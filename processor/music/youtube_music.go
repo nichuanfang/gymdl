@@ -153,6 +153,7 @@ func (p *YoutubeMusicProcessor) DownloadCommand(
 		"-x",
 		"--no-playlist",
 		"--embed-metadata",
+		"--parse-metadata", "webpage_url:meta_comment",
 		"--embed-thumbnail",
 		"--cookies", cookiePath,
 

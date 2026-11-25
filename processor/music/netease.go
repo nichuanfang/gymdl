@@ -19,6 +19,7 @@ import (
 	ncmutils "github.com/XiaoMengXinX/Music163Api-Go/utils"
 	downloader "github.com/XiaoMengXinX/SimpleDownloader"
 	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/internal/netease"
 	"github.com/nichuanfang/gymdl/utils"
 
 	"github.com/nichuanfang/gymdl/config"
@@ -157,7 +158,7 @@ func (ncm *NetEaseProcessor) downloadSingle(musicID int, start time.Time, callba
 
 	// 下载文件
 	utils.InfoWithFormat("[NCM] ⬇️ 开始下载: %s", fileName)
-	if err := ncm.downloadFile(songURL.Data[0].Url, fileName, songInfo.PicUrl, coverFileName, ncm.tempDir); err != nil {
+	if err := ncm.downloadFile(songInfo.Url, fileName, songInfo.PicUrl, coverFileName, ncm.tempDir); err != nil {
 		_ = processor.RemoveTempDir(ncm.tempDir)
 		utils.ErrorWithFormat("[NCM] ❌ 下载失败: %v", err)
 		return fmt.Errorf("下载失败: %w", err)
@@ -433,6 +434,7 @@ func (ncm *NetEaseProcessor) FetchPlaylistSongData(musicIDs []int, cfg *config.C
 		}
 		year := utils.ParseNCMYear(&details)
 		tidy := processor.DetermineTidyType(cfg)
+		coverURL := netease.CoverURL(s.Al.PicUrl)
 		songMap[s.Id] = &SongInfo{
 			SongName:    s.Name,
 			SongArtists: utils.ParseArtist(s),
@@ -442,7 +444,8 @@ func (ncm *NetEaseProcessor) FetchPlaylistSongData(musicIDs []int, cfg *config.C
 			Bitrate:     strconv.Itoa((8 * u.Size / (s.Dt / 1000)) / 1000),
 			Duration:    s.Dt / 1000,
 			Url:         u.Url,
-			PicUrl:      s.Al.PicUrl,
+			SourceURL:   netease.SongPageURL(strconv.Itoa(s.Id), coverURL),
+			PicUrl:      coverURL,
 			Tidy:        tidy,
 			Lyric:       lyric,
 			Year:        year,
@@ -470,6 +473,7 @@ func (ncm *NetEaseProcessor) buildSongInfo(cfg *config.Config, detail *types.Son
 		ncmLyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
 	}
 	year := utils.ParseNCMYear(detail)
+	coverURL := netease.CoverURL(s.Al.PicUrl)
 
 	return &SongInfo{
 		SongName:    utils.ToSimpleChinese(s.Name),
@@ -479,8 +483,9 @@ func (ncm *NetEaseProcessor) buildSongInfo(cfg *config.Config, detail *types.Son
 		MusicSize:   int64(u.Size),
 		Bitrate:     strconv.Itoa((8 * u.Size / (s.Dt / 1000)) / 1000),
 		Duration:    s.Dt / 1000,
-		Url:         fmt.Sprintf("https://music.163.com/song?id=%d", u.Id),
-		PicUrl:      s.Al.PicUrl,
+		Url:         u.Url,
+		SourceURL:   netease.SongPageURL(strconv.Itoa(s.Id), coverURL),
+		PicUrl:      coverURL,
 		Tidy:        tidy,
 		Lyric:       ncmLyric,
 		Year:        year,
@@ -661,12 +666,17 @@ func ResolveNeteaseSingleMetadata(cfg *config.Config, rawURL string) (*SongInfo,
 		return nil, errors.New("网易云未返回可下载的音质或格式信息")
 	}
 	song, file := detail.Songs[0], urls.Data[0]
+	coverURL := netease.CoverURL(song.Al.PicUrl)
 	info := &SongInfo{
 		SongName:    utils.ToSimpleChinese(song.Name),
 		SongArtists: utils.ToSimpleChinese(utils.ParseArtist(song)),
 		SongAlbum:   song.Al.Name,
 		FileExt:     p.detectExt(file.Url),
 		MusicSize:   int64(file.Size),
+		Duration:    song.Dt / 1000,
+		Url:         file.Url,
+		SourceURL:   netease.SongPageURL(strconv.Itoa(song.Id), coverURL),
+		PicUrl:      coverURL,
 	}
 	if info.SongName == "" || info.SongArtists == "" || info.SongAlbum == "" || info.FileExt == "" {
 		return nil, errors.New("网易云歌曲元数据不完整，无法确认是否重复")
