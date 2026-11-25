@@ -624,6 +624,29 @@ func (s *Store) RetryJobWithSource(ctx context.Context, job Job, alternate Track
 	return n == 1, err
 }
 
+// QueuedJobID returns the still-queued import for this recording, or "" when
+// none is waiting. A running or finished row is not cancellable from the
+// fresh-favorite card.
+func (s *Store) QueuedJobID(ctx context.Context, user int64, identity string) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM discovery_jobs WHERE user_id=? AND identity=? AND state=?`, user, identity, Queued).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
+}
+
+// CancelQueued removes a job only while it is still queued. A worker that has
+// already claimed it, or a finished row, is left untouched.
+func (s *Store) CancelQueued(ctx context.Context, id string, user int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM discovery_jobs WHERE id=? AND user_id=? AND state=?`, id, user, Queued)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 // DismissFailedJob records an explicit user decision for one failed song.
 // Favorites polling and rediscover both already exclude ignored jobs.
 func (s *Store) DismissFailedJob(ctx context.Context, id string, user int64) (bool, error) {

@@ -55,20 +55,24 @@ func helpText() string {
 发送歌曲链接或音频文件，机器人会自动整理入库。完成后可试听或删除本地文件。
 
 <b>AI 助手</b>
-/ai <code>需求</code> 单次提问、找歌或查曲库
+/ai <code>需求</code> 单次提问或查曲库，不改变当前模式
 /mode 切换 AI 模式；链接始终优先下载
-/clear 清空当前对话，不会切换模式
+/clear 只清空当前对话
+
+<b>找歌</b>
+/recommend 按口味推荐一首，确认后才入库。例如 /recommend 粤语爵士
+/rediscover 从历史和收藏里一次找 1 首曲库没有的歌
+/favorites 管理收藏。新收藏会自动排队，排队中可先别下载
 
 <b>歌单</b>
-/assign_playlist 整理尚未归档的歌曲
+/assign_playlist 把尚未归档的歌放进已有歌单
 /playlist_desc 同步歌单并维护整理说明
-/ai_playlist 预览后创建或更新 AI 歌单
-/rediscover 从历史和收藏找曲库缺少的歌曲
-/recommend 个性化推荐，可加曲风或场景，如 /recommend 粤语爵士
-/favorites 管理账号、同步收藏并查看入库队列
-/audio_check 检查低码率、损坏和疑似缺尾的歌曲
+/ai_playlist 预览后创建或更新 [AI] 歌单
+
+<b>曲库</b>
+/audio_check 检查低码率、损坏和疑似缺尾
 /empty_trash 预览后清空回收站
-删除歌曲文件，并清理 MusicRAG 状态与 Pinecone 向量
+会删除歌曲文件，并清理 MusicRAG 状态与 Pinecone 向量
 
 <b>账号</b>
 /qq_login 扫码登录 QQ 音乐（仅限私聊）

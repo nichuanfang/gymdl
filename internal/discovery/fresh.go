@@ -31,7 +31,7 @@ func (s *Service) notifyFresh(items []FreshFavorite) {
 		for _, notice := range notices[chat] {
 			var err error
 			if s.NotifySong != nil {
-				err = s.NotifySong(chat, notice.Text, notice.Track)
+				err = s.NotifySong(chat, notice.Text, notice.Track, notice.JobID)
 			} else {
 				err = s.Notify(chat, notice.Text)
 			}
@@ -45,31 +45,36 @@ func (s *Service) notifyFresh(items []FreshFavorite) {
 type freshNotice struct {
 	Text  string
 	Track Track
+	JobID string
 }
 
 func formatFreshFavoriteNotices(items []FreshFavorite) map[int64][]freshNotice {
 	type bucket struct {
 		order []string
-		by    map[string][]Track
+		by    map[string][]FreshFavorite
 	}
 	buckets := map[int64]*bucket{}
 	for _, item := range items {
 		b := buckets[item.Chat]
 		if b == nil {
-			b = &bucket{by: map[string][]Track{}}
+			b = &bucket{by: map[string][]FreshFavorite{}}
 			buckets[item.Chat] = b
 		}
 		if _, ok := b.by[item.Platform]; !ok {
 			b.order = append(b.order, item.Platform)
 		}
-		b.by[item.Platform] = append(b.by[item.Platform], item.Track)
+		b.by[item.Platform] = append(b.by[item.Platform], item)
 	}
 	out := make(map[int64][]freshNotice, len(buckets))
 	for chat, b := range buckets {
 		var cards []freshNotice
 		for _, platform := range orderFreshPlatforms(b.order) {
-			for _, track := range b.by[platform] {
-				cards = append(cards, freshNotice{Text: renderFreshFavoriteCard(platform, track), Track: track})
+			for _, item := range b.by[platform] {
+				footer := "已排队入库。"
+				if item.JobID != "" {
+					footer = "已排队入库。还没开始时可以先别下载。"
+				}
+				cards = append(cards, freshNotice{Text: FreshCardText(platform, item.Track, footer), Track: item.Track, JobID: item.JobID})
 			}
 		}
 		out[chat] = cards
@@ -95,6 +100,12 @@ func orderFreshPlatforms(platforms []string) []string {
 }
 
 func renderFreshFavoriteCard(platform string, track Track) string {
+	return FreshCardText(platform, track, "已排队入库。")
+}
+
+// FreshCardText renders one new-favorite preview. footer is the status line,
+// either the queued notice or the cancellation result.
+func FreshCardText(platform string, track Track, footer string) string {
 	var text strings.Builder
 	fmt.Fprintf(&text, "🎵 <b>收藏有新歌 · %s</b>\n", utils.EscapeHTML(freshPlatformLabel(platform)))
 	text.WriteString("──────────────────\n")
@@ -108,7 +119,10 @@ func renderFreshFavoriteCard(platform string, track Track) string {
 	if track.Duration > 0 {
 		fmt.Fprintf(&text, "时长: %d:%02d\n", track.Duration/60, track.Duration%60)
 	}
-	text.WriteString("\n已排队入库。")
+	if footer = strings.TrimSpace(footer); footer != "" {
+		text.WriteString("\n")
+		text.WriteString(utils.EscapeHTML(footer))
+	}
 	return strings.TrimRight(text.String(), "\n")
 }
 

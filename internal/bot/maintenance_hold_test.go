@@ -200,6 +200,33 @@ func TestPlaylistDescCommandSwitchesFromAnIdleAICardDirectly(t *testing.T) {
 	}
 }
 
+func TestMaintenanceCommandKeepsEmptyTrashConfirmation(t *testing.T) {
+	app := &BotApp{}
+	card := &tb.Message{ID: 70, Chat: &tb.Chat{ID: 7}}
+	token := strings.Repeat("ab", 8)
+	if !app.registerPendingEmptyTrash(pendingEmptyTrash{
+		token: token, userID: 7, chatID: 7, message: card, expiresAt: time.Now().Add(time.Minute),
+	}) {
+		t.Fatal("register")
+	}
+	api := &maintenanceTestBot{}
+	ctx := &holdContext{sender: &tb.User{ID: 7}, chat: &tb.Chat{ID: 7}, bot: api}
+	hold, blocked := app.beginMaintenanceCommand(ctx, "a")
+	if !blocked || hold.kind != "t" || hold.processing || !strings.Contains(hold.text, "请先确认或取消") {
+		t.Fatalf("hold=%+v blocked=%t", hold, blocked)
+	}
+	if _, ok := app.getPendingEmptyTrash(token); !ok {
+		t.Fatal("confirmation was released")
+	}
+	if len(api.edits) != 0 {
+		t.Fatalf("card was edited: %+v", api.edits)
+	}
+	notice, markup := maintenanceHoldNotice(hold, "a")
+	if !strings.Contains(notice, "请先确认或取消") || markup == nil || markup.InlineKeyboard[0][0].Text != "取消并继续" {
+		t.Fatalf("notice=%q markup=%v", notice, markup)
+	}
+}
+
 func TestMaintenanceCommandKeepsAProcessingCard(t *testing.T) {
 	app := &BotApp{}
 	card := &tb.Message{ID: 53, Chat: &tb.Chat{ID: 7}}

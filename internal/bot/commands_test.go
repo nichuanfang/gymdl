@@ -19,10 +19,16 @@ import (
 // so entries stay readable even when the complete menu needs scrolling.
 func TestHelpNamesEmptyTrashEffects(t *testing.T) {
 	text := helpText()
-	for _, part := range []string{"回收站", "歌曲文件", "MusicRAG", "Pinecone"} {
+	for _, part := range []string{"回收站", "歌曲文件", "MusicRAG", "Pinecone", "<b>找歌</b>", "<b>歌单</b>", "<b>曲库</b>", "一次找 1 首", "确认后才入库", "先别下载", "不改变当前模式"} {
 		if !strings.Contains(text, part) {
 			t.Fatalf("help omits %s: %s", part, text)
 		}
+	}
+	findSong := strings.Index(text, "<b>找歌</b>")
+	rediscover := strings.Index(text, "/rediscover")
+	playlist := strings.Index(text, "<b>歌单</b>")
+	if findSong < 0 || rediscover < findSong || playlist < rediscover {
+		t.Fatal("rediscover is not in the find-song section")
 	}
 	if strings.Contains(text, "清理 AI 曲库数据") {
 		t.Fatal("help still understates emptying the trash playlist")

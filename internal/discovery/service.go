@@ -33,7 +33,7 @@ type Service struct {
 	// can attach the same link preview used by rediscover cards.
 	// Sync failures are logged and are not sent through either callback.
 	Notify               func(int64, string) error
-	NotifySong           func(chat int64, text string, track Track) error
+	NotifySong           func(chat int64, text string, track Track, jobID string) error
 	NotifyIngested       func(Job) error
 	OnError              func(error)
 	Authorized           func(int64, int64) bool
@@ -78,6 +78,10 @@ type FreshFavorite struct {
 	Chat     int64
 	Platform string
 	Track    Track
+	// JobID is the queued import row, when one was created. Empty when the
+	// song was already downloading or the lookup failed; the card then has no
+	// cancel button.
+	JobID string
 }
 
 // FavoriteSyncResult is the outcome for one bound source in a user-requested
@@ -190,7 +194,13 @@ func (s *Service) syncWithResults(ctx context.Context, user int64, platform stri
 		delete(s.favoriteRetries, retryKey)
 		results = append(results, FavoriteSyncResult{Platform: b.Platform, Status: "synced", Added: len(added)})
 		for _, track := range added {
-			fresh = append(fresh, FreshFavorite{User: b.User, Chat: b.Chat, Platform: b.Platform, Track: track})
+			item := FreshFavorite{User: b.User, Chat: b.Chat, Platform: b.Platform, Track: track}
+			if id, lookupErr := s.Store.QueuedJobID(ctx, b.User, Identity(track)); lookupErr != nil {
+				utils.WarnWithFormat("[Discovery] 读取新收藏排队编号失败: %v", lookupErr)
+			} else {
+				item.JobID = id
+			}
+			fresh = append(fresh, item)
 		}
 	}
 	if platform != "" && len(results) == 0 {

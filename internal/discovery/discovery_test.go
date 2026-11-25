@@ -217,8 +217,11 @@ func TestSyncAnnouncesOnlyNewFavorites(t *testing.T) {
 		},
 	}
 	fresh, err := svc.Sync(ctx, 1)
-	if err != nil || len(fresh) != 1 || fresh[0].Track.Title != "新歌" || fresh[0].Chat != 9 {
+	if err != nil || len(fresh) != 1 || fresh[0].Track.Title != "新歌" || fresh[0].Chat != 9 || fresh[0].JobID == "" {
 		t.Fatalf("fresh = %#v err=%v", fresh, err)
+	}
+	if queuedID, lookupErr := s.QueuedJobID(ctx, 1, Identity(fresh[0].Track)); lookupErr != nil || queuedID != fresh[0].JobID {
+		t.Fatalf("job id=%q queued=%q err=%v", fresh[0].JobID, queuedID, lookupErr)
 	}
 	svc.notifyFresh(fresh)
 	if len(notes) != 1 || !strings.Contains(notes[0], "收藏有新歌 · 网易云") || !strings.Contains(notes[0], "歌曲:") || !strings.Contains(notes[0], "新歌") || strings.Contains(notes[0], "旧歌") || !strings.Contains(notes[0], "已排队入库") {
@@ -415,6 +418,41 @@ func TestFreshFavoriteNoticeLinksAndEscapesTheTitle(t *testing.T) {
 	text = formatFreshFavoriteNotices([]FreshFavorite{{Chat: 1, Platform: "qq", Track: track}})[1][0].Text
 	if !strings.Contains(text, `<a href="https://music.qq.com/unilink/download.html?scheme=qqmusic%3A%2F%2F`) {
 		t.Fatal(text)
+	}
+}
+
+func TestCancelQueuedOnlyRemovesAWaitingJob(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	track := testTrack("2", "新歌", "乙")
+	id, err := s.Enqueue(ctx, 1, 9, track)
+	if err != nil || id == "" {
+		t.Fatal(err)
+	}
+	if got, err := s.QueuedJobID(ctx, 1, Identity(track)); err != nil || got != id {
+		t.Fatalf("queued id=%q err=%v", got, err)
+	}
+	ok, err := s.CancelQueued(ctx, id, 1)
+	if err != nil || !ok {
+		t.Fatalf("cancel queued: ok=%t err=%v", ok, err)
+	}
+	if _, err = s.Job(ctx, id); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("cancelled job still readable: %v", err)
+	}
+	runningID, err := s.Enqueue(ctx, 1, 9, track)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.Claim(ctx, true)
+	if err != nil || claimed.ID != runningID || claimed.State != Running {
+		t.Fatalf("claim=%+v err=%v", claimed, err)
+	}
+	ok, err = s.CancelQueued(ctx, runningID, 1)
+	if err != nil || ok {
+		t.Fatalf("running job cancel ok=%t err=%v", ok, err)
+	}
+	if job, err := s.Job(ctx, runningID); err != nil || job.State != Running {
+		t.Fatalf("running job changed: %+v err=%v", job, err)
 	}
 }
 

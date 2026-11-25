@@ -75,12 +75,12 @@ func (app *BotApp) initDiscovery() {
 			_, err := app.bot.Send(tb.ChatID(chat), text, tb.ModeHTML)
 			return err
 		},
-		NotifySong: func(chat int64, text string, track discovery.Track) error {
+		NotifySong: func(chat int64, text string, track discovery.Track, jobID string) error {
 			preview := ""
 			if app.cfg != nil && app.cfg.PlaylistOrganizer != nil {
 				preview = discoveryCardPreviewURL(discovery.Card{Tracks: []discovery.Track{track}}, 0, app.cfg.PlaylistOrganizer.WebAppURL)
 			}
-			return sendDiscoveryHTML(app.bot, chat, text, preview)
+			return sendDiscoveryHTML(app.bot, chat, text, preview, freshHoldMarkup(jobID))
 		},
 		NotifyIngested: app.sendDiscoveryIngested,
 	}
@@ -144,6 +144,30 @@ func (app *BotApp) updateIngestedSongCard(job discovery.Job) bool {
 	return true
 }
 
+func (app *BotApp) holdOffFavoriteDownload(c tb.Context, jobID string) error {
+	if c.Sender() == nil || c.Chat() == nil {
+		return c.Respond(&tb.CallbackResponse{Text: "这张卡片已经不能操作", ShowAlert: true})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	job, err := app.discovery.Store.Job(ctx, jobID)
+	if err != nil || job.User != c.Sender().ID || job.Chat != c.Chat().ID {
+		return c.Respond(&tb.CallbackResponse{Text: "这张卡片已经不能操作", ShowAlert: true})
+	}
+	if job.State != discovery.Queued {
+		return c.Respond(&tb.CallbackResponse{Text: "已经开始处理，不能从这张卡片撤回", ShowAlert: true})
+	}
+	cancelled, err := app.discovery.Store.CancelQueued(ctx, jobID, c.Sender().ID)
+	if err != nil || !cancelled {
+		return c.Respond(&tb.CallbackResponse{Text: "已经开始处理，不能从这张卡片撤回", ShowAlert: true})
+	}
+	if err = c.Respond(&tb.CallbackResponse{Text: "已取消下载"}); err != nil {
+		return err
+	}
+	text := discovery.FreshCardText(job.Track.Platform, job.Track, "已取消，不会下载。")
+	return editDiscoveryText(c.Bot(), c.Message(), text, &tb.ReplyMarkup{}, true, app.discoveryCardPreviewURL(discovery.Card{Tracks: []discovery.Track{job.Track}}, 0))
+}
+
 func (app *BotApp) viewIngestedSong(c tb.Context, jobID string) error {
 	if c.Sender() == nil || c.Chat() == nil {
 		return c.Respond(&tb.CallbackResponse{Text: "这张卡片已过期，请重新找一首", ShowAlert: true})
@@ -197,7 +221,7 @@ func discoveryPlatformMenu() (string, *tb.ReplyMarkup) {
 		markup.Row(markup.Data("YouTube", discoveryCallbackUnique, "source", "youtube")),
 		markup.Row(markup.Data("取消", discoveryCallbackUnique, "cancel", "menu"), markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
 	)
-	return "🎵 找回遗珠", markup
+	return "🎵 找回遗珠\n一次只找 1 首曲库里没有的歌。", markup
 }
 
 func rediscoverResultRecoveryMarkup(platform string, limit int) *tb.ReplyMarkup {
@@ -847,7 +871,16 @@ func contextBot(c tb.Context) (bot tb.API) {
 	return c.Bot()
 }
 
-func sendDiscoveryHTML(bot tb.API, chat int64, text, previewURL string) error {
+func freshHoldMarkup(jobID string) *tb.ReplyMarkup {
+	if jobID == "" {
+		return nil
+	}
+	markup := &tb.ReplyMarkup{}
+	markup.Inline(markup.Row(markup.Data("先别下载", discoveryCallbackUnique, "holdoff", jobID)))
+	return markup
+}
+
+func sendDiscoveryHTML(bot tb.API, chat int64, text, previewURL string, markup *tb.ReplyMarkup) error {
 	if bot == nil {
 		return fmt.Errorf("无法发送歌曲卡片")
 	}
@@ -856,6 +889,13 @@ func sendDiscoveryHTML(bot tb.API, chat int64, text, previewURL string) error {
 		"text":                 text,
 		"parse_mode":           string(tb.ModeHTML),
 		"link_preview_options": discoveryLinkPreview(previewURL),
+	}
+	if markup != nil {
+		encoded, err := telegramReplyMarkup(markup)
+		if err != nil {
+			return err
+		}
+		params["reply_markup"] = encoded
 	}
 	_, err := bot.Raw("sendMessage", params)
 	return err
@@ -1339,6 +1379,8 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		return app.handleTasteCallback(c, key, args[2:])
 	case "view":
 		return app.viewIngestedSong(c, key)
+	case "holdoff":
+		return app.holdOffFavoriteDownload(c, key)
 	case "failed_song":
 		return app.openFailedDiscoverySong(c, key)
 	case "card_yes", "card_no":

@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,6 +125,89 @@ func TestDiscoveryButtonsThroughTelebotRoute(t *testing.T) {
 				t.Fatal("callback exceeds Telegram limit")
 			}
 		}
+	}
+}
+
+func TestHoldOffQueuedFavoriteThroughTelebot(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "holdoff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	track := discovery.Track{Platform: "netease", ID: "9", Title: "新歌", Artist: "乙", URL: "https://music.163.com/song?id=9", Verified: true}
+	id, err := store.Enqueue(context.Background(), 10, 10, track)
+	if err != nil || id == "" {
+		t.Fatal(err)
+	}
+	var edits []string
+	var alerts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "answerCallbackQuery") {
+			var text string
+			_ = json.Unmarshal(payload["text"], &text)
+			alerts = append(alerts, text)
+			fmt.Fprint(w, `{"ok":true,"result":true}`)
+			return
+		}
+		var text string
+		_ = json.Unmarshal(payload["text"], &text)
+		edits = append(edits, text)
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":3,"chat":{"id":10,"type":"private"}}}`)
+	}))
+	defer server.Close()
+	bot, err := tb.NewBot(tb.Settings{Offline: true, Synchronous: true, Token: "1:test", URL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{bot: bot, cfg: &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"10"}}}, discovery: &discovery.Service{Store: store}}
+	bot.Handle(&discoveryEndpoint, app.HandleDiscoveryCallback)
+	message := &tb.Message{ID: 3, Chat: &tb.Chat{ID: 10, Type: tb.ChatPrivate}}
+	click := func(user int64) {
+		bot.ProcessUpdate(tb.Update{Callback: &tb.Callback{ID: "cb", Sender: &tb.User{ID: user}, Data: "\fdiscovery|holdoff|" + id, Message: message}})
+	}
+	click(10)
+	if _, err = store.Job(context.Background(), id); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("queued job was not removed: %v", err)
+	}
+	if len(edits) != 1 || !strings.Contains(edits[0], "已取消，不会下载") || strings.Contains(edits[0], "先别下载") {
+		t.Fatalf("edits=%v", edits)
+	}
+	click(10)
+	if len(alerts) < 2 || alerts[len(alerts)-1] != "这张卡片已经不能操作" {
+		t.Fatalf("second click alerts=%v", alerts)
+	}
+	running, err := store.Enqueue(context.Background(), 10, 10, track)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Claim(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	bot.ProcessUpdate(tb.Update{Callback: &tb.Callback{ID: "cb2", Sender: &tb.User{ID: 10}, Data: "\fdiscovery|holdoff|" + running, Message: message}})
+	job, err := store.Job(context.Background(), running)
+	if err != nil || job.State != discovery.Running {
+		t.Fatalf("running job changed: %+v err=%v", job, err)
+	}
+	if alerts[len(alerts)-1] != "已经开始处理，不能从这张卡片撤回" {
+		t.Fatalf("running alert=%v", alerts)
+	}
+	markup := freshHoldMarkup(id)
+	raw, err := json.Marshal(markup.InlineKeyboard[0][0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Text string `json:"text"`
+		Data string `json:"callback_data"`
+	}
+	if err = json.Unmarshal(raw, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire.Text != "先别下载" || len(wire.Data) > 64 || !strings.Contains(wire.Data, id) {
+		t.Fatalf("button=%+v", wire)
 	}
 }
 
@@ -1207,7 +1291,7 @@ func buttonRowTexts(markup *tb.ReplyMarkup) [][]string {
 
 func TestRediscoverMenuAsksOnlyForPlatform(t *testing.T) {
 	text, markup := discoveryPlatformMenu()
-	if text != "🎵 找回遗珠" || buttonTexts(markup)["下载前 3 首"] {
+	if !strings.Contains(text, "🎵 找回遗珠") || !strings.Contains(text, "一次只找 1 首") || buttonTexts(markup)["下载前 3 首"] {
 		t.Fatalf("platform menu = %q", text)
 	}
 	labels := buttonTexts(markup)

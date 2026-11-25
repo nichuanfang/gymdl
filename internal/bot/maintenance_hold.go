@@ -9,6 +9,7 @@ import (
 
 const maintenanceHoldCallbackUnique = "hold"
 const maintenanceEndedText = "已结束上一个会话。"
+const emptyTrashConfirmText = "清空回收站还等你确认。请先确认或取消。"
 
 var maintenanceHoldEndpoint = tb.InlineButton{Unique: maintenanceHoldCallbackUnique}
 
@@ -79,6 +80,12 @@ func (app *BotApp) clearIdleMaintenanceConflictsLocked(chatID int64, next string
 		if hold.processing || hold.token == "" {
 			return hold, ended, true
 		}
+		// A trash confirmation is destructive. Another command must not dismiss
+		// it silently; the user confirms on the original card or presses
+		// "取消并继续". Re-sending /empty_trash still replaces its own card.
+		if hold.kind == "t" && next != "t" {
+			return hold, ended, true
+		}
 		note, released := app.releaseMaintenanceHold(hold)
 		if !released {
 			if refreshed, stillOpen := app.chatMaintenanceHold(chatID, ""); stillOpen {
@@ -133,7 +140,7 @@ func (app *BotApp) emptyTrashHold(chatID int64) (maintenanceHold, bool) {
 		return maintenanceHold{
 			kind: "t", token: pending.token, userID: pending.userID, chatID: pending.chatID,
 			message: pending.message, processing: pending.processing,
-			text: "清空回收站还等你确认。", busyText: "清空回收站正在处理，请稍等。",
+			text: emptyTrashConfirmText, busyText: "清空回收站正在处理，请稍等。",
 		}, true
 	}
 	if _, running := app.emptyTrashRunning[chatID]; running {
@@ -214,7 +221,7 @@ func (app *BotApp) maintenanceHoldByToken(kind, token string) (maintenanceHold, 
 		return maintenanceHold{
 			kind: "t", token: pending.token, userID: pending.userID, chatID: pending.chatID,
 			message: pending.message, processing: pending.processing,
-			text: "清空回收站还等你确认。", busyText: "清空回收站正在处理，请稍等。",
+			text: emptyTrashConfirmText, busyText: "清空回收站正在处理，请稍等。",
 		}, true
 	case "a":
 		assignment, ok := app.getPlaylistAssignment(token)
