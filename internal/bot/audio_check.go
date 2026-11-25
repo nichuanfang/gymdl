@@ -24,19 +24,20 @@ const audioCheckTTL = 24 * time.Hour
 var audioCheckEndpoint = tb.InlineButton{Unique: audioCheckCallback}
 
 type audioCheckSession struct {
-	token   string
-	expires time.Time
-	owner   int64
-	message *tb.Message
-	library string
-	report  audioCheckReport
-	index   int
-	deep    bool
-	full    bool
-	running bool
-	busy    bool
-	notice  string
-	skipped map[audioquality.FileVersion]struct{}
+	token     string
+	expires   time.Time
+	owner     int64
+	message   *tb.Message
+	library   string
+	report    audioCheckReport
+	index     int
+	deep      bool
+	full      bool
+	running   bool
+	busy      bool
+	notice    string
+	skipped   map[audioquality.FileVersion]struct{}
+	startedAt time.Time
 }
 
 func (app *BotApp) AudioCheckCommand(c tb.Context) error {
@@ -85,11 +86,22 @@ func (app *BotApp) startAudioCheck(c tb.Context, deep, full bool, previous *audi
 	if full {
 		deep = true
 	}
+	startedAt := time.Now()
+	if previous != nil && !previous.startedAt.IsZero() {
+		startedAt = previous.startedAt
+	}
 	session := audioCheckSession{
 		token:   strings.ReplaceAll(uuid.NewString(), "-", ""),
 		expires: time.Now().Add(audioCheckTTL), owner: c.Sender().ID, message: message, library: library, deep: deep,
-		full: full, running: true, skipped: skipped,
+		full: full, running: true, skipped: skipped, startedAt: startedAt,
 	}
+	mode := "快速"
+	if full {
+		mode = "全库"
+	} else if deep {
+		mode = "深度"
+	}
+	utils.InfoWithFormat("[AudioCheck] 体检开始 chat=%d mode=%s", c.Chat().ID, mode)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	app.audioCheckMu.Lock()
@@ -281,6 +293,29 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 	if err := app.presentAudioCheck(api, session); err != nil {
 		utils.WarnWithFormat("更新曲库体检卡片失败: %v", err)
 	}
+	app.logAudioCheckEnd(session)
+}
+
+func (app *BotApp) logAudioCheckEnd(session audioCheckSession) {
+	if session.startedAt.IsZero() {
+		return
+	}
+	mode := "快速"
+	if session.full {
+		mode = "全库"
+	} else if session.deep {
+		mode = "深度"
+	}
+	elapsed := time.Since(session.startedAt).Round(time.Millisecond)
+	report := session.report
+	pending := report.remaining + report.deferred + report.referenceQueue
+	result := "完成"
+	if session.notice != "" {
+		result = session.notice
+	}
+	utils.InfoWithFormat("[AudioCheck] 体检结束 chat=%d mode=%s result=%s checked=%d total=%d findings=%d pending=%d unreadable=%d elapsed=%s",
+		session.message.Chat.ID, mode, utils.TruncateString(result, 80), report.checked, report.total,
+		len(report.findings), pending, report.unreadable, elapsed)
 }
 
 func audioCheckProgressed(before, after audioCheckReport) bool {

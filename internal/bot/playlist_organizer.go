@@ -78,6 +78,7 @@ type pendingPlaylistAssignment struct {
 	ragSyncWarningCount     int
 	handledSongIDs          map[string]struct{}
 	retryNext               bool
+	startedAt               time.Time
 }
 
 type unplaylistSong struct {
@@ -1467,6 +1468,7 @@ func (app *BotApp) startPlaylistAssignmentForSong(c tb.Context, target *pendingM
 		app.editEndedMaintenanceCards(c, ended)
 		return err
 	}
+	started := time.Now()
 	assignment := pendingPlaylistAssignment{
 		token:               strings.ReplaceAll(uuid.NewString(), "-", ""),
 		userID:              c.Sender().ID,
@@ -1480,9 +1482,17 @@ func (app *BotApp) startPlaylistAssignmentForSong(c tb.Context, target *pendingM
 		handledSongIDs:      make(map[string]struct{}),
 		hiddenPlaylistCount: len(skipped),
 		expiresAt:           time.Now().Add(playlistAssignmentTTL),
+		startedAt:           started,
 	}
 	registered := app.registerPlaylistAssignment(assignment)
 	app.playlistMaintenanceStartMu.Unlock()
+	if registered {
+		if target != nil {
+			utils.InfoWithFormat("[Telegram] 整理歌单开始 chat=%d 歌单数=%d target=1", assignment.chatID, len(options))
+		} else {
+			utils.InfoWithFormat("[Telegram] 整理歌单开始 chat=%d 歌单数=%d hidden=%d", assignment.chatID, len(options), len(skipped))
+		}
+	}
 	app.editEndedMaintenanceCards(c, ended)
 	if !registered {
 		if target != nil {
@@ -1725,8 +1735,10 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 		}
 		_ = c.Respond()
 		if action == "stop" {
+			logPlaylistAssignmentEnd("结束", finished)
 			return app.editPlaylistAssignmentCallback(c, playlistAssignmentSummary(finished, false), &tb.ReplyMarkup{})
 		}
+		logPlaylistAssignmentEnd("取消", finished)
 		return app.editPlaylistAssignmentCallback(c, playlistAssignmentCancelText(finished), &tb.ReplyMarkup{})
 
 	default:
@@ -1866,10 +1878,20 @@ func (app *BotApp) finishPlaylistAssignment(token string) {
 	if !ok {
 		return
 	}
+	logPlaylistAssignmentEnd("完成", assignment)
 	summary := playlistAssignmentSummary(assignment, true)
 	if err := app.editPlaylistAssignmentMessage(assignment.message, summary, &tb.ReplyMarkup{}); err != nil {
 		app.notifyPlaylistAssignment(assignment.chatID, assignment.message, "整理已经结束。这条消息没能更新。请重新发送 /assign_playlist。")
 	}
+}
+
+func logPlaylistAssignmentEnd(result string, assignment pendingPlaylistAssignment) {
+	if assignment.startedAt.IsZero() {
+		return
+	}
+	utils.InfoWithFormat("[Telegram] 整理歌单结束 chat=%d 结果=%s 已处理=%d 新加入=%d 已跳过=%d 耗时=%s",
+		assignment.chatID, result, assignment.processedCount, assignment.addedCount,
+		assignment.skippedCount, time.Since(assignment.startedAt).Round(time.Millisecond))
 }
 
 func playlistAssignmentSummary(assignment pendingPlaylistAssignment, completed bool) string {
@@ -2182,7 +2204,9 @@ func (app *BotApp) presentPlaylistAssignment(assignment pendingPlaylistAssignmen
 	if err := app.editPlaylistAssignmentCard(assignment.message, assignment); err == nil {
 		return
 	}
-	app.takePlaylistAssignment(assignment.token)
+	if removed, ok := app.takePlaylistAssignment(assignment.token); ok {
+		logPlaylistAssignmentEnd("展示失败", removed)
+	}
 	app.notifyPlaylistAssignment(assignment.chatID, assignment.message, "这条消息没能更新。请重新发送 /assign_playlist。")
 }
 

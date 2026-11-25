@@ -24,6 +24,7 @@ type savedAudioCheck struct {
 	Skipped   []audioquality.FileVersion
 	Index     int
 	Notice    string
+	StartedAt int64
 	Report    *savedAudioCheckReport
 }
 
@@ -42,6 +43,7 @@ func checkpointAudioCheck(store *audioquality.Store, ctx context.Context, sessio
 	saved := savedAudioCheck{
 		Owner: session.owner, MessageID: session.message.ID, Library: session.library,
 		Deep: session.deep, Full: session.full, Index: session.index, Notice: session.notice,
+		StartedAt: session.startedAt.UnixNano(),
 	}
 	for version := range session.skipped {
 		saved.Skipped = append(saved.Skipped, version)
@@ -100,6 +102,9 @@ func decodeAudioCheckSession(record audioquality.Session) (audioCheckSession, er
 		message: &tb.Message{ID: saved.MessageID, Chat: &tb.Chat{ID: record.ChatID, Type: tb.ChatPrivate}},
 		index:   saved.Index, deep: saved.Deep, full: saved.Full, running: record.Phase == audioquality.SessionRunning,
 		notice: saved.Notice, skipped: make(map[audioquality.FileVersion]struct{}, len(saved.Skipped)),
+	}
+	if saved.StartedAt > 0 {
+		session.startedAt = time.Unix(0, saved.StartedAt)
 	}
 	for _, version := range saved.Skipped {
 		session.skipped[version] = struct{}{}

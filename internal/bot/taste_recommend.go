@@ -164,6 +164,12 @@ func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.Tast
 		return err
 	}
 	api, user, chat := c.Bot(), c.Sender().ID, c.Chat().ID
+	filter := request.Filter.Label()
+	if filter == "" {
+		filter = "按口味"
+	}
+	started := time.Now()
+	utils.InfoWithFormat("[Discovery] 个性化推荐开始 platform=%s filter=%s page=%d", request.Platform, filter, request.Page)
 	app.goDiscovery(func() {
 		defer app.tasteCommandMu.Unlock()
 		query, cancel := context.WithTimeout(context.Background(), 55*time.Second)
@@ -171,6 +177,7 @@ func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.Tast
 		cancel()
 		card := discovery.Card{User: user, Chat: chat, Kind: discovery.TasteCardKind, MessageID: message.ID, Taste: &discovery.TasteCard{Request: request}}
 		if err != nil {
+			utils.WarnWithFormat("[Discovery] 个性化推荐失败 platform=%s 耗时=%s: %s", request.Platform, time.Since(started).Round(time.Millisecond), err)
 			card.Taste.Notice = err.Error()
 		} else if result.Track != nil {
 			card.Tracks = []discovery.Track{*result.Track}
@@ -190,6 +197,12 @@ func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.Tast
 			} else if !strings.Contains(card.Taste.Notice, "后台") {
 				card.Taste.Notice += "可以再试一次或换个平台。"
 			}
+		}
+		if result.Track != nil {
+			utils.InfoWithFormat("[Discovery] 个性化推荐结束 platform=%s 找到=1 探索=%t 池=%s 耗时=%s",
+				request.Platform, result.Explore, tasteResultSource(result), time.Since(started).Round(time.Millisecond))
+		} else {
+			utils.InfoWithFormat("[Discovery] 个性化推荐结束 platform=%s 找到=0 耗时=%s", request.Platform, time.Since(started).Round(time.Millisecond))
 		}
 		saveCtx, saveCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		card, err = app.discovery.Store.SaveCard(saveCtx, card)
@@ -248,6 +261,13 @@ func (app *BotApp) tasteProgressMessage(c tb.Context, previous *discovery.Card) 
 		return nil, c.Edit("上一张卡片已过期，请重新发送 /recommend。", &tb.ReplyMarkup{})
 	}
 	return c.Message(), nil
+}
+
+func tasteResultSource(result discovery.TasteResult) string {
+	if result.Source == "" {
+		return "unknown"
+	}
+	return result.Source
 }
 
 func tasteMarkupForCard(card discovery.Card) *tb.ReplyMarkup {

@@ -19,6 +19,8 @@ type TasteResult struct {
 	Explore bool
 	Reason  string
 	Notice  string
+	// Source is diagnostic only and never rendered on a Telegram card.
+	Source string
 }
 
 type tasteArtist struct {
@@ -137,7 +139,11 @@ type tasteChoice struct {
 }
 
 func (c tasteChoice) result(notices []string) TasteResult {
-	return TasteResult{Track: &c.track, Explore: c.explore, Reason: c.reason, Notice: strings.Join(notices, " · ")}
+	source := "network"
+	if c.track.Platform == "qq" && !c.explore {
+		source = "qq_pool"
+	}
+	return TasteResult{Track: &c.track, Explore: c.explore, Reason: c.reason, Notice: strings.Join(notices, " · "), Source: source}
 }
 
 func (s *Service) searchTasteChoices(ctx context.Context, req TasteRequest, profile tasteProfile, platforms []string) ([]tasteChoice, []string, error) {

@@ -271,6 +271,7 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 		app.rediscoverCommandMu.Unlock()
 		return err
 	}
+	utils.InfoWithFormat("[Discovery] 找回遗珠开始 平台=%s", aichat.PlatformLabel(platform))
 	if c.Message() == nil || c.Sender() == nil || c.Chat() == nil {
 		app.rediscoverCommandMu.Unlock()
 		return c.Send("找不到原来的消息，请重新发送 /rediscover。")
@@ -326,14 +327,20 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 	}
 	app.goDiscovery(func() {
 		defer app.rediscoverCommandMu.Unlock()
+		started := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		batch, findErr := app.discovery.RediscoverBuffered(ctx, user, platform, limit)
 		if findErr != nil {
+			utils.WarnWithFormat("[Discovery] 找回遗珠失败 平台=%s 耗时=%s: %s", aichat.PlatformLabel(platform), time.Since(started).Round(time.Millisecond), discoveryPublicError(findErr))
 			_ = edit("这次没找成："+utils.EscapeHTML(discoveryPublicError(findErr))+"\n可以再试一次，或者换个平台。", rediscoverResultRecoveryMarkup(platform, limit), "")
 			return
 		}
 		if len(batch.Tracks) == 0 {
+			utils.InfoWithFormat("[Discovery] 找回遗珠结束 平台=%s 找到=0 曲库已有=%d 待上传=%d 最近看过=%d 已排除=%d 版本未确认=%d 不可用=%d 耗时=%s",
+				aichat.PlatformLabel(platform), batch.SkippedOwned, batch.SkippedPending+batch.SkippedQueued, batch.SkippedShown,
+				batch.SkippedDismissed+batch.SkippedOther, batch.Unconfirmed+batch.Unavailable, batch.Unavailable,
+				time.Since(started).Round(time.Millisecond))
 			_ = edit(utils.EscapeHTML(rediscoverEmptyCopy(platform, batch)), rediscoverResultRecoveryMarkup(platform, limit), "")
 			return
 		}
@@ -354,6 +361,9 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 			utils.WarnWithFormat("[Discovery] 展示遗珠失败: %v", err)
 			return
 		}
+		utils.InfoWithFormat("[Discovery] 找回遗珠结束 平台=%s 找到=%d 曲库已有=%d 最近看过=%d 版本未确认=%d 耗时=%s",
+			aichat.PlatformLabel(platform), len(batch.Tracks), batch.SkippedOwned, batch.SkippedShown,
+			batch.Unconfirmed+batch.Unavailable, time.Since(started).Round(time.Millisecond))
 		for _, track := range batch.Tracks {
 			if err := app.discovery.Store.Preference(ctx, user, track, false); err != nil {
 				utils.WarnWithFormat("[Discovery] 记录已展示的遗珠失败: %v", err)
@@ -1200,6 +1210,29 @@ func favoriteBindMarkup(platform, token string) *tb.ReplyMarkup {
 	return markup
 }
 
+func logFavoriteSyncResults(scope string, results []discovery.FavoriteSyncResult, err error, elapsed time.Duration) {
+	elapsed = elapsed.Round(time.Millisecond)
+	synced, paused, failed, added := 0, 0, 0, 0
+	for _, result := range results {
+		switch result.Status {
+		case "synced":
+			synced++
+			added += result.Added
+		case "paused":
+			paused++
+		case "failed":
+			failed++
+		}
+	}
+	if err != nil || failed > 0 {
+		utils.WarnWithFormat("[Discovery] 收藏同步部分失败 范围=%s 成功平台=%d 暂停平台=%d 失败平台=%d 新歌=%d 耗时=%s: %s",
+			scope, synced, paused, failed, added, elapsed, discoveryPublicError(err))
+		return
+	}
+	utils.InfoWithFormat("[Discovery] 收藏同步结束 范围=%s 成功平台=%d 暂停平台=%d 新歌=%d 耗时=%s",
+		scope, synced, paused, added, elapsed)
+}
+
 func logFavoriteRead(platform string, count int, elapsed time.Duration, err error) {
 	elapsed = elapsed.Round(time.Millisecond)
 	label := aichat.PlatformLabel(platform)
@@ -1473,16 +1506,20 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 				return app.presentFavorites(c, "⏳ 已有请求正在处理，请稍后查看状态。")
 			}
 			loading := "⌛ <b>正在同步全部平台…</b>"
+			platformLabel := "全部绑定"
 			if key != "menu" {
-				loading = "⌛ <b>正在同步 " + aichat.PlatformLabel(key) + " 收藏…</b>"
+				platformLabel = aichat.PlatformLabel(key)
+				loading = "⌛ <b>正在同步 " + platformLabel + " 收藏…</b>"
 			}
 			if err := editDiscoveryMessage(c, loading, nil, true); err != nil {
 				app.favoritesCommandMu.Unlock()
 				return err
 			}
+			utils.InfoWithFormat("[Discovery] 收藏同步开始 %s", platformLabel)
 			user := c.Sender().ID
 			app.goDiscovery(func() {
 				defer app.favoritesCommandMu.Unlock()
+				started := time.Now()
 				syncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
 				var results []discovery.FavoriteSyncResult
@@ -1492,6 +1529,7 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 				} else {
 					_, results, syncErr = app.discovery.SyncPlatformWithResults(syncCtx, user, key)
 				}
+				logFavoriteSyncResults(platformLabel, results, syncErr, time.Since(started))
 				notice := favoritesSyncResultNotice(results, syncErr)
 				text, markup, renderErr := app.renderFavorites(context.Background(), user)
 				if renderErr != nil {
@@ -1794,6 +1832,11 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 	if err = app.discovery.Store.ReplaceCard(context.Background(), card); err != nil {
 		app.rediscoverMu.Unlock()
 		return answerOnCard(c, "结果没存上，先看看收藏同步里的队列，再决定要不要重试。", discoveryFavoritesShortcut(), false)
+	}
+	if action == "ignore" {
+		utils.InfoWithFormat("[Discovery] 不再推荐结果 submitted=%d ignored=%d failed=%d", submitted, skipped, failed)
+	} else {
+		utils.InfoWithFormat("[Discovery] 歌曲入库提交 submitted=%d queued=%d skipped=%d failed=%d", submitted, queued, skipped, failed)
 	}
 	message := c.Message()
 	text, markup := app.renderDiscoveryCard(card, page)
