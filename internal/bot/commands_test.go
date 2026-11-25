@@ -2,9 +2,16 @@ package bot
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"github.com/nichuanfang/gymdl/config"
+	tb "gopkg.in/telebot.v4"
 )
 
 // Telegram caps command descriptions at 256 chars, but on a phone the "/" menu
@@ -67,8 +74,106 @@ func TestQQCredentialMessageEscapesSecretsAndRejectsIncompletePayloads(t *testin
 	if !strings.Contains(message, "&lt;access&gt;&amp;token") || strings.Contains(message, "<access>&token") {
 		t.Fatalf("credential should be safely escaped for HTML: %q", message)
 	}
-	if _, err := formatQQCredentialMessage(json.RawMessage(`{"access_token":"only-one-field"}`)); err == nil {
-		t.Fatal("incomplete credentials must be rejected instead of panicking or sending partial data")
+	for _, payload := range []string{
+		`{"musickey":"mock-key"}`,
+		`{"musicid":0,"str_musicid":"","musickey":"mock-key"}`,
+		`{"musicid":123,"musickey":" "}`,
+		`{"musicid":123,"musickey":456}`,
+	} {
+		if _, err := formatQQCredentialMessage(json.RawMessage(payload)); err == nil {
+			t.Errorf("accepted unusable mock credential %s", payload)
+		}
+	}
+}
+
+func TestQQCredentialMessageAcceptsSparseQRCodeCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload string
+		wantID  string
+	}{
+		{"numeric ID", `{"musicid":9007199254740993,"str_musicid":"","musickey":"mock-key","openid":"","unionid":null,"login_type":0}`, "9007199254740993"},
+		{"string ID", `{"musicid":0,"str_musicid":"9007199254740993","musickey":"mock-key","loginType":0}`, "9007199254740993"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			message, err := formatQQCredentialMessage(json.RawMessage(tc.payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, part := range []string{"<code>" + tc.wantID + "</code>", "<code>mock-key</code>", "<b>Login Type</b>\n<code>0</code>"} {
+				if !strings.Contains(message, part) {
+					t.Errorf("credential message omits %q: %q", part, message)
+				}
+			}
+			for _, label := range []string{"OpenID", "UnionID", "Refresh Token"} {
+				if strings.Contains(message, label) {
+					t.Errorf("credential message includes unavailable field %q", label)
+				}
+			}
+		})
+	}
+}
+
+func TestQQLoginCommandSendsCredentialsBeforeMarkingSuccess(t *testing.T) {
+	type telegramCall struct {
+		method string
+		fields map[string]string
+	}
+	calls := make(chan telegramCall, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login/qrcode/qq":
+			_, _ = io.WriteString(w, `{"code":0,"data":{"identifier":"mock-qr","data":"eA=="}}`)
+			return
+		case "/login/qrcode/qq/status":
+			if r.URL.Query().Get("identifier") != "mock-qr" {
+				t.Error("status request did not use the issued QR identifier")
+			}
+			_, _ = io.WriteString(w, `{"code":0,"data":{"event":0,"credential":{"musicid":9007199254740993,"musickey":"mock-key","str_musicid":"","login_type":0}}}`)
+			return
+		case "/bot1:test/sendPhoto":
+			_, _ = io.WriteString(w, `{"ok":true,"result":{"message_id":42,"chat":{"id":7,"type":"private"},"photo":[{"file_id":"qr","width":1,"height":1}]}}`)
+			return
+		case "/bot1:test/sendMessage", "/bot1:test/editMessageCaption":
+			call := telegramCall{method: r.URL.Path, fields: make(map[string]string)}
+			if err := json.NewDecoder(r.Body).Decode(&call.fields); err != nil {
+				t.Error(err)
+			}
+			calls <- call
+		default:
+			t.Errorf("unexpected endpoint %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"ok":true,"result":{"message_id":42,"chat":{"id":7,"type":"private"}}}`)
+	}))
+	defer server.Close()
+	api, err := tb.NewBot(tb.Settings{Offline: true, Synchronous: true, URL: server.URL, Token: "1:test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{bot: api, cfg: &config.Config{QQMusicApiConfig: &config.QQMusicApiConfig{Enable: true, Endpoint: server.URL}}}
+	api.Handle("/qq_login", app.QQLoginCommand)
+	api.ProcessUpdate(tb.Update{Message: &tb.Message{
+		Text: "/qq_login", Sender: &tb.User{ID: 7}, Chat: &tb.Chat{ID: 7, Type: tb.ChatPrivate},
+	}})
+
+	timeout := time.After(8 * time.Second)
+	for _, method := range []string{"/bot1:test/sendMessage", "/bot1:test/editMessageCaption"} {
+		select {
+		case call := <-calls:
+			if call.method != method || call.fields["chat_id"] != "7" {
+				t.Fatalf("got %s for chat %s, want %s for chat 7", call.method, call.fields["chat_id"], method)
+			}
+			if method == "/bot1:test/sendMessage" && (!strings.Contains(call.fields["text"], "<code>9007199254740993</code>") || call.fields["parse_mode"] != "HTML") {
+				t.Errorf("expected HTML credentials with the exact music ID, got %v", call.fields)
+			}
+			if method == "/bot1:test/editMessageCaption" && (call.fields["caption"] != "🎉 登录成功！" || call.fields["message_id"] != "42") {
+				t.Errorf("expected a success caption on the QR message, got %v", call.fields)
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for %s", method)
+		}
 	}
 }
 

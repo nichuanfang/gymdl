@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -167,7 +168,7 @@ func (app *BotApp) QQLoginCommand(c tb.Context) error {
 	}
 
 	// 开启异步轮询 (协程)
-	go wrapper.pollLoginStatus(sentMsg, identifier)
+	go app.pollQQLoginStatus(wrapper, sentMsg, identifier)
 	return nil
 
 }
@@ -203,19 +204,23 @@ func (wrapper *QQMusicWrapper) checkQRCode(identifier string) (int, json.RawMess
 		return -1, nil, err
 	}
 	var envelope struct {
+		Code int `json:"code"`
 		Data struct {
-			Event      int             `json:"event"`
+			Event      *int            `json:"event"`
 			Credential json.RawMessage `json:"credential"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return -1, nil, err
 	}
-	return envelope.Data.Event, envelope.Data.Credential, nil
+	if envelope.Code != 0 || envelope.Data.Event == nil {
+		return -1, nil, errors.New("QQ 登录服务未返回有效状态")
+	}
+	return *envelope.Data.Event, envelope.Data.Credential, nil
 }
 
 // 异步轮询
-func (wrapper *QQMusicWrapper) pollLoginStatus(msg *tb.Message, identifier string) {
+func (app *BotApp) pollQQLoginStatus(wrapper *QQMusicWrapper, msg *tb.Message, identifier string) {
 	ticker := time.NewTicker(3 * time.Second) // 3秒轮询一次
 	defer ticker.Stop()
 
@@ -239,17 +244,18 @@ func (wrapper *QQMusicWrapper) pollLoginStatus(msg *tb.Message, identifier strin
 					lastStatus = "scanned"
 				}
 			case 0: // DONE
-				_, _ = app.bot.EditCaption(msg, "🎉 登录成功！")
 				authText, formatErr := formatQQCredentialMessage(credential)
 				if formatErr != nil {
 					utils.WarnWithFormat("[Telegram] QQ 登录完成，但凭证响应格式无效: %v", formatErr)
-					_, _ = app.bot.Send(msg.Chat, "QQ 登录已成功，但凭证数据格式异常，请重新发起登录。")
+					_, _ = app.bot.EditCaption(msg, "⚠️ 已确认扫码，但未收到有效的 QQ 音乐凭证，请重新发起登录。")
 					return
 				}
 				if _, sendErr := app.bot.Send(msg.Chat, authText, &tb.SendOptions{ParseMode: tb.ModeHTML}); sendErr != nil {
 					utils.WarnWithFormat("[Telegram] 发送 QQ 登录凭证失败: %v", sendErr)
-					_, _ = app.bot.EditCaption(msg, "⚠️ 登录成功，但凭证消息发送失败，请重新发起登录。")
+					_, _ = app.bot.EditCaption(msg, "⚠️ 凭证消息发送失败，请重新发起登录。")
+					return
 				}
+				_, _ = app.bot.EditCaption(msg, "🎉 登录成功！")
 				return
 			case 3: // TIMEOUT
 				_, _ = app.bot.EditCaption(msg, "❌ 二维码已过期，请重新发起登录")
@@ -268,55 +274,70 @@ func (wrapper *QQMusicWrapper) pollLoginStatus(msg *tb.Message, identifier strin
 
 func formatQQCredentialMessage(raw json.RawMessage) (string, error) {
 	var credential map[string]json.RawMessage
-	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &credential) != nil || len(credential) == 0 {
+	if json.Unmarshal(raw, &credential) != nil || len(credential) == 0 {
 		return "", errors.New("credential is missing or invalid")
 	}
+	musicID := qqCredentialID(credential["musicid"])
+	strMusicID := qqCredentialID(credential["str_musicid"])
+	if musicID == "" && strMusicID == "" {
+		return "", errors.New("credential has no valid music ID")
+	}
+	var musicKey string
+	if json.Unmarshal(credential["musickey"], &musicKey) != nil || strings.TrimSpace(musicKey) == "" {
+		return "", errors.New("credential has no valid music key")
+	}
+	loginType := qqCredentialValue(credential["login_type"])
+	if loginType == "" {
+		loginType = qqCredentialValue(credential["loginType"])
+	}
 	fields := []struct {
-		key   string
 		label string
+		value string
 	}{
-		{"musicid", "Music ID"},
-		{"str_musicid", "Str Music ID"},
-		{"openid", "OpenID"},
-		{"unionid", "UnionID"},
-		{"loginType", "Login Type"},
-		{"musickey", "Music Key"},
-		{"refresh_key", "Refresh Key"},
-		{"refresh_token", "Refresh Token"},
-		{"access_token", "Access Token"},
-		{"expired_at", "Expired At"},
+		{"Music ID", musicID},
+		{"Str Music ID", strMusicID},
+		{"OpenID", qqCredentialValue(credential["openid"])},
+		{"UnionID", qqCredentialValue(credential["unionid"])},
+		{"Login Type", loginType},
+		{"Music Key", musicKey},
+		{"Refresh Key", qqCredentialValue(credential["refresh_key"])},
+		{"Refresh Token", qqCredentialValue(credential["refresh_token"])},
+		{"Access Token", qqCredentialValue(credential["access_token"])},
+		{"Expired At", qqCredentialValue(credential["expired_at"])},
 	}
 	var text strings.Builder
 	text.WriteString("请复制以下凭证并妥善保存：\n\n")
 	for _, field := range fields {
-		value, err := qqCredentialValue(credential[field.key])
-		if err != nil {
-			return "", fmt.Errorf("credential field %s is missing or invalid", field.key)
+		if field.value != "" {
+			fmt.Fprintf(&text, "🧾 <b>%s</b>\n<code>%s</code>\n\n", field.label, utils.EscapeHTML(field.value))
 		}
-		fmt.Fprintf(&text, "🧾 <b>%s</b>\n<code>%s</code>\n\n", field.label, utils.EscapeHTML(value))
 	}
 	text.WriteString("⚠️ 凭证具有账户访问权限，请勿转发或公开。")
 	return text.String(), nil
 }
 
-func qqCredentialValue(raw json.RawMessage) (string, error) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return "", errors.New("missing")
+func qqCredentialID(raw json.RawMessage) string {
+	value := strings.TrimSpace(qqCredentialValue(raw))
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id <= 0 {
+		return ""
 	}
+	return value
+}
+
+func qqCredentialValue(raw json.RawMessage) string {
 	var value string
 	if err := json.Unmarshal(raw, &value); err == nil {
 		if strings.TrimSpace(value) == "" {
-			return "", errors.New("empty")
+			return ""
 		}
-		return value, nil
+		return value
 	}
 	var number json.Number
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	if err := decoder.Decode(&number); err == nil && number.String() != "" {
-		return number.String(), nil
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return number.String()
 	}
-	return "", errors.New("invalid")
+	return ""
 }
 
 /* ------------------------ 初始化指令集 ------------------------ */
