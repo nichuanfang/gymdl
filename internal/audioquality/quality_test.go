@@ -113,3 +113,14 @@ func TestReviewIsSpecificToUserAndFileVersion(t *testing.T) {
 		t.Fatalf("updated file inherited stale review: %#v %v", cached, err)
 	}
 }
+
+func TestTailGlitchIsNotAReview(t *testing.T) {
+	glitch := Result{Codec: "flac", Duration: 264.736, Decoded: 264.707, Damaged: true}
+	if !glitch.TailGlitch() || glitch.NeedsReview() {
+		t.Fatalf("tail glitch should play through: %#v", glitch)
+	}
+	cut := Result{Codec: "flac", Duration: 264, Decoded: 180, Damaged: true}
+	if cut.TailGlitch() || !cut.NeedsReview() {
+		t.Fatalf("a short file is still damaged: %#v", cut)
+	}
+}

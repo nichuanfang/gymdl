@@ -188,7 +188,11 @@ func (state *audioCheckScanState) scanBatch(ctx context.Context, cfg *config.Con
 			continue
 		}
 		if item.Unreadable {
-			report.unreadable++
+			if !item.RetryAt.IsZero() && !time.Now().Before(item.RetryAt) {
+				report.remaining++
+			} else {
+				report.unreadable++
+			}
 			continue
 		}
 		if !item.Reviewed && !item.RetryAt.IsZero() && !time.Now().Before(item.RetryAt) {
@@ -246,7 +250,11 @@ func (state *audioCheckScanState) cachedReport() audioCheckReport {
 			continue
 		}
 		if item.Unreadable {
-			report.unreadable++
+			if !item.RetryAt.IsZero() && !time.Now().Before(item.RetryAt) {
+				report.remaining++
+			} else {
+				report.unreadable++
+			}
 			continue
 		}
 		if !item.Reviewed && !item.RetryAt.IsZero() && !now.Before(item.RetryAt) {
@@ -278,7 +286,11 @@ func cachedAudioCheckReport(ctx context.Context, store *audioquality.Store, libr
 	report := audioCheckReport{total: len(cached), resumeAvailable: true}
 	for name, item := range cached {
 		if item.Unreadable {
-			report.unreadable++
+			if !item.RetryAt.IsZero() && !time.Now().Before(item.RetryAt) {
+				report.remaining++
+			} else {
+				report.unreadable++
+			}
 			continue
 		}
 		report.checked++

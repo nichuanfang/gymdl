@@ -53,8 +53,21 @@ func (r Result) ShorterThanSource() bool {
 	return r.Reference-actual >= math.Max(15, r.Reference*0.15)
 }
 
+// TailGlitch is a decoder complaint within the last fraction of a second.
+// The song still plays, so it is not something the listener needs to review.
+func (r Result) TailGlitch() bool {
+	if r.Duration <= 0 || r.Decoded <= 0 {
+		return false
+	}
+	gap := r.Duration - r.Decoded
+	if gap < 0 {
+		gap = -gap
+	}
+	return gap < 1 && gap < r.Duration*0.01
+}
+
 func (r Result) NeedsReview() bool {
-	return r.Damaged || r.ShorterThanSource() || LowBitrate(r.Codec, r.Bitrate)
+	return (r.Damaged && !r.TailGlitch()) || r.ShorterThanSource() || LowBitrate(r.Codec, r.Bitrate)
 }
 
 const audioFormats = "aac,asf,flac,m4a,mov,mp3,mp4,ogg,wav"
@@ -136,9 +149,8 @@ func Inspect(ctx context.Context, filename string) (Result, error) {
 		}
 		result.Damaged = true
 	}
-	// FFmpeg 6.1 can report decoder errors yet exit successfully when it
-	// reaches an incomplete final packet. Capture stderr so those files are
-	// still flagged even when the decoded duration is close to the declared one.
+	// A trailing packet error is only damage when a meaningful stretch of audio
+	// is missing. A few milliseconds at the end still plays through.
 	if strings.TrimSpace(decodeErrors.String()) != "" {
 		result.Damaged = true
 	}
@@ -167,6 +179,9 @@ func Inspect(ctx context.Context, filename string) (Result, error) {
 		} else if ctx.Err() != nil {
 			return Result{}, ctx.Err()
 		}
+	}
+	if result.TailGlitch() {
+		result.Damaged = false
 	}
 	return result, nil
 }

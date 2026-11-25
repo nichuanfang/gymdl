@@ -345,6 +345,11 @@ func (app *BotApp) presentAudioCheck(api tb.API, session audioCheckSession) erro
 	session.expires = time.Now().Add(audioCheckTTL)
 	session.running = false
 	session.busy = false
+	before := len(session.report.findings)
+	session.report = withoutImmaterialFindings(session.report)
+	if len(session.report.findings) < before && session.index > len(session.report.findings) {
+		session.index = len(session.report.findings)
+	}
 	text, markup := formatAudioCheckCard(session)
 	if _, err := api.Edit(session.message, text, tb.ModeHTML, markup); err != nil && !strings.Contains(err.Error(), "message is not modified") {
 		message, sendErr := api.Send(session.message.Chat, text, tb.ModeHTML, markup)
@@ -518,8 +523,22 @@ func (f audioCheckFinding) musicAction(filePath string, tidyMode int) pendingMus
 	}
 }
 
+func withoutImmaterialFindings(report audioCheckReport) audioCheckReport {
+	kept := make([]audioCheckFinding, 0, len(report.findings))
+	for _, finding := range report.findings {
+		if finding.NeedsReview() {
+			kept = append(kept, finding)
+		}
+	}
+	report.findings = kept
+	return report
+}
+
 func formatAudioCheckCard(session audioCheckSession) (string, *tb.ReplyMarkup) {
-	report := session.report
+	report := withoutImmaterialFindings(session.report)
+	if session.index > len(report.findings) {
+		session.index = len(report.findings)
+	}
 	markup := &tb.ReplyMarkup{}
 	button := func(text, action string) tb.Btn { return markup.Data(text, audioCheckCallback, action, session.token) }
 	rows := []tb.Row{}
@@ -527,7 +546,7 @@ func formatAudioCheckCard(session audioCheckSession) (string, *tb.ReplyMarkup) {
 	text.WriteString("🎧 <b>曲库体检</b>\n")
 	fmt.Fprintf(&text, "已检查 %d/%d 首", report.checked, report.total)
 	if report.unreadable > 0 {
-		fmt.Fprintf(&text, " · %d 首未能检查", report.unreadable)
+		fmt.Fprintf(&text, "\n%d 首这次没读到，稍后会再试。", report.unreadable)
 	}
 	if report.remaining > 0 {
 		fmt.Fprintf(&text, "\n还有 %d 首可分批检查。", report.remaining)
@@ -551,10 +570,15 @@ func formatAudioCheckCard(session audioCheckSession) (string, *tb.ReplyMarkup) {
 		if song.artist != "" {
 			fmt.Fprintf(&text, "\n%s", musicSourceLabel(song.artist))
 		}
-		if file.Damaged {
+		if file.Damaged && !file.TailGlitch() {
 			text.WriteString("\n⚠️ 文件损坏或音轨不完整")
 			if file.Duration > 0 && file.Decoded > 0 && file.Decoded < file.Duration {
-				fmt.Fprintf(&text, "（解码 %s／标注 %s）", audioCheckDuration(file.Decoded), audioCheckDuration(file.Duration))
+				shownDecoded, shownDeclared := audioCheckDuration(file.Decoded), audioCheckDuration(file.Duration)
+				if shownDecoded == shownDeclared {
+					fmt.Fprintf(&text, "（少 %.1f 秒）", file.Duration-file.Decoded)
+				} else {
+					fmt.Fprintf(&text, "（解码 %s／标注 %s）", shownDecoded, shownDeclared)
+				}
 			}
 		}
 		if file.ShorterThanSource() {

@@ -445,3 +445,28 @@ func TestAudioCheckReplacesAnUneditableResultCard(t *testing.T) {
 		t.Fatalf("restored replacement = %+v, %v", restored, err)
 	}
 }
+
+func TestAudioCheckCardHidesTailGlitches(t *testing.T) {
+	session := audioCheckSession{
+		token: "card",
+		report: audioCheckReport{
+			total: 2, checked: 1, unreadable: 1,
+			findings: []audioCheckFinding{{
+				file:   web.FileEntry{Name: "A - Song.flac", Artist: "A"},
+				Result: audioquality.Result{Title: "Song", Artist: "A", Codec: "flac", Damaged: true, Duration: 264.736, Decoded: 264.707},
+			}},
+		},
+	}
+	text, _ := formatAudioCheckCard(session)
+	if strings.Contains(text, "文件损坏") || strings.Contains(text, "Song") || strings.Contains(text, "未能检查") {
+		t.Fatal(text)
+	}
+	if !strings.Contains(text, "暂无待处理") || !strings.Contains(text, "这次没读到") {
+		t.Fatal(text)
+	}
+	session.report.findings[0].Result = audioquality.Result{Title: "Cut", Artist: "A", Codec: "flac", Damaged: true, Duration: 200, Decoded: 120}
+	text, _ = formatAudioCheckCard(session)
+	if !strings.Contains(text, "文件损坏") || !strings.Contains(text, "解码 2:00／标注 3:20") {
+		t.Fatal(text)
+	}
+}
