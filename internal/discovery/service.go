@@ -50,6 +50,8 @@ type Service struct {
 	resolveCache         map[string]resolveCacheEntry
 	neteaseRefreshCursor map[string]int
 	youtubeEnrichMu      sync.Mutex
+	rediscoverPool       rediscoverBuffer
+	qqTastePool          qqTastePool
 	tasteRefillUser      int
 	// SlowNetease serves NetEase recommendations from a local pool. A background
 	// pass searches one artist at a time so a button click cannot burst the API.
@@ -392,17 +394,22 @@ func (s *Service) RecommendLimited(ctx context.Context, user int64, platform str
 }
 
 func (s *Service) Rediscover(ctx context.Context, user int64, platform string, limit int) (RediscoverBatch, error) {
+	if err := validateRediscoverRequest(platform, limit); err != nil {
+		return RediscoverBatch{}, err
+	}
+	return s.recommend(ctx, user, platform, limit)
+}
+
+func validateRediscoverRequest(platform string, limit int) error {
 	switch platform {
 	case "netease", "qq", "youtube":
 	default:
-		return RediscoverBatch{}, fmt.Errorf("请选择网易云、QQ 音乐或 YouTube")
+		return fmt.Errorf("请选择网易云、QQ 音乐或 YouTube")
 	}
-	switch limit {
-	case 1:
-	default:
-		return RediscoverBatch{}, fmt.Errorf("请重新发起找回")
+	if limit != 1 {
+		return fmt.Errorf("请重新发起找回")
 	}
-	return s.recommend(ctx, user, platform, limit)
+	return nil
 }
 
 const youtubeFavoriteEnrichLimit = 10
@@ -456,16 +463,41 @@ func (s *Service) scheduleYouTubeFavoriteEnrich(user int64, platform string, fav
 }
 
 func (s *Service) recommend(ctx context.Context, user int64, platform string, limit int) (RediscoverBatch, error) {
-	favorites, err := s.Store.Favorites(ctx, user)
+	exclusions, err := s.Store.Exclusions(ctx, user)
 	if err != nil {
 		return RediscoverBatch{}, err
 	}
+	return s.searchRediscover(ctx, user, platform, limit, newRecommendPick(exclusions))
+}
+
+func (s *Service) searchRediscover(ctx context.Context, user int64, platform string, limit int, state *recommendPick) (RediscoverBatch, error) {
+	ranked, err := s.rankRediscover(ctx, user, platform, state, true)
+	if err != nil {
+		return RediscoverBatch{}, err
+	}
+	budget := 0
+	if platform != "" {
+		budget = resolveAttemptBudget(limit)
+	}
+	if err := s.pickTracks(ctx, state, ranked, limit, platform, budget); err != nil {
+		return RediscoverBatch{}, err
+	}
+	return state.batch(), nil
+}
+
+func (s *Service) rankRediscover(ctx context.Context, user int64, platform string, state *recommendPick, enrichYouTube bool) ([]Track, error) {
+	favorites, err := s.Store.Favorites(ctx, user)
+	if err != nil {
+		return nil, err
+	}
 	// YouTube metadata can take long enough to miss the click. Fill at most
 	// ten unverified favorites after this response; the next lookup uses the cache.
-	s.scheduleYouTubeFavoriteEnrich(user, platform, favorites)
+	if enrichYouTube {
+		s.scheduleYouTubeFavoriteEnrich(user, platform, favorites)
+	}
 	history, historyErr := s.cachedHistory(ctx)
 	if historyErr != nil && len(favorites) == 0 {
-		return RediscoverBatch{}, historyErr
+		return nil, historyErr
 	}
 	activeFavorites := make([]Track, 0, len(favorites))
 	for _, track := range favorites {
@@ -499,30 +531,12 @@ func (s *Service) recommend(ctx context.Context, user int64, platform string, li
 		}
 		merged[key] = old
 	}
-	exclusions, err := s.Store.Exclusions(ctx, user)
-	if err != nil {
-		return RediscoverBatch{}, err
-	}
-	state := &recommendPick{
-		artists:           map[string]int{},
-		skipped:           map[string]struct{}{},
-		unconfirmed:       map[string]struct{}{},
-		excludedShown:     map[string]struct{}{},
-		excludedPending:   map[string]struct{}{},
-		excludedDismissed: map[string]struct{}{},
-		excludedQueued:    map[string]struct{}{},
-		excludedArtist:    map[string]struct{}{},
-		excludedDuplicate: map[string]struct{}{},
-		excludedOther:     map[string]struct{}{},
-		unavailable:       map[string]struct{}{},
-	}
 	var ranked []Track
 	for key, t := range merged {
 		if t.NonMusic || t.Title == "" || t.Artist == "" {
 			continue
 		}
-		if reason := exclusions[key]; reason != "" {
-			state.markExclusion(reason, t)
+		if state.exclude(key, t) {
 			continue
 		}
 		ranked = append(ranked, t)
@@ -545,27 +559,7 @@ func (s *Service) recommend(ctx context.Context, user int64, platform string, li
 		}
 		return Identity(a) < Identity(b)
 	})
-	finish := func(err error) (RediscoverBatch, error) {
-		if err != nil {
-			return RediscoverBatch{}, err
-		}
-		return state.batch(), nil
-	}
-	if platform == "" {
-		_, stop, err := s.pickTracks(ctx, state, ranked, limit, platform, 0)
-		if stop {
-			return finish(nil)
-		}
-		return finish(err)
-	}
-	// One ranked pool lets a long-missed favorite compete with a frequently
-	// played history row. Separate history/favorite quotas made the first item
-	// of a one-song batch almost always come from history.
-	_, stop, err := s.pickTracks(ctx, state, ranked, limit, platform, resolveAttemptBudget(limit))
-	if stop {
-		err = nil
-	}
-	return finish(err)
+	return ranked, nil
 }
 
 // rediscoverScore favours repeatedly played songs that have been away for a
@@ -597,7 +591,8 @@ func resolveAttemptBudget(want int) int {
 }
 
 type recommendPick struct {
-	out               []Track
+	exclusions        map[string]string
+	picks             []rediscoverCandidate
 	artists           map[string]int
 	skipped           map[string]struct{}
 	unconfirmed       map[string]struct{}
@@ -611,47 +606,50 @@ type recommendPick struct {
 	unavailable       map[string]struct{}
 }
 
-func (s *Service) pickTracks(ctx context.Context, state *recommendPick, ranked []Track, want int, platform string, budget int) ([]Track, bool, error) {
-	if want <= 0 {
-		return ranked, false, nil
+func newRecommendPick(exclusions map[string]string) *recommendPick {
+	return &recommendPick{
+		exclusions:        exclusions,
+		artists:           map[string]int{},
+		skipped:           map[string]struct{}{},
+		unconfirmed:       map[string]struct{}{},
+		excludedShown:     map[string]struct{}{},
+		excludedPending:   map[string]struct{}{},
+		excludedDismissed: map[string]struct{}{},
+		excludedQueued:    map[string]struct{}{},
+		excludedArtist:    map[string]struct{}{},
+		excludedDuplicate: map[string]struct{}{},
+		excludedOther:     map[string]struct{}{},
+		unavailable:       map[string]struct{}{},
 	}
+}
+
+func (s *Service) pickTracks(ctx context.Context, state *recommendPick, ranked []Track, want int, platform string, budget int) error {
 	attempts := 0
 	got := 0
-	for i, t := range ranked {
+	for _, t := range ranked {
 		if got >= want {
-			return ranked[i:], false, nil
+			return nil
 		}
 		if err := ctx.Err(); err != nil {
-			if len(state.out) > 0 {
-				return nil, true, nil
+			if len(state.picks) > 0 {
+				return nil
 			}
-			return nil, false, err
+			return err
 		}
-		if state.artists[Normalize(t.Artist)] >= 2 {
+		if platform == "" && state.artists[Normalize(t.Artist)] >= 2 {
 			state.markDistinct(state.excludedArtist, t)
 			continue
 		}
-		owned, err := s.Library.Contains(ctx, t)
+		eligible, err := s.rediscoverEligible(ctx, state, t, true)
 		if err != nil {
-			return nil, false, err
+			return err
 		}
-		if owned {
-			state.markOwned(t)
+		if !eligible {
 			continue
-		}
-		if s.Pending != nil {
-			pending, err := s.Pending(ctx, t)
-			if err != nil {
-				return nil, false, err
-			}
-			if pending {
-				state.markDistinct(state.excludedPending, t)
-				continue
-			}
 		}
 		attempts++
 		if budget > 0 && attempts > budget {
-			return ranked[i:], false, nil
+			return nil
 		}
 		resolved, err := s.resolveCandidate(ctx, t, platform)
 		if err != nil {
@@ -662,26 +660,60 @@ func (s *Service) pickTracks(ctx context.Context, state *recommendPick, ranked [
 			}
 			continue
 		}
-		owned, err = s.Library.Contains(ctx, resolved)
-		if err != nil {
-			return nil, false, err
+		if state.exclude(Identity(resolved), resolved) {
+			continue
 		}
-		if owned || batchHasWork(state.out, resolved) {
-			if owned {
-				state.markOwned(resolved)
-			} else {
-				state.markDistinct(state.excludedDuplicate, resolved)
-			}
+		eligible, err = s.rediscoverEligible(ctx, state, resolved, Identity(t) != Identity(resolved))
+		if err != nil {
+			return err
+		}
+		if !eligible {
+			continue
+		}
+		if batchHasWork(state.picks, resolved) {
+			state.markDistinct(state.excludedDuplicate, resolved)
 			continue
 		}
 		resolved.Plays = t.Plays
 		resolved.LastPlayed = t.LastPlayed
 		resolved.Favorite = t.Favorite
-		state.out = append(state.out, resolved)
-		state.artists[Normalize(t.Artist)]++
+		state.picks = append(state.picks, rediscoverCandidate{source: t, track: resolved})
+		if platform == "" {
+			state.artists[Normalize(t.Artist)]++
+		}
 		got++
 	}
-	return nil, false, nil
+	return nil
+}
+
+func (s *Service) rediscoverEligible(ctx context.Context, state *recommendPick, track Track, checkPending bool) (bool, error) {
+	owned, err := s.Library.Contains(ctx, track)
+	if err != nil {
+		return false, err
+	}
+	if owned {
+		state.markOwned(track)
+		return false, nil
+	}
+	if checkPending && s.Pending != nil {
+		pending, err := s.Pending(ctx, track)
+		if err != nil {
+			return false, err
+		}
+		if pending {
+			state.markDistinct(state.excludedPending, track)
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (state *recommendPick) exclude(identity string, track Track) bool {
+	if reason := state.exclusions[identity]; reason != "" {
+		state.markExclusion(reason, track)
+		return true
+	}
+	return false
 }
 
 func (state *recommendPick) markOwned(t Track) {
@@ -704,10 +736,14 @@ func (state *recommendPick) markExclusion(reason string, t Track) {
 }
 
 func (state *recommendPick) batch() RediscoverBatch {
+	var tracks []Track
+	for _, candidate := range state.picks {
+		tracks = append(tracks, candidate.track)
+	}
 	unavailable := len(state.unavailable)
 	other := len(state.excludedOther)
 	return RediscoverBatch{
-		Tracks:           state.out,
+		Tracks:           tracks,
 		SkippedOwned:     len(state.skipped),
 		Unconfirmed:      len(state.unconfirmed),
 		SkippedShown:     len(state.excludedShown),
@@ -729,9 +765,9 @@ func (state *recommendPick) markDistinct(dst map[string]struct{}, t Track) {
 	dst[key] = struct{}{}
 }
 
-func batchHasWork(out []Track, candidate Track) bool {
+func batchHasWork(out []rediscoverCandidate, candidate Track) bool {
 	for _, have := range out {
-		if sameOwnedWork(have, candidate) {
+		if sameOwnedWork(have.track, candidate) {
 			return true
 		}
 	}
@@ -868,6 +904,18 @@ func (s *Service) Run(ctx context.Context) error {
 		go func() {
 			defer polls.Done()
 			s.runTasteRefill(ctx)
+		}()
+	}
+	polls.Add(1)
+	go func() {
+		defer polls.Done()
+		s.runRediscoverRefills(ctx)
+	}()
+	if s.Taste != nil {
+		polls.Add(1)
+		go func() {
+			defer polls.Done()
+			s.runQQTasteRefills(ctx)
 		}()
 	}
 	defer polls.Wait()

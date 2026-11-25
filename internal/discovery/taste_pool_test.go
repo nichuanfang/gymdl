@@ -179,3 +179,106 @@ func TestClickingRecommendNeverBurstsNetease(t *testing.T) {
 		t.Fatalf("cooldown did not hold: wait=%s calls=%d", again, calls)
 	}
 }
+
+func TestQQTastePoolKeepsFiltersAndRechecksAvailability(t *testing.T) {
+	ctx := t.Context()
+	store := testStore(t)
+	favorite := testTrack("old", "旧收藏", "艺人")
+	if _, _, err := store.Apply(ctx, 7, 7, snapshot("account", favorite), true); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	owned := map[string]bool{}
+	tracks := []Track{
+		tasteTestTrack("qq", "1", "爵士一", favorite.Artist),
+		tasteTestTrack("qq", "2", "爵士二", favorite.Artist),
+		tasteTestTrack("qq", "3", "爵士三", favorite.Artist),
+		tasteTestTrack("qq", "4", "爵士四", favorite.Artist),
+		tasteTestTrack("qq", "5", "摇滚一", favorite.Artist),
+	}
+	svc := Service{Store: store, Library: stubLibrary{owned: owned}, Taste: &TasteSources{
+		SearchPage: func(_ context.Context, platform, _ string, _ int) ([]Track, error) {
+			if platform != "qq" {
+				t.Fatalf("unexpected platform %s", platform)
+			}
+			calls++
+			return tracks, nil
+		},
+		TrackTags: func(_ context.Context, track Track) ([]string, error) {
+			if track.ID == "5" {
+				return []string{"rock"}, nil
+			}
+			return []string{"jazz", "cantonese"}, nil
+		},
+	}}
+	jazz := TasteRequest{Platform: "qq", Filter: TasteFilter{Language: "粤语", Genre: "爵士"}}
+	first, err := svc.RecommendTaste(ctx, 7, jazz)
+	if err != nil || first.Track == nil || first.Track.ID != "1" || calls != 1 {
+		t.Fatalf("first result = %+v err=%v calls=%d", first, err, calls)
+	}
+	if err := store.Preference(ctx, 7, *first.Track, false); err != nil {
+		t.Fatal(err)
+	}
+	owned[Identity(tracks[1])] = true
+	if _, err := store.Enqueue(ctx, 7, 7, tracks[2]); err != nil {
+		t.Fatal(err)
+	}
+	rock := TasteRequest{Platform: "qq", Filter: TasteFilter{Genre: "摇滚"}}
+	rockResult, err := svc.RecommendTaste(ctx, 7, rock)
+	if err != nil || rockResult.Track == nil || rockResult.Track.ID != "5" || calls != 2 {
+		t.Fatalf("rock result = %+v err=%v calls=%d", rockResult, err, calls)
+	}
+	next, err := svc.RecommendTaste(ctx, 7, jazz)
+	if err != nil || next.Track == nil || next.Track.ID != "4" || calls != 2 || !strings.Contains(next.Reason, "粤语 · 爵士") {
+		t.Fatalf("next buffered result = %+v err=%v calls=%d", next, err, calls)
+	}
+	if err := store.Preference(ctx, 7, *next.Track, false); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := svc.RecommendTaste(ctx, 7, jazz)
+	if err != nil || empty.Track != nil || calls != 3 {
+		t.Fatalf("pool miss = %+v err=%v calls=%d", empty, err, calls)
+	}
+}
+
+func TestQQTasteRefillAddsNewSongsForTheSameFilter(t *testing.T) {
+	ctx := t.Context()
+	store := testStore(t)
+	favorite := testTrack("old", "旧收藏", "艺人")
+	if _, _, err := store.Apply(ctx, 7, 7, snapshot("account", favorite), true); err != nil {
+		t.Fatal(err)
+	}
+	firstTrack := tasteTestTrack("qq", "1", "第一首", favorite.Artist)
+	secondTrack := tasteTestTrack("qq", "2", "第二首", favorite.Artist)
+	searches := 0
+	svc := Service{Store: store, Library: stubLibrary{}, Taste: &TasteSources{
+		SearchPage: func(_ context.Context, _ string, _ string, _ int) ([]Track, error) {
+			searches++
+			if searches == 1 {
+				return []Track{firstTrack}, nil
+			}
+			return []Track{firstTrack, secondTrack}, nil
+		},
+		TrackTags: func(context.Context, Track) ([]string, error) { return []string{"ambient"}, nil },
+	}}
+	req := TasteRequest{Platform: "qq", Filter: TasteFilter{Scene: "睡前"}}
+	first, err := svc.RecommendTaste(ctx, 7, req)
+	if err != nil || first.Track == nil || first.Track.ID != firstTrack.ID {
+		t.Fatalf("first result = %+v err=%v", first, err)
+	}
+
+	svc.WarmQQTaste(7, req, *first.Track)
+	svc.WarmQQTaste(7, req, *first.Track)
+	if queued := len(svc.qqTastePool.refills); queued != 1 || searches != 1 {
+		t.Fatalf("queued=%d searches=%d", queued, searches)
+	}
+	svc.refillQQTaste(ctx, <-svc.qqTastePool.refills)
+	svc.WarmQQTaste(7, req, *first.Track)
+	if len(svc.qqTastePool.refills) != 0 {
+		t.Fatal("refill cooldown did not hold")
+	}
+	next, err := svc.RecommendTaste(ctx, 7, req)
+	if err != nil || next.Track == nil || next.Track.ID != secondTrack.ID || searches != 2 {
+		t.Fatalf("refilled result = %+v err=%v searches=%d", next, err, searches)
+	}
+}

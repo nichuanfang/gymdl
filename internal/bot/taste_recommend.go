@@ -210,6 +210,7 @@ func (app *BotApp) startTasteRecommendation(c tb.Context, request discovery.Tast
 			if err := app.discovery.Store.Preference(prefCtx, user, *result.Track, false); err != nil {
 				utils.WarnWithFormat("[Discovery] 个性化推荐展示记录保存失败")
 			}
+			app.discovery.WarmQQTaste(user, card.Taste.Request, *result.Track)
 		}
 	})
 	return nil

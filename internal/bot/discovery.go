@@ -327,7 +327,7 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 		defer app.rediscoverCommandMu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		batch, findErr := app.discovery.Rediscover(ctx, user, platform, limit)
+		batch, findErr := app.discovery.RediscoverBuffered(ctx, user, platform, limit)
 		if findErr != nil {
 			_ = edit("这次没找成："+utils.EscapeHTML(discoveryPublicError(findErr))+"\n可以再试一次，或者换个平台。", rediscoverResultRecoveryMarkup(platform, limit), "")
 			return
@@ -358,6 +358,7 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 				utils.WarnWithFormat("[Discovery] 记录已展示的遗珠失败: %v", err)
 			}
 		}
+		app.discovery.WarmRediscover(user, platform, batch.Tracks[0])
 	})
 	return nil
 }

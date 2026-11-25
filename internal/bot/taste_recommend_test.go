@@ -22,6 +22,9 @@ type emptyTasteLibrary struct{}
 func (emptyTasteLibrary) Contains(context.Context, discovery.Track) (bool, error) { return false, nil }
 
 func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
+	original := tasteAutoPlatform
+	tasteAutoPlatform = func() string { return "qq" }
+	t.Cleanup(func() { tasteAutoPlatform = original })
 	ctx := t.Context()
 	store, err := discovery.Open(filepath.Join(t.TempDir(), "taste.db"))
 	if err != nil {
@@ -169,17 +172,16 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 	bot.ProcessUpdate(tb.Update{Message: &tb.Message{ID: 7, Chat: chat, Sender: &tb.User{ID: 1}, Text: "/recommend 粤语爵士"}})
 	next("sendMessage", "text", "找适合你的歌")
 	first := next("editMessageText", "text", "个性化推荐 ·")
-	source := "https://music.163.com/song?id=1"
-	if strings.Contains(first["text"], "QQ 音乐") {
-		source = "https://y.qq.com/n/ryqq/songDetail/1"
-	} else if !strings.Contains(first["text"], "网易云") {
-		t.Fatalf("unspecified platform did not pick one catalog: %v", first)
+	source := "https://y.qq.com/n/ryqq/songDetail/1"
+	if !strings.Contains(first["text"], "QQ 音乐") {
+		t.Fatalf("unspecified platform did not pick QQ: %v", first)
 	}
 	if !strings.Contains(first["text"], "粤语 · 爵士") || !strings.Contains(first["text"], `href="`+discoveryListenURL(source)+`"`) {
 		t.Fatalf("first card lost typed filter or listen link: %v", first)
 	}
 	searched.Lock()
 	seen := len(platformsSeen)
+	firstSearches := platformsSeen["qq"]
 	searched.Unlock()
 	if seen != 1 {
 		t.Fatalf("unspecified recommendation searched %d platforms, want 1", seen)
@@ -197,6 +199,12 @@ func TestPersonalizedRecommendationThroughTelebot(t *testing.T) {
 	click(1, oldNext)
 	second := next("editMessageText", "text", "风格相近")
 	waitReady()
+	searched.Lock()
+	nextSearches := platformsSeen["qq"]
+	searched.Unlock()
+	if nextSearches != firstSearches {
+		t.Fatalf("next searched QQ again: initial=%d after next=%d", firstSearches, nextSearches)
+	}
 	click(1, oldNext)
 	next("answerCallbackQuery", "text", "卡片已过期")
 

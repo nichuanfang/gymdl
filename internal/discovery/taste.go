@@ -41,95 +41,34 @@ func (s *Service) RecommendTaste(ctx context.Context, user int64, req TasteReque
 	if s.Library == nil {
 		return TasteResult{}, errors.New("暂时无法核对曲库，请稍后重试")
 	}
-	favorites, err := s.Store.Favorites(ctx, user)
+	profile, err := s.loadTasteProfile(ctx, user)
 	if err != nil {
-		return TasteResult{}, errors.New("暂时无法读取收藏，请稍后重试")
-	}
-	var history []Track
-	var notices []string
-	if s.Taste.HistoryOwner != 0 && user == s.Taste.HistoryOwner {
-		historyCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		history, err = s.cachedHistory(historyCtx)
-		cancel()
-	}
-	if len(history) == 0 {
-		notices = append(notices, "本次按收藏推断口味，未核对已听记录")
-	}
-	artists, familiar := rankTasteArtists(history, favorites, time.Now())
-	if len(artists) == 0 {
-		return TasteResult{}, errors.New("还没有可用的口味数据。可先同步收藏或积累收听记录")
-	}
-	exclusions, err := s.Store.exclusions(ctx, user, true)
-	if err != nil {
-		return TasteResult{}, errors.New("暂时无法核对入库队列，请稍后重试")
+		return TasteResult{}, err
 	}
 	if s.SlowNetease && req.Platform == "netease" {
 		return s.recommendPooledTaste(ctx, user, req)
 	}
-	explore := s.similarTasteArtists(ctx, artists, familiar)
+	if req.Platform == "qq" {
+		return s.recommendQQTaste(ctx, user, req, profile)
+	}
 	platforms := []string{req.Platform}
 	if req.Platform == TasteBoth {
 		platforms = []string{"netease", "qq"}
-		if req.ExploreFirst {
+		if s.SlowNetease {
+			platforms = []string{"qq"}
+		} else if req.ExploreFirst {
 			platforms[0], platforms[1] = platforms[1], platforms[0]
 		}
-	}
-	if s.SlowNetease {
-		filtered := platforms[:0]
-		for _, platform := range platforms {
-			if platform != "netease" {
-				filtered = append(filtered, platform)
-			}
-		}
-		platforms = filtered
-	}
-	known := tasteKnownTracks(history, favorites)
-	if req.Page < 0 {
-		req.Page = 0
 	}
 	if req.Page > 5 {
 		return TasteResult{Notice: "再往下也没有更多单曲了。可以换个场景或平台。"}, nil
 	}
-	candidates, unavailable, dropped := s.tasteCandidates(ctx, artists, explore, platforms, known, exclusions, req.Page*tasteSearchPage)
-	notices = append(notices, unavailable...)
-	if ctx.Err() != nil {
-		return TasteResult{}, errors.New("这次推荐超时，请再试一次")
-	}
-	index := s.tasteLocalTags(ctx, known)
-	preference := tasteTagPreferences(index, history, favorites)
-	lanes, owned, err := s.shortlistTaste(ctx, candidates)
+	choices, notices, err := s.searchTasteChoices(ctx, req, profile, platforms)
 	if err != nil {
 		return TasteResult{}, err
 	}
-	dropped.owned += owned
-	s.scoreTaste(ctx, lanes, req.Filter, preference, index)
-	if ctx.Err() != nil {
-		return TasteResult{}, errors.New("这次推荐超时，请再试一次")
-	}
-	laneOrder := []int{0, 1}
-	if req.ExploreFirst {
-		laneOrder = []int{1, 0}
-	}
-	for _, lane := range laneOrder {
-		sort.SliceStable(lanes[lane], func(i, j int) bool { return lanes[lane][i].score > lanes[lane][j].score })
-		for _, candidate := range lanes[lane] {
-			if !candidate.usable {
-				continue
-			}
-			reason := "来自你常听或收藏的艺人"
-			if candidate.artist.seed != "" {
-				reason = "与「" + candidate.artist.seed + "」风格相近"
-			}
-			if label := req.Filter.Label(); label != "" {
-				reason += "，歌曲标签符合" + label
-			} else if tag := tasteReasonTag(candidate.tags, preference); tag != "" {
-				reason += "，也符合你的「" + tag + "」偏好"
-			}
-			return TasteResult{Track: &candidate.track, Explore: lane == 1, Reason: reason, Notice: strings.Join(notices, " · ")}, nil
-		}
-	}
-	if reason := tasteEmptyReason(dropped); reason != "" {
-		notices = append(notices, reason)
+	if len(choices) > 0 {
+		return choices[0].result(notices), nil
 	}
 	if s.SlowNetease && req.Platform == TasteBoth {
 		pooled, err := s.recommendPooledTaste(ctx, user, req)
@@ -151,6 +90,107 @@ func (s *Service) RecommendTaste(ctx context.Context, user int64, req TasteReque
 		}
 	}
 	return TasteResult{Notice: strings.Join(notices, " · ")}, nil
+}
+
+type tasteProfile struct {
+	history, favorites []Track
+	artists            []tasteArtist
+	familiar           map[string]bool
+	known              map[string][]Track
+	exclusions         map[string]string
+	notice             string
+}
+
+func (s *Service) loadTasteProfile(ctx context.Context, user int64) (tasteProfile, error) {
+	favorites, err := s.Store.Favorites(ctx, user)
+	if err != nil {
+		return tasteProfile{}, errors.New("暂时无法读取收藏，请稍后重试")
+	}
+	var history []Track
+	var notice string
+	if s.Taste.HistoryOwner != 0 && user == s.Taste.HistoryOwner {
+		historyCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		history, _ = s.cachedHistory(historyCtx)
+		cancel()
+	}
+	if len(history) == 0 {
+		notice = "本次按收藏推断口味，未核对已听记录"
+	}
+	artists, familiar := rankTasteArtists(history, favorites, time.Now())
+	if len(artists) == 0 {
+		return tasteProfile{}, errors.New("还没有可用的口味数据。可先同步收藏或积累收听记录")
+	}
+	exclusions, err := s.Store.exclusions(ctx, user, true)
+	if err != nil {
+		return tasteProfile{}, errors.New("暂时无法核对入库队列，请稍后重试")
+	}
+	return tasteProfile{
+		history: history, favorites: favorites, artists: artists, familiar: familiar,
+		known: tasteKnownTracks(history, favorites), exclusions: exclusions, notice: notice,
+	}, nil
+}
+
+type tasteChoice struct {
+	track   Track
+	explore bool
+	reason  string
+}
+
+func (c tasteChoice) result(notices []string) TasteResult {
+	return TasteResult{Track: &c.track, Explore: c.explore, Reason: c.reason, Notice: strings.Join(notices, " · ")}
+}
+
+func (s *Service) searchTasteChoices(ctx context.Context, req TasteRequest, profile tasteProfile, platforms []string) ([]tasteChoice, []string, error) {
+	var notices []string
+	if profile.notice != "" {
+		notices = append(notices, profile.notice)
+	}
+	explore := s.similarTasteArtists(ctx, profile.artists, profile.familiar)
+	candidates, unavailable, dropped := s.tasteCandidates(ctx, profile.artists, explore, platforms, profile.known, profile.exclusions, max(0, req.Page)*tasteSearchPage)
+	notices = append(notices, unavailable...)
+	if ctx.Err() != nil {
+		return nil, nil, errors.New("这次推荐超时，请再试一次")
+	}
+	index := s.tasteLocalTags(ctx, profile.known)
+	preference := tasteTagPreferences(index, profile.history, profile.favorites)
+	lanes, owned, err := s.shortlistTaste(ctx, candidates)
+	if err != nil {
+		return nil, nil, err
+	}
+	dropped.owned += owned
+	s.scoreTaste(ctx, lanes, req.Filter, preference, index)
+	if ctx.Err() != nil {
+		return nil, nil, errors.New("这次推荐超时，请再试一次")
+	}
+	laneOrder := [2]int{0, 1}
+	if req.ExploreFirst {
+		laneOrder = [2]int{1, 0}
+	}
+	var choices []tasteChoice
+	for _, lane := range laneOrder {
+		sort.SliceStable(lanes[lane], func(i, j int) bool { return lanes[lane][i].score > lanes[lane][j].score })
+		for _, candidate := range lanes[lane] {
+			if !candidate.usable {
+				continue
+			}
+			reason := "来自你常听或收藏的艺人"
+			if candidate.artist.seed != "" {
+				reason = "与「" + candidate.artist.seed + "」风格相近"
+			}
+			if label := req.Filter.Label(); label != "" {
+				reason += "，歌曲标签符合" + label
+			} else if tag := tasteReasonTag(candidate.tags, preference); tag != "" {
+				reason += "，也符合你的「" + tag + "」偏好"
+			}
+			choices = append(choices, tasteChoice{track: candidate.track, explore: lane == 1, reason: reason})
+		}
+	}
+	if len(choices) == 0 {
+		if reason := tasteEmptyReason(dropped); reason != "" {
+			notices = append(notices, reason)
+		}
+	}
+	return choices, notices, nil
 }
 
 const tasteSearchPage = 20
@@ -454,25 +494,15 @@ func (s *Service) shortlistTaste(ctx context.Context, candidates []tasteCandidat
 		if len(lanes[lane]) >= 8 {
 			continue
 		}
-		owned, err := s.Library.Contains(ctx, candidate.track)
+		owned, pending, err := s.checkTasteAvailability(ctx, candidate.track)
 		if err != nil {
-			if _, ok := s.Library.(*NavidromeLibrary); ok {
-				return lanes, ownedCount, fmt.Errorf("暂时无法核对曲库：%w", err)
-			}
-			return lanes, ownedCount, errors.New("暂时无法核对曲库，请稍后重试")
+			return lanes, ownedCount, err
 		}
 		if owned {
 			ownedCount++
-			continue
 		}
-		if s.Pending != nil {
-			pending, err := s.Pending(ctx, candidate.track)
-			if err != nil {
-				return lanes, ownedCount, errors.New("暂时无法核对待上传歌曲，请稍后重试")
-			}
-			if pending {
-				continue
-			}
+		if owned || pending {
+			continue
 		}
 		lanes[lane] = append(lanes[lane], candidate)
 		if len(lanes[0]) == 8 && len(lanes[1]) == 8 {
@@ -480,6 +510,23 @@ func (s *Service) shortlistTaste(ctx context.Context, candidates []tasteCandidat
 		}
 	}
 	return lanes, ownedCount, nil
+}
+
+func (s *Service) checkTasteAvailability(ctx context.Context, track Track) (owned, pending bool, err error) {
+	owned, err = s.Library.Contains(ctx, track)
+	if err != nil {
+		if _, ok := s.Library.(*NavidromeLibrary); ok {
+			return false, false, fmt.Errorf("暂时无法核对曲库：%w", err)
+		}
+		return false, false, errors.New("暂时无法核对曲库，请稍后重试")
+	}
+	if !owned && s.Pending != nil {
+		pending, err = s.Pending(ctx, track)
+		if err != nil {
+			return false, false, errors.New("暂时无法核对待上传歌曲，请稍后重试")
+		}
+	}
+	return owned, pending, nil
 }
 
 func tasteTagKey(title, artist string) string {

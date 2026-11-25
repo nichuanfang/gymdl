@@ -289,6 +289,16 @@ func (s *Store) ActiveFavoriteTracks(ctx context.Context, user int64, platform, 
 	return out, rows.Err()
 }
 
+func (s *Store) isActiveFavorite(ctx context.Context, user int64, track Track) (bool, error) {
+	var active bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM discovery_favorites f JOIN discovery_bindings b
+		ON f.user_id=b.user_id AND f.platform=b.platform AND f.account=b.account
+		WHERE f.user_id=? AND f.platform=? AND f.track_id=? AND f.active=1
+	)`, user, track.Platform, track.ID).Scan(&active)
+	return active, err
+}
+
 func (s *Store) Favorites(ctx context.Context, user int64) ([]Track, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT f.track_json,f.active FROM discovery_favorites f JOIN discovery_bindings b ON f.user_id=b.user_id AND f.platform=b.platform AND f.account=b.account WHERE f.user_id=?`, user)
 	if err != nil {
@@ -326,7 +336,7 @@ func (s *Store) Exclusions(ctx context.Context, user int64) (map[string]string, 
 	return s.exclusions(ctx, user, false)
 }
 
-func (s *Store) exclusions(ctx context.Context, user int64, taste bool) (map[string]string, error) {
+func (s *Store) exclusions(ctx context.Context, user int64, hidePending bool) (map[string]string, error) {
 	out := map[string]string{}
 	rows, err := s.db.QueryContext(ctx, `SELECT identity,dismissed,shown FROM discovery_preferences WHERE user_id=?`, user)
 	if err != nil {
@@ -353,12 +363,11 @@ func (s *Store) exclusions(ctx context.Context, user int64, taste bool) (map[str
 		return nil, err
 	}
 	rows.Close()
-	// Pending uploads and failures stay visible in the favorites/queue views,
-	// but they are not permanent rediscover exclusions. NAS outages can leave a
-	// song pending for days, and hiding it made the next rediscover batch look
-	// empty even though it had never reached the library.
+	// Live previews can still show songs after a NAS outage. The bot's
+	// candidate pool and taste recommendation skip songs awaiting upload or
+	// confirmation while their existing jobs remain actionable.
 	jobs, err := s.db.QueryContext(ctx, `SELECT identity,state FROM discovery_jobs WHERE user_id=? AND
-		(state IN ('queued','running','completed','owned','ignored') OR (? AND state IN ('pending_upload','needs_confirmation')))`, user, taste)
+		(state IN ('queued','running','completed','owned','ignored') OR (? AND state IN ('pending_upload','needs_confirmation')))`, user, hidePending)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +379,7 @@ func (s *Store) exclusions(ctx context.Context, user int64, taste bool) (map[str
 		}
 		reason := ExcludedQueued
 		switch state {
-		case PendingUpload:
+		case PendingUpload, NeedsConfirmation:
 			reason = ExcludedPending
 		case Ignored:
 			reason = ExcludedDismissed
