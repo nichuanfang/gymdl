@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nichuanfang/gymdl/internal/discovery"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
@@ -55,6 +56,33 @@ func TestDiscoveryCompletionSendsTheStandardLibraryButtons(t *testing.T) {
 	}
 	if !reflect.DeepEqual(labels, []string{"▶️ 播放", "🗑 删除", "整理", "其他音源"}) || !strings.Contains(sent["text"], "900 kbps") {
 		t.Fatalf("completion card buttons = %v, text = %q", labels, sent["text"])
+	}
+}
+
+func TestTasteCompletionWithoutOriginalCardDoesNotSendASecondSongCard(t *testing.T) {
+	requests := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":42,"chat":{"id":10,"type":"private"}}}`)
+	}))
+	defer server.Close()
+	bot, err := tb.NewBot(tb.Settings{Offline: true, Token: "1:test", URL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{bot: bot}
+	err = app.sendDiscoveryIngested(discovery.Job{Chat: 10, User: 20,
+		Track: discovery.Track{Title: "Song", Artist: "Artist", TasteRecommended: true, SourceCard: "expired-card"},
+		File:  &discovery.IngestedFile{Path: "music/song.flac", Storage: "LOCAL", Extension: "flac"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case path := <-requests:
+		t.Fatalf("expired recommendation sent a standalone card: %s", path)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

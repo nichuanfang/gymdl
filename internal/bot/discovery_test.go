@@ -1463,7 +1463,7 @@ func TestCompletedRecommendationOffersTheIngestedCard(t *testing.T) {
 
 func TestIngestedNotificationDependsOnTheOriginalCardEdit(t *testing.T) {
 	for _, editOK := range []bool{true, false} {
-		name := "fallback after rejected edit"
+		name := "rejected edit keeps the original card as the only result"
 		if editOK {
 			name = "successful edit"
 		}
@@ -1506,7 +1506,7 @@ func TestIngestedNotificationDependsOnTheOriginalCardEdit(t *testing.T) {
 			app := &BotApp{bot: bot, discovery: &discovery.Service{Store: store}}
 			err = app.sendDiscoveryIngested(discovery.Job{ID: "job1", User: 1, Chat: 1, State: discovery.Completed,
 				File:  &discovery.IngestedFile{Path: "a.flac", Storage: "LOCAL", Extension: "flac"},
-				Track: discovery.Track{Title: "测试歌曲", SourceCard: card.Token}})
+				Track: discovery.Track{Title: "测试歌曲", SourceCard: card.Token, TasteRecommended: true}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1515,11 +1515,7 @@ func TestIngestedNotificationDependsOnTheOriginalCardEdit(t *testing.T) {
 			for request := range requests {
 				got = append(got, request)
 			}
-			want := []string{"edit"}
-			if !editOK {
-				want = append(want, "send")
-			}
-			if !slices.Equal(got, want) {
+			if want := []string{"edit"}; !slices.Equal(got, want) {
 				t.Fatalf("Telegram requests = %v, want %v", got, want)
 			}
 		})

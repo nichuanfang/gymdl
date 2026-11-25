@@ -91,7 +91,26 @@ func (app *BotApp) sendDiscoveryIngested(job discovery.Job) error {
 	if app.updateIngestedSongCard(job) {
 		return nil
 	}
+	if app.jobBelongsToTasteCard(job) {
+		utils.WarnWithFormat("[Discovery] 个性化推荐原卡片暂时不可用，保留原消息作为唯一结果位置 job=%s", job.ID)
+		return nil
+	}
 	return app.deliverIngestedSong(job)
+}
+
+func (app *BotApp) jobBelongsToTasteCard(job discovery.Job) bool {
+	if job.Track.TasteRecommended {
+		return true
+	}
+	if app == nil || app.discovery == nil || app.discovery.Store == nil || strings.TrimSpace(job.Track.SourceCard) == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	app.rediscoverMu.Lock()
+	defer app.rediscoverMu.Unlock()
+	card, err := app.discovery.Store.Card(ctx, job.Track.SourceCard, job.User, job.Chat)
+	return err == nil && card.Kind == discovery.TasteCardKind
 }
 
 func (app *BotApp) deliverIngestedSong(job discovery.Job) error {

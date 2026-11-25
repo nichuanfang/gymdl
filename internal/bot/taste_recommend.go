@@ -245,14 +245,19 @@ func (app *BotApp) tasteProgressMessage(c tb.Context, previous *discovery.Card) 
 	if err != nil || card.Kind != discovery.TasteCardKind {
 		return nil, c.Send("这张卡片已过期，请重新发送 /recommend。")
 	}
-	for _, track := range card.Tracks {
-		if track.IngestID != "" {
-			// Its download watcher and any confirmation buttons stay on the old message.
-			if _, err := c.Bot().Edit(c.Message(), tasteMarkupForCard(card)); err != nil && !strings.Contains(err.Error(), "message is not modified") {
-				utils.WarnWithFormat("[Discovery] 个性化推荐原卡片按钮恢复失败")
-			}
-			return c.Bot().Send(c.Chat(), text)
+	for index := range card.Tracks {
+		if card.Tracks[index].IngestID == "" {
+			continue
 		}
+		// The old message stays the only place where this download's final
+		// result can appear. Remove stale action buttons before starting a new
+		// recommendation so an old click cannot enqueue a second song.
+		card.Page = index
+		oldText, oldMarkup := app.renderDiscoveryCard(card, index)
+		if _, err := c.Bot().Edit(c.Message(), oldText, tb.ModeHTML, oldMarkup); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+			utils.WarnWithFormat("[Discovery] 个性化推荐原卡片按钮恢复失败: %v", err)
+		}
+		return c.Bot().Send(c.Chat(), text)
 	}
 	if err := editDiscoveryMessage(c, text, nil, false); err != nil {
 		return nil, err
@@ -268,9 +273,4 @@ func tasteResultSource(result discovery.TasteResult) string {
 		return "unknown"
 	}
 	return result.Source
-}
-
-func tasteMarkupForCard(card discovery.Card) *tb.ReplyMarkup {
-	_, markup := discoveryRecommendationCard(card, 0)
-	return markup
 }
