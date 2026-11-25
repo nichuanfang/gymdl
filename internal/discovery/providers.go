@@ -523,6 +523,19 @@ func (p *Providers) youtube(ctx context.Context) (Snapshot, error) {
 }
 
 func (p *Providers) Enrich(ctx context.Context, t Track) (Track, bool, error) {
+	if t.Platform == "netease" {
+		if t.CoverURL != "" || !netease.ValidSongID(t.ID) {
+			return t, false, nil
+		}
+		tracks, err := p.NeteaseTracks(ctx, []string{t.ID})
+		if err != nil {
+			return t, false, err
+		}
+		if len(tracks) == 1 {
+			t.CoverURL = tracks[0].CoverURL
+		}
+		return t, false, nil
+	}
 	if t.Platform != "youtube" || t.Verified || t.Approved {
 		return t, false, nil
 	}

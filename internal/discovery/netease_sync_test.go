@@ -50,6 +50,63 @@ func TestNeteaseRequestRetriesTransientFailure(t *testing.T) {
 	}
 }
 
+func TestNeteaseCoversAreHydratedForCachedRecommendationSongs(t *testing.T) {
+	const detailCover = "https://p2.music.126.net/ZGffiDQZrGj5s_hnR1CNbg==/109951165566379710.jpg"
+	p := neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+		if !strings.Contains(r.URL.Path, "song/detail") {
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+		body := `{"code":200,"songs":[{"id":186016,"name":"Song","dt":180000,"ar":[{"name":"Artist"}],"al":{"name":"Album","picUrl":"` + detailCover + `"}}]}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	service := &Service{Provider: p}
+	tracks := service.hydrateNeteaseCovers(t.Context(), []Track{{
+		Platform: "netease", ID: "186016", Title: "Song", Artist: "Artist", Verified: true,
+	}}, 1)
+	if len(tracks) != 1 || tracks[0].CoverURL != detailCover+"?param=500y500" {
+		t.Fatalf("hydrated track cover = %q", tracks[0].CoverURL)
+	}
+}
+
+func TestNeteaseEnrichAddsCoverToAnOlderFavorite(t *testing.T) {
+	const detailCover = "https://p2.music.126.net/ZGffiDQZrGj5s_hnR1CNbg==/109951165566379710.jpg"
+	p := neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+		body := `{"code":200,"songs":[{"id":186016,"name":"Song","dt":180000,"ar":[{"name":"Artist"}],"al":{"name":"Album","picUrl":"` + detailCover + `"}}]}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	track, skip, err := p.Enrich(t.Context(), Track{Platform: "netease", ID: "186016", Verified: true})
+	if err != nil || skip || track.CoverURL != detailCover+"?param=500y500" {
+		t.Fatalf("enriched track = %+v, skip=%t, err=%v", track, skip, err)
+	}
+}
+
+func TestPooledNeteaseRecommendationHydratesAnOldPoolRow(t *testing.T) {
+	const detailCover = "https://p2.music.126.net/ZGffiDQZrGj5s_hnR1CNbg==/109951165566379710.jpg"
+	store := testStore(t)
+	ctx := t.Context()
+	favorite := testTrack("1", "旧收藏", "Artist")
+	if _, _, err := store.Apply(ctx, 7, 7, snapshot("netease-account", favorite), true); err != nil {
+		t.Fatal(err)
+	}
+	ready := tasteTestTrack("netease", "186016", "新歌", "Artist")
+	if err := store.SaveTastePool(ctx, 7, []Track{ready}); err != nil {
+		t.Fatal(err)
+	}
+	p := neteaseProvider(t, func(r *http.Request) (*http.Response, error) {
+		if !strings.Contains(r.URL.Path, "song/detail") {
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+		body := `{"code":200,"songs":[{"id":186016,"name":"新歌","dt":180000,"ar":[{"name":"Artist"}],"al":{"name":"专辑","picUrl":"` + detailCover + `"}}]}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	service := &Service{Store: store, Provider: p, Library: stubLibrary{}, SlowNetease: true,
+		Taste: &TasteSources{SearchPage: func(context.Context, string, string, int) ([]Track, error) { return nil, nil }}}
+	got, err := service.RecommendTaste(ctx, 7, TasteRequest{Platform: "netease"})
+	if err != nil || got.Track == nil || got.Track.CoverURL != detailCover+"?param=500y500" {
+		t.Fatalf("pooled recommendation cover = %+v, %v", got.Track, err)
+	}
+}
+
 func TestNeteaseRequestKeepsTheFailureReason(t *testing.T) {
 	calls := 0
 	p := neteaseProvider(t, func(r *http.Request) (*http.Response, error) {

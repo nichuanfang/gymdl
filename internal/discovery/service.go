@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nichuanfang/gymdl/internal/audiodupe"
+	"github.com/nichuanfang/gymdl/internal/netease"
 	"github.com/nichuanfang/gymdl/utils"
 )
 
@@ -559,7 +560,58 @@ func (s *Service) rankRediscover(ctx context.Context, user int64, platform strin
 		}
 		return Identity(a) < Identity(b)
 	})
+	ranked = s.hydrateNeteaseCovers(ctx, ranked, 30)
 	return ranked, nil
+}
+
+type neteaseCoverLoader interface {
+	NeteaseTracks(context.Context, []string) ([]Track, error)
+}
+
+// hydrateNeteaseCovers repairs durable favorites and recommendation caches
+// created before cover URLs were stored. One detail request can fill the
+// candidates that are about to be shown.
+func (s *Service) hydrateNeteaseCovers(ctx context.Context, tracks []Track, limit int) []Track {
+	loader, ok := s.Provider.(neteaseCoverLoader)
+	if !ok || limit <= 0 {
+		return tracks
+	}
+	positions := map[string][]int{}
+	ids := make([]string, 0, min(limit, len(tracks)))
+	seen := map[string]bool{}
+	for i, track := range tracks {
+		if track.Platform != "netease" || track.CoverURL != "" || !netease.ValidSongID(track.ID) {
+			continue
+		}
+		positions[track.ID] = append(positions[track.ID], i)
+		if !seen[track.ID] {
+			if len(ids) >= limit {
+				break
+			}
+			seen[track.ID] = true
+			ids = append(ids, track.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return tracks
+	}
+	query, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	details, err := loader.NeteaseTracks(query, ids)
+	if err != nil {
+		utils.WarnWithFormat("[Discovery] 网易云封面补齐失败，稍后重试: %v", err)
+		return tracks
+	}
+	for _, detail := range details {
+		cover := netease.CoverURL(detail.CoverURL)
+		if cover == "" {
+			continue
+		}
+		for _, index := range positions[detail.ID] {
+			tracks[index].CoverURL = cover
+		}
+	}
+	return tracks
 }
 
 // rediscoverScore favours repeatedly played songs that have been away for a

@@ -369,6 +369,7 @@ func (s *Service) recommendPooledTaste(ctx context.Context, user int64, req Tast
 	if err != nil {
 		return TasteResult{}, fmt.Errorf("暂时读不到备好的推荐")
 	}
+	queued = s.hydrateNeteaseCovers(ctx, queued, tastePoolTarget)
 	for _, track := range queued {
 		if exclusions[Identity(track)] != "" || !verifiedTasteTrack(track, "netease", track.Artist) {
 			_ = s.Store.DeleteTasteCandidate(ctx, user, track)
@@ -419,6 +420,7 @@ func (s *Service) pickDailyTaste(ctx context.Context, user int64, exclusions map
 		}
 		return Track{}, false, "", nil
 	}
+	tracks = s.hydrateNeteaseCovers(ctx, tracks, 30)
 	favorites, err := s.Store.Favorites(ctx, user)
 	if err != nil {
 		return Track{}, false, "", err
