@@ -46,7 +46,7 @@ func (app *BotApp) AudioCheckCommand(c tb.Context) error {
 	payload := strings.TrimSpace(c.Message().Payload)
 	deep := payload == "deep"
 	if payload != "" && !deep {
-		return c.Send("发送 /audio_check 开始体检，或发送 /audio_check deep 逐批深度扫描。")
+		return c.Send("发送 /audio_check 开始体检。")
 	}
 	return app.startAudioCheck(c, deep, false, nil)
 }
@@ -193,10 +193,10 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 			cancel()
 			session.report = filterAudioCheckSkipped(report, session.skipped)
 			session.running = false
-			session.notice = "目录清单读取已停止；卡片显示此前完成的缓存记录。再次扫描会校验文件版本并继续。"
+			session.notice = "目录读取已停止，已显示此前完成的检查结果。"
 			if cacheErr != nil {
 				session.report = audioCheckReport{resumeAvailable: true}
-				session.notice = "目录清单读取已停止，暂时无法读取已完成记录；再次扫描会校验文件版本并继续。"
+				session.notice = "目录读取已停止，暂时无法载入此前结果。"
 			}
 			if presentErr := app.presentAudioCheck(api, session); presentErr != nil {
 				utils.WarnWithFormat("更新曲库体检卡片失败: %v", presentErr)
@@ -205,7 +205,7 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 		}
 		if err != nil {
 			session.running = false
-			session.notice = "❌ 未能读取完整曲库清单；已完成记录保留，可稍后重试。"
+			session.notice = "❌ 暂时无法读取曲库，已保留此前结果。"
 			session.report = audioCheckReport{}
 			if presentErr := app.presentAudioCheck(api, session); presentErr != nil {
 				utils.WarnWithFormat("更新曲库体检卡片失败: %v", presentErr)
@@ -236,7 +236,7 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 				break
 			}
 			if scanErr != nil && !timedOut {
-				notice = "❌ 本批体检遇到错误；已完成记录保留，可继续全库体检。"
+				notice = "❌ 本轮暂时无法继续，已保留检查结果。"
 				report = state.cachedReport()
 				break
 			}
@@ -250,7 +250,7 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 				break
 			}
 			if !audioCheckProgressed(previous, report) {
-				notice = "本轮未能继续推进；已完成记录保留，可再次继续全库体检。"
+				notice = "本轮未能继续推进，已保留检查结果。"
 				break
 			}
 			previous = report
@@ -262,9 +262,9 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 		cancel()
 		report = state.cachedReport()
 		if scanErr != nil && !timedOut && ctx.Err() == nil {
-			notice = "❌ 本批体检遇到错误；已完成记录保留，可继续扫描。"
+			notice = "❌ 本轮暂时无法继续，已保留检查结果。"
 		} else if timedOut && ctx.Err() == nil {
-			notice = "本批已达到时间上限；已完成记录保留，可继续扫描。"
+			notice = "本轮检查已完成，可继续下一轮。"
 		}
 	}
 
@@ -272,7 +272,7 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 		return
 	}
 	if ctx.Err() != nil {
-		notice = "已停止并显示已完成结果；再次运行会跳过已检查文件并继续。"
+		notice = "已停止，检查结果已保留。"
 		report = state.cachedReport()
 	}
 	session.report = filterAudioCheckSkipped(report, session.skipped)
@@ -416,6 +416,16 @@ func (app *BotApp) HandleAudioCheckCallback(c tb.Context) error {
 		app.audioCheckMu.Unlock()
 		return c.Respond(&tb.CallbackResponse{Text: "上一项操作还在处理。"})
 	}
+	if action == "continue" {
+		if !audioCheckCanContinue(session) {
+			app.audioCheckMu.Unlock()
+			return c.Respond(&tb.CallbackResponse{Text: "本轮检查已经完成。"})
+		}
+		deep, full := audioCheckContinueMode(session)
+		app.audioCheckMu.Unlock()
+		_ = c.Respond()
+		return app.startAudioCheck(c, deep, full, &session)
+	}
 	if action == "scan" || action == "deep" || action == "full" {
 		app.audioCheckMu.Unlock()
 		_ = c.Respond()
@@ -534,6 +544,31 @@ func withoutImmaterialFindings(report audioCheckReport) audioCheckReport {
 	return report
 }
 
+func audioCheckCanContinue(session audioCheckSession) bool {
+	report := session.report
+	return report.remaining > 0 || report.deferred > 0 || report.referenceQueue > 0 ||
+		(!session.full && (report.limited || report.resumeAvailable))
+}
+
+// audioCheckContinueMode keeps fast, deep and full-library scans as one user
+// action. The next mode only changes when the current one has no more work.
+func audioCheckContinueMode(session audioCheckSession) (deep, full bool) {
+	report := session.report
+	if !session.full && report.limited {
+		return true, true
+	}
+	if report.remaining > 0 || report.referenceQueue > 0 {
+		return session.deep, session.full
+	}
+	if report.deferred > 0 && !session.deep {
+		return true, false
+	}
+	if report.resumeAvailable && !session.full {
+		return session.deep, false
+	}
+	return session.deep, session.full
+}
+
 func formatAudioCheckCard(session audioCheckSession) (string, *tb.ReplyMarkup) {
 	report := withoutImmaterialFindings(session.report)
 	if session.index > len(report.findings) {
@@ -543,30 +578,15 @@ func formatAudioCheckCard(session audioCheckSession) (string, *tb.ReplyMarkup) {
 	button := func(text, action string) tb.Btn { return markup.Data(text, audioCheckCallback, action, session.token) }
 	rows := []tb.Row{}
 	var text strings.Builder
-	text.WriteString("🎧 <b>曲库体检</b>\n")
-	fmt.Fprintf(&text, "已检查 %d/%d 首", report.checked, report.total)
-	if report.unreadable > 0 {
-		fmt.Fprintf(&text, "\n%d 首这次没读到，稍后会再试。", report.unreadable)
+	text.WriteString("🎧 <b>曲库体检</b>")
+	if session.index < len(report.findings) {
+		fmt.Fprintf(&text, " · %d/%d", session.index+1, len(report.findings))
 	}
-	if report.remaining > 0 {
-		fmt.Fprintf(&text, "\n还有 %d 首可分批检查。", report.remaining)
-	}
-	if report.referenceQueue > 0 {
-		fmt.Fprintf(&text, "\n%d 首可继续核对同版本时长。", report.referenceQueue)
-	}
-	if report.limited {
-		text.WriteString("\n曲库目录超过扫描上限，本次只覆盖已列出的文件。")
-	}
-	if report.resumeAvailable {
-		text.WriteString("\n曲库清单未读完，可再次扫描继续。")
-	}
-	if session.notice != "" {
-		fmt.Fprintf(&text, "\n\n%s", utils.EscapeHTML(session.notice))
-	}
+	text.WriteString("\n──────────────")
 	if session.index < len(report.findings) {
 		file := report.findings[session.index]
 		song := file.musicAction("", 1)
-		fmt.Fprintf(&text, "\n\n%d/%d  <b>%s</b>", session.index+1, len(report.findings), musicSourceLabel(song.title))
+		fmt.Fprintf(&text, "\n<b>%s</b>", musicSourceLabel(song.title))
 		if song.artist != "" {
 			fmt.Fprintf(&text, "\n%s", musicSourceLabel(song.artist))
 		}
@@ -591,54 +611,45 @@ func formatAudioCheckCard(session audioCheckSession) (string, *tb.ReplyMarkup) {
 		if audioquality.LowBitrate(file.Codec, file.Bitrate) {
 			fmt.Fprintf(&text, "\n⚠️ 低码率 · %s %d kbps", utils.EscapeHTML(strings.ToUpper(file.Codec)), file.Bitrate)
 		}
-		rows = append(rows, markup.Row(button("播放", "play"), button("其他音源", "sources")),
-			markup.Row(button("跳过", "skip"), button("标记正常", "normal")))
-	} else if len(report.findings) > 0 {
-		text.WriteString("\n\n已浏览本批发现的问题。")
-	} else {
-		text.WriteString("\n\n已检查的文件中暂无待处理问题。")
-	}
-	if session.index >= len(report.findings) && report.withoutReference > 0 {
-		fmt.Fprintf(&text, "\n%d 首缺少可核实的同版本时长。", report.withoutReference)
-	}
-	if report.remaining > 0 || report.referenceQueue > 0 || (report.resumeAvailable && !session.full) {
-		label := "继续扫描"
-		if session.deep {
-			label = "继续深度扫描"
+		if session.notice != "" {
+			fmt.Fprintf(&text, "\n\n%s", utils.EscapeHTML(session.notice))
 		}
-		rows = append(rows, markup.Row(button(label, "scan")))
+		rows = append(rows, markup.Row(button("▶️ 试听", "play"), button("其他音源", "sources")),
+			markup.Row(button("跳过", "skip"), button("标记正常", "normal")))
+	} else {
+		fmt.Fprintf(&text, "\n已检查 %d/%d 首", report.checked, report.total)
+		if len(report.findings) > 0 {
+			fmt.Fprintf(&text, "\n已查看 %d 个问题", len(report.findings))
+		} else {
+			text.WriteString("\n已检查的文件暂未发现问题")
+		}
+		if pending := report.remaining + report.deferred + report.referenceQueue; pending > 0 {
+			fmt.Fprintf(&text, "\n还有 %d 首待检查", pending)
+		}
+		if report.unreadable > 0 {
+			fmt.Fprintf(&text, "\n%d 首暂时没读到，稍后会重试", report.unreadable)
+		}
+		if session.notice != "" {
+			fmt.Fprintf(&text, "\n\n%s", utils.EscapeHTML(session.notice))
+		}
+		if audioCheckCanContinue(session) {
+			rows = append(rows, markup.Row(button("继续体检", "continue")))
+		}
 	}
-	if report.deferred > 0 {
-		fmt.Fprintf(&text, "\n%d 首已初筛，可再做完整解码。", report.deferred)
-		rows = append(rows, markup.Row(button("深度扫描", "deep")))
-	}
-	fullLabel := "全库体检"
-	if session.full {
-		fullLabel = "继续全库体检"
-	}
-	rows = append(rows, markup.Row(button(fullLabel, "full")))
 	markup.Inline(rows...)
 	return text.String(), markup
 }
 
 func formatAudioCheckProgressCard(session audioCheckSession) (string, *tb.ReplyMarkup) {
-	text := "🎧 <b>曲库体检正在运行</b>\n正在读取曲库并检查文件…"
-	if session.full {
-		text = "🎧 <b>全库体检正在运行</b>\n正在检查曲库全部曲目，包含快速初筛暂缓的文件…"
-	} else if session.deep {
-		text = "🎧 <b>深度体检正在运行</b>\n正在解码检查曲库文件…"
-	}
+	text := "🎧 <b>曲库体检</b>\n──────────────\n正在检查曲库…"
 	if session.report.total > 0 {
-		text += fmt.Sprintf("\n已检查 %d/%d 首", session.report.checked, session.report.total)
-		if session.report.remaining > 0 {
-			text += fmt.Sprintf(" · 剩余 %d 首", session.report.remaining)
-		}
+		text = fmt.Sprintf("🎧 <b>曲库体检</b>\n──────────────\n正在检查 · 已检查 %d/%d 首", session.report.checked, session.report.total)
 	}
 	if session.notice != "" {
 		text += "\n" + utils.EscapeHTML(session.notice)
 	}
 	markup := &tb.ReplyMarkup{}
-	markup.Inline(markup.Row(markup.Data("终止并查看结果", audioCheckCallback, "stop", session.token)))
+	markup.Inline(markup.Row(markup.Data("停止", audioCheckCallback, "stop", session.token)))
 	return text, markup
 }
 

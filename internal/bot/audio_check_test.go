@@ -145,7 +145,7 @@ func TestAudioCheckTelegramCommandAndReview(t *testing.T) {
 	if !strings.Contains(first.text, "1/2") || !strings.Contains(first.text, "Test &amp; Song") || !strings.Contains(first.text, "低码率") {
 		t.Fatalf("unexpected first card: %s", first.text)
 	}
-	button(first, "播放")
+	button(first, "▶️ 试听")
 	button(first, "其他音源")
 	normal := button(first, "标记正常")
 	click(normal, &tb.User{ID: 8}, 42)
@@ -167,52 +167,76 @@ func TestAudioCheckTelegramCommandAndReview(t *testing.T) {
 	command()
 	rescan := next("editMessageText")
 	waitScan()
-	if !strings.Contains(rescan.text, "1/1") || !strings.Contains(rescan.text, "已检查 2/2") {
+	if !strings.Contains(rescan.text, "1/1") || !strings.Contains(rescan.text, "低码率") {
 		t.Fatalf("reviewed file reappeared on next scan: %q", rescan.text)
 	}
 }
 
-func TestAudioCheckCardsOfferStopAndResumableFullScan(t *testing.T) {
+func TestAudioCheckCardsUseOneContinueActionAndFocusedReviewControls(t *testing.T) {
 	session := audioCheckSession{
 		token:  "scan-token",
 		report: audioCheckReport{total: 10, checked: 4, remaining: 3, deferred: 2, referenceQueue: 1},
 	}
 	text, markup := formatAudioCheckCard(session)
-	if !strings.Contains(text, "已检查 4/10 首") {
+	if !strings.Contains(text, "已检查 4/10 首") || !strings.Contains(text, "还有 6 首待检查") {
 		t.Fatalf("result card lost progress: %s", text)
 	}
-	buttons := map[string]string{}
-	for _, row := range markup.InlineKeyboard {
-		for _, button := range row {
-			buttons[button.Text] = button.Data
-		}
+	if len(markup.InlineKeyboard) != 1 || len(markup.InlineKeyboard[0]) != 1 {
+		t.Fatalf("result card should offer one next action: %#v", markup.InlineKeyboard)
 	}
-	for _, label := range []string{"继续扫描", "深度扫描", "全库体检"} {
-		if buttons[label] == "" {
-			t.Errorf("result card is missing %q: %#v", label, markup.InlineKeyboard)
-		}
+	next := markup.InlineKeyboard[0][0]
+	if next.Text != "继续体检" || !strings.HasSuffix(next.Data, "continue|scan-token") {
+		t.Fatalf("unexpected next action: %#v", next)
 	}
-	if !strings.HasSuffix(buttons["全库体检"], "full|scan-token") {
-		t.Errorf("full scan callback = %q", buttons["全库体检"])
+	for _, hidden := range []string{"继续扫描", "深度扫描", "全库体检"} {
+		if strings.Contains(text, hidden) {
+			t.Fatalf("result card still exposes scan mode %q: %s", hidden, text)
+		}
 	}
 
 	session.full = true
 	text, markup = formatAudioCheckProgressCard(session)
-	if !strings.Contains(text, "包含快速初筛暂缓的文件") {
-		t.Fatalf("full scan mode is not explained: %s", text)
+	if strings.Contains(text, "全库") || strings.Contains(text, "深度") {
+		t.Fatalf("progress card still exposes scan mode: %s", text)
 	}
 	if len(markup.InlineKeyboard) != 1 || len(markup.InlineKeyboard[0]) != 1 {
 		t.Fatalf("progress card should have one stop control: %#v", markup.InlineKeyboard)
 	}
 	stop := markup.InlineKeyboard[0][0]
-	if stop.Text != "终止并查看结果" || !strings.HasSuffix(stop.Data, "stop|scan-token") {
+	if stop.Text != "停止" || !strings.HasSuffix(stop.Data, "stop|scan-token") {
 		t.Fatalf("unexpected stop control: %#v", stop)
 	}
 
 	session.running = false
 	_, markup = formatAudioCheckCard(session)
-	if got := markup.InlineKeyboard[len(markup.InlineKeyboard)-1][0].Text; got != "继续全库体检" {
+	if got := markup.InlineKeyboard[len(markup.InlineKeyboard)-1][0].Text; got != "继续体检" {
 		t.Errorf("stopped full scan button = %q", got)
+	}
+}
+
+func TestAudioCheckContinueModeAdvancesWithoutExtraChoices(t *testing.T) {
+	tests := []struct {
+		name       string
+		session    audioCheckSession
+		wantDeep   bool
+		wantFull   bool
+		wantButton bool
+	}{
+		{name: "remaining batch", session: audioCheckSession{report: audioCheckReport{remaining: 2}}, wantButton: true},
+		{name: "deferred after fast scan", session: audioCheckSession{report: audioCheckReport{deferred: 3}}, wantDeep: true, wantButton: true},
+		{name: "limited listing expands library", session: audioCheckSession{report: audioCheckReport{limited: true}}, wantDeep: true, wantFull: true, wantButton: true},
+		{name: "fully complete", session: audioCheckSession{report: audioCheckReport{checked: 10, total: 10}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			deep, full := audioCheckContinueMode(tc.session)
+			if deep != tc.wantDeep || full != tc.wantFull {
+				t.Fatalf("mode = deep:%t full:%t", deep, full)
+			}
+			if got := audioCheckCanContinue(tc.session); got != tc.wantButton {
+				t.Fatalf("continue button = %t", got)
+			}
+		})
 	}
 }
 
@@ -461,7 +485,7 @@ func TestAudioCheckCardHidesTailGlitches(t *testing.T) {
 	if strings.Contains(text, "文件损坏") || strings.Contains(text, "Song") || strings.Contains(text, "未能检查") {
 		t.Fatal(text)
 	}
-	if !strings.Contains(text, "暂无待处理") || !strings.Contains(text, "这次没读到") {
+	if !strings.Contains(text, "已检查的文件暂未发现问题") || !strings.Contains(text, "暂时没读到") {
 		t.Fatal(text)
 	}
 	session.report.findings[0].Result = audioquality.Result{Title: "Cut", Artist: "A", Codec: "flac", Damaged: true, Duration: 200, Decoded: 120}

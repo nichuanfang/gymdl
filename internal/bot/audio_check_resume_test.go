@@ -123,7 +123,7 @@ func TestAudioCheckRecoversAfterRestart(t *testing.T) {
 			app.audioCheckMu.Unlock()
 			if paused {
 				result := next("已恢复停止前的体检记录")
-				if done != nil || !strings.Contains(result.Text, "Saved result") || !strings.Contains(result.Markup, "继续全库体检") {
+				if done != nil || !strings.Contains(result.Text, "Saved result") || !strings.Contains(result.Text, "已恢复停止前的体检记录") {
 					t.Fatalf("paused session automatically started or lost its result: %+v", result)
 				}
 			} else {
@@ -159,9 +159,9 @@ func TestAudioCheckRecoversAfterRestart(t *testing.T) {
 				ID: "skip", Sender: &tb.User{ID: 7}, Message: message,
 				Data: "\faudio_check|skip|" + session.token,
 			}})
-			want := "2/2"
+			want := "· 2/2"
 			if paused {
-				want = "已浏览本批"
+				want = "已查看 1 个问题"
 			}
 			next(want)
 			reopened := &BotApp{cfg: cfg, bot: api}

@@ -153,20 +153,20 @@ func (app *BotApp) restoreAudioChecks(api tb.API) {
 			}
 			continue
 		}
-		notice := "已恢复停止前的体检记录，点击继续扫描可接着检查。"
+		notice := "已恢复停止前的体检记录。"
 		if record.Phase == audioquality.SessionRunning {
 			switch {
 			case libraryErr != nil || library != session.library:
-				notice = "曲库配置暂无法核对，已保留此前记录。请核对配置后继续扫描。"
+				notice = "曲库配置暂无法核对，已保留此前记录。"
 			case missingAudioCheckTool() != "":
-				notice = "当前缺少音频检查工具，已保留此前记录。工具可用后可继续扫描。"
+				notice = "当前缺少音频检查工具，已保留此前记录。"
 			case app.launchRestoredAudioCheck(api, cfg, session):
 				continue
 			default:
 				if app.audioCheckIsStopping() {
 					return
 				}
-				notice = "已有一次体检正在恢复，已保留本任务的结果，稍后可继续扫描。"
+				notice = "已有一次体检正在恢复，已保留本任务的结果。"
 			}
 		}
 		session.running = false
