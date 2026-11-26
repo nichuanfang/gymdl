@@ -69,6 +69,9 @@ type WebDAVConfig struct {
 	WebDAVPass string `yaml:"webdav_pass"` // webdav密码
 	WebDAVDir  string `yaml:"webdav_dir"`  // wevdav路径
 	WebDavHost string `yaml:"webdav_host"` // webdav主机名 需要容器名+frp访问才需要设置
+	// 等待响应头的秒数。上传大文件时服务端要收完 body 才回应，隧道慢时
+	// 默认的 15s 必然超时，表现为 404 / write timeout 并反复重传。0 用默认值。
+	ResponseHeaderTimeoutSeconds int `yaml:"response_header_timeout_seconds"`
 }
 
 type LogConfig struct {

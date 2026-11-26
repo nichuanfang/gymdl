@@ -100,6 +100,9 @@ webdav:
   webdav_pass: ""  # WebDAV 密码
   webdav_dir: ""  # WebDAV 目标路径
   webdav_host: "" # webdav主机名 需要容器名+frp访问才需要设置
+  # 等待 WebDAV 响应头的秒数，默认 180。上传大文件时服务端要收完 body 才回应，
+  # 经 frp 等慢隧道上传 FLAC 时会远超 15 秒，设得太小会反复超时重传。
+  response_header_timeout_seconds: 180
 
 # 歌单整理服务
 playlist_organizer:

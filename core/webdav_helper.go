@@ -32,6 +32,29 @@ var (
 	ErrWebDAVDeferred = fmt.Errorf("WebDAV upload deferred")
 )
 
+const (
+	// The client timeout has to cover the whole body transfer, not just the
+	// header wait, so it stays above the response header budget.
+	webDAVClientTimeoutMargin       = 2 * time.Minute
+	defaultWebDAVResponseHeaderWait = 3 * time.Minute
+)
+
+// webDAVClientTimeout must exceed the header budget, otherwise the client
+// deadline fires first and the configured header wait never applies.
+func webDAVClientTimeout(cfg *config.WebDAVConfig) time.Duration {
+	return webDAVResponseHeaderTimeout(cfg) + webDAVClientTimeoutMargin
+}
+
+// webDAVResponseHeaderTimeout is the time to wait for a response header. A PUT
+// is answered only after the server has consumed the entire body, so this is
+// effectively the upload budget for one attempt.
+func webDAVResponseHeaderTimeout(cfg *config.WebDAVConfig) time.Duration {
+	if cfg != nil && cfg.ResponseHeaderTimeoutSeconds > 0 {
+		return time.Duration(cfg.ResponseHeaderTimeoutSeconds) * time.Second
+	}
+	return defaultWebDAVResponseHeaderWait
+}
+
 // InitWebDAV 初始化全局 WebDAV
 func InitWebDAV(cfg *config.WebDAVConfig) {
 	if logger == nil {
@@ -42,11 +65,13 @@ func InitWebDAV(cfg *config.WebDAVConfig) {
 	}
 
 	client := gowebdav.NewClient(cfg.WebDAVUrl, cfg.WebDAVUser, cfg.WebDAVPass)
-	client.SetTimeout(2 * time.Minute)
+	client.SetTimeout(webDAVClientTimeout(cfg))
 	if base, ok := utils.SharedHTTPClient().Transport.(*http.Transport); ok {
 		transport := base.Clone()
 		// Bound connection setup separately from the body transfer timeout.
-		transport.ResponseHeaderTimeout = 15 * time.Second
+		// The header only arrives once the whole body has been accepted, so a
+		// multi-megabyte FLAC over a slow tunnel needs far more than 15s.
+		transport.ResponseHeaderTimeout = webDAVResponseHeaderTimeout(cfg)
 		client.SetTransport(transport)
 	}
 	if cfg.WebDavHost != "" {
@@ -145,7 +170,10 @@ func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
 	logger.Info("💡 start uploading file to webdav...")
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		_ = w.ensureRemoteDir(fullRemoteDir)
+		if dirErr := w.ensureRemoteDir(fullRemoteDir); dirErr != nil {
+			// The parent may already exist; only a failed PUT is fatal here.
+			logger.Debug(fmt.Sprintf("WebDAV ensure dir %s: %v", fullRemoteDir, dirErr))
+		}
 		file, err := os.Open(localPath)
 		if err != nil {
 			return fmt.Errorf("failed to open local file: %v", err)
@@ -162,11 +190,29 @@ func (w *WebDAV) UploadTo(localPath, remoteDir string) error {
 		lastErr = err
 		logger.Warn(fmt.Sprintf("⚠️ attempt %d/%d failed for %s: %v", attempt, maxRetries, remoteFullPath, err))
 		if attempt < maxRetries {
-			time.Sleep(time.Duration(attempt) * time.Second)
+			// A tunnel that lost its client answers with an immediate 404
+			// ("no route found") and needs a few seconds to be replaced.
+			// Sleeping longer than a second keeps the retry from landing
+			// inside the same outage window.
+			time.Sleep(webDAVRetryDelay(attempt, err))
 		}
 	}
 
 	return fmt.Errorf("WebDAV upload failed after %d attempts: %v", maxRetries, lastErr)
+}
+
+// webDAVRetryDelay backs off further for proxy-level failures, which resolve
+// only after the tunnel's client reconnects.
+func webDAVRetryDelay(attempt int, err error) time.Duration {
+	delay := time.Duration(attempt) * 2 * time.Second
+	if err != nil {
+		text := strings.ToLower(err.Error())
+		if strings.Contains(text, "no route found") || strings.Contains(text, "connection write timeout") ||
+			strings.Contains(text, "context canceled") || strings.Contains(text, "session shutdown") {
+			delay = time.Duration(attempt) * 10 * time.Second
+		}
+	}
+	return delay
 }
 
 // UploadOrStage tries the upload and falls back to the durable local outbox.

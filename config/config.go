@@ -161,6 +161,9 @@ func (c *Config) setDefaults() {
 			WebDavHost: "",
 		}
 	}
+	if c.WebDAV.ResponseHeaderTimeoutSeconds <= 0 {
+		c.WebDAV.ResponseHeaderTimeoutSeconds = 180
+	}
 	if c.Log == nil {
 		c.Log = &LogConfig{
 			Mode:      1,
