@@ -160,13 +160,23 @@ func TestAudioCheckTelegramCommandAndReview(t *testing.T) {
 	}
 	click(normal, user, 42)
 	next("editMessageText") // Progress on the original card.
-	if got := next("editMessageText"); !strings.Contains(got.text, "已检查 2/2 首") {
-		t.Fatalf("review did not open next finding: %q", got.text)
+	second := next("editMessageText")
+	if !strings.Contains(second.text, "已检查 2/2 首") {
+		t.Fatalf("review did not open next finding: %q", second.text)
 	}
 	waitScan()
 	click(normal, user, 42)
-	if got := next("answerCallbackQuery"); !strings.Contains(got.text, "已过期") {
+	if got := next("answerCallbackQuery"); !strings.Contains(got.text, "卡片已更新") {
 		t.Fatalf("old callback moved the new card: %q", got.text)
+	}
+	app.audioCheckMu.Lock()
+	session := app.audioCheckSessions[chat.ID]
+	session.expires = time.Now().Add(-time.Second)
+	app.audioCheckSessions[chat.ID] = session
+	app.audioCheckMu.Unlock()
+	click(button(second, "标记正常"), user, 42)
+	if got := next("answerCallbackQuery"); !strings.Contains(got.text, "已过期") {
+		t.Fatalf("expired callback accepted: %q", got.text)
 	}
 	command()
 	rescan := next("editMessageText")
@@ -492,6 +502,7 @@ func TestAudioCheckReplacesAnUneditableResultCard(t *testing.T) {
 	}
 	original := audioCheckSession{owner: 7, index: 1, library: "test", message: &tb.Message{ID: 42, Chat: &tb.Chat{ID: 7}}}
 	app := &BotApp{}
+	started := time.Now()
 	if err := app.presentAudioCheck(bot, original); err != nil {
 		t.Fatal(err)
 	}
@@ -501,6 +512,9 @@ func TestAudioCheckReplacesAnUneditableResultCard(t *testing.T) {
 	session := app.audioCheckSessions[7]
 	if session.message.ID != 43 || session.index != 0 || session.token == "" {
 		t.Fatalf("replacement session = %+v", session)
+	}
+	if session.expires.Before(started.Add(12*time.Hour)) || session.expires.After(time.Now().Add(12*time.Hour)) {
+		t.Fatalf("replacement expiry = %v, want 12 hours after presentation", session.expires)
 	}
 	store, err := audioquality.Open(storage.DefaultDatabasePath)
 	if err != nil {
@@ -512,7 +526,7 @@ func TestAudioCheckReplacesAnUneditableResultCard(t *testing.T) {
 		t.Fatalf("saved replacement sessions = %v, %v", records, err)
 	}
 	restored, err := decodeAudioCheckSession(records[0])
-	if err != nil || restored.message.ID != 43 || restored.token != session.token {
+	if err != nil || restored.message.ID != 43 || restored.token != session.token || restored.expires.Unix() != session.expires.Unix() {
 		t.Fatalf("restored replacement = %+v, %v", restored, err)
 	}
 }

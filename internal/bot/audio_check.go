@@ -20,7 +20,7 @@ import (
 )
 
 const audioCheckCallback = "audio_check"
-const audioCheckTTL = 24 * time.Hour
+const audioCheckTTL = 12 * time.Hour
 
 var audioCheckEndpoint = tb.InlineButton{Unique: audioCheckCallback}
 
@@ -362,10 +362,14 @@ func (app *BotApp) HandleAudioCheckCallback(c tb.Context) error {
 	chat := c.Chat().ID
 	app.audioCheckMu.Lock()
 	session, ok := app.audioCheckSessions[chat]
-	if !ok || session.owner != c.Sender().ID || session.token != token ||
+	if !ok || session.owner != c.Sender().ID ||
 		(!session.running && time.Now().After(session.expires)) || !sameMusicActionMessage(session.message, c.Message()) {
 		app.audioCheckMu.Unlock()
 		return c.Respond(&tb.CallbackResponse{Text: "这张卡片已过期，请重新发送 /audio_check。", ShowAlert: true})
+	}
+	if session.token != token {
+		app.audioCheckMu.Unlock()
+		return c.Respond(&tb.CallbackResponse{Text: "体检卡片已更新，请使用卡片上最新的按钮。", ShowAlert: true})
 	}
 	if action == "stop" {
 		if !session.running || app.audioCheckCancel == nil {
