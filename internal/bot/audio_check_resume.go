@@ -16,34 +16,41 @@ import (
 )
 
 type savedAudioCheck struct {
-	Owner     int64
-	MessageID int
-	Library   string
-	Deep      bool
-	Full      bool
-	Skipped   []audioquality.FileVersion
-	Index     int
-	Notice    string
-	StartedAt int64
-	Report    *savedAudioCheckReport
+	Owner             int64
+	MessageID         int
+	Library           string
+	Skipped           []audioquality.FileVersion
+	SkippedDuplicates []audioCheckPair
+	Processed         int
+	ConfirmTrash      string
+	Index             int
+	Notice            string
+	StartedAt         int64
+	Report            *savedAudioCheckReport
 }
 
 type savedAudioCheckReport struct {
-	Total, Checked, Remaining, Deferred, Unreadable, ReferenceQueue, WithoutReference int
-	Limited, ResumeAvailable                                                          bool
-	Findings                                                                          []savedAudioCheckFinding
+	Total, Checked, Remaining, Deferred, Unreadable, ReferenceQueue, WithoutReference, Unfingerprinted int
+	Limited, ResumeAvailable                                                                           bool
+	Findings                                                                                           []savedAudioCheckFinding
 }
 
 type savedAudioCheckFinding struct {
-	File   web.FileEntry
-	Result audioquality.Result
+	File      web.FileEntry
+	Result    audioquality.Result
+	Duplicate *audioCheckDuplicate `json:",omitempty"`
 }
 
 func checkpointAudioCheck(store *audioquality.Store, ctx context.Context, session audioCheckSession) error {
 	saved := savedAudioCheck{
 		Owner: session.owner, MessageID: session.message.ID, Library: session.library,
-		Deep: session.deep, Full: session.full, Index: session.index, Notice: session.notice,
-		StartedAt: session.startedAt.UnixNano(),
+		Index: session.index, Notice: session.notice, Processed: session.processed, ConfirmTrash: session.confirmTrash,
+	}
+	if !session.startedAt.IsZero() {
+		saved.StartedAt = session.startedAt.UnixNano()
+	}
+	for pair := range session.skippedDuplicates {
+		saved.SkippedDuplicates = append(saved.SkippedDuplicates, pair)
 	}
 	for version := range session.skipped {
 		saved.Skipped = append(saved.Skipped, version)
@@ -55,10 +62,10 @@ func checkpointAudioCheck(store *audioquality.Store, ctx context.Context, sessio
 		saved.Report = &savedAudioCheckReport{
 			Total: r.total, Checked: r.checked, Remaining: r.remaining, Deferred: r.deferred,
 			Unreadable: r.unreadable, ReferenceQueue: r.referenceQueue, WithoutReference: r.withoutReference,
-			Limited: r.limited, ResumeAvailable: r.resumeAvailable,
+			Limited: r.limited, ResumeAvailable: r.resumeAvailable, Unfingerprinted: r.unfingerprinted,
 		}
 		for _, finding := range r.findings {
-			saved.Report.Findings = append(saved.Report.Findings, savedAudioCheckFinding{File: finding.file, Result: finding.Result})
+			saved.Report.Findings = append(saved.Report.Findings, savedAudioCheckFinding{File: finding.file, Result: finding.Result, Duplicate: finding.duplicate})
 		}
 	}
 	payload, err := json.Marshal(saved)
@@ -100,11 +107,16 @@ func decodeAudioCheckSession(record audioquality.Session) (audioCheckSession, er
 	session := audioCheckSession{
 		token: record.Token, expires: record.ExpiresAt, owner: saved.Owner, library: saved.Library,
 		message: &tb.Message{ID: saved.MessageID, Chat: &tb.Chat{ID: record.ChatID, Type: tb.ChatPrivate}},
-		index:   saved.Index, deep: saved.Deep, full: saved.Full, running: record.Phase == audioquality.SessionRunning,
-		notice: saved.Notice, skipped: make(map[audioquality.FileVersion]struct{}, len(saved.Skipped)),
+		index:   saved.Index, running: record.Phase == audioquality.SessionRunning,
+		processed: saved.Processed, confirmTrash: saved.ConfirmTrash,
+		skippedDuplicates: make(map[audioCheckPair]struct{}, len(saved.SkippedDuplicates)),
+		notice:            saved.Notice, skipped: make(map[audioquality.FileVersion]struct{}, len(saved.Skipped)),
 	}
 	if saved.StartedAt > 0 {
 		session.startedAt = time.Unix(0, saved.StartedAt)
+	}
+	for _, pair := range saved.SkippedDuplicates {
+		session.skippedDuplicates[pair] = struct{}{}
 	}
 	for _, version := range saved.Skipped {
 		session.skipped[version] = struct{}{}
@@ -113,10 +125,10 @@ func decodeAudioCheckSession(record audioquality.Session) (audioCheckSession, er
 		session.report = audioCheckReport{
 			total: r.Total, checked: r.Checked, remaining: r.Remaining, deferred: r.Deferred,
 			unreadable: r.Unreadable, referenceQueue: r.ReferenceQueue, withoutReference: r.WithoutReference,
-			limited: r.Limited, resumeAvailable: r.ResumeAvailable,
+			limited: r.Limited, resumeAvailable: r.ResumeAvailable, unfingerprinted: r.Unfingerprinted,
 		}
 		for _, finding := range r.Findings {
-			session.report.findings = append(session.report.findings, audioCheckFinding{file: finding.File, Result: finding.Result})
+			session.report.findings = append(session.report.findings, audioCheckFinding{file: finding.File, Result: finding.Result, duplicate: finding.Duplicate})
 		}
 	}
 	session.index = max(0, min(session.index, len(session.report.findings)))

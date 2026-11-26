@@ -40,6 +40,10 @@ func Open(filename string) (*Store, error) {
 			size INTEGER NOT NULL, modified INTEGER NOT NULL,
 			PRIMARY KEY(library,path,user_id)
 		);
+		CREATE TABLE IF NOT EXISTS audio_quality_duplicate_reviews(
+			library TEXT NOT NULL, user_id INTEGER NOT NULL, first_path TEXT NOT NULL, second_path TEXT NOT NULL,
+			payload BLOB NOT NULL, PRIMARY KEY(library,user_id,first_path,second_path)
+		);
 		CREATE TABLE IF NOT EXISTS audio_quality_sessions(
 			chat_id INTEGER PRIMARY KEY, token TEXT NOT NULL, phase TEXT NOT NULL,
 			expires_at INTEGER NOT NULL, payload BLOB NOT NULL

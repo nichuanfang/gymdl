@@ -56,7 +56,7 @@ func TestAudioCheckRecoversAfterRestart(t *testing.T) {
 			}
 			saved := audioCheckSession{
 				token: "before-restart", expires: time.Now().Add(time.Hour), owner: 7, library: library,
-				message: message, running: true, full: true, deep: true,
+				message: message, running: true,
 			}
 			if err := checkpointAudioCheck(store, t.Context(), saved); err != nil {
 				t.Fatal(err)
@@ -132,7 +132,7 @@ func TestAudioCheckRecoversAfterRestart(t *testing.T) {
 				if !strings.Contains(progress.Markup, "before-restart") {
 					t.Fatalf("running card did not keep its stop token: %+v", progress)
 				}
-				next("已检查 2/2 首")
+				next("已检查 1/2 首")
 				if done != nil {
 					select {
 					case <-done:
@@ -159,15 +159,25 @@ func TestAudioCheckRecoversAfterRestart(t *testing.T) {
 				ID: "skip", Sender: &tb.User{ID: 7}, Message: message,
 				Data: "\faudio_check|skip|" + session.token,
 			}})
-			want := "· 2/2"
+			var want = "低码率"
 			if paused {
-				want = "已查看 1 个问题"
+				want = "已处理 1 个问题"
 			}
 			next(want)
+			restored.audioCheckMu.Lock()
+			done = restored.audioCheckDone
+			restored.audioCheckMu.Unlock()
+			if done != nil {
+				select {
+				case <-done:
+				case <-time.After(8 * time.Second):
+					t.Fatal("continued scan did not finish")
+				}
+			}
 			reopened := &BotApp{cfg: cfg, bot: api}
 			reopened.restoreAudioChecks(api)
 			after := reopened.audioCheckSessions[7]
-			if _, skipped := after.skipped[version]; after.index != 1 || !skipped {
+			if _, skipped := after.skipped[version]; after.processed != 1 || !skipped {
 				t.Fatalf("review position or skipped file lost on restart: %+v", after)
 			}
 		})

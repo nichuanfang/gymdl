@@ -90,7 +90,7 @@ func newLibraryPruner(cfg *config.Config) (libraryPruner, func(), error) {
 	closeStore := func() { _ = rows.Close() }
 	return libraryPruner{
 		lookup: func(ctx context.Context, path string) (string, error) {
-			return lookupNavidromeID(ctx, cfg.PlaylistOrganizer, path)
+			return LookupNavidromeAudioID(ctx, cfg.PlaylistOrganizer, path)
 		},
 		dropVector: pinecone.Delete,
 		dropRows:   rows.Delete,
@@ -260,7 +260,11 @@ func dropRemovedDuplicateTracks(report audiodupe.Report, removed []string) audio
 	return report
 }
 
-func lookupNavidromeID(ctx context.Context, cfg *config.PlaylistOrganizerConfig, relPath string) (string, error) {
+// LookupNavidromeAudioID resolves an unambiguous Navidrome song by its library path.
+func LookupNavidromeAudioID(ctx context.Context, cfg *config.PlaylistOrganizerConfig, relPath string) (string, error) {
+	if cfg == nil {
+		return "", errors.New("Navidrome 尚未配置")
+	}
 	relPath = cleanDuplicatePath(relPath)
 	if relPath == "" {
 		return "", errors.New("文件路径无效，没有删除")

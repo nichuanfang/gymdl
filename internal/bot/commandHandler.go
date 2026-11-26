@@ -70,7 +70,7 @@ func helpText() string {
 /ai_playlist 预览后创建或更新 [AI] 歌单
 
 <b>曲库</b>
-/audio_check 检查低码率、损坏和疑似缺尾
+/audio_check 逐首处理低码率、损坏、疑似缺尾和重复录音
 /empty_trash 预览后清空回收站
 会删除歌曲文件，并清理 MusicRAG 状态与 Pinecone 向量
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/internal/audiodupe"
 	"github.com/nichuanfang/gymdl/internal/audioquality"
 	"github.com/nichuanfang/gymdl/internal/discovery"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
@@ -20,15 +21,14 @@ import (
 	"github.com/nichuanfang/gymdl/processor"
 )
 
-const (
-	audioCheckBatchFiles = 24
-	audioCheckBatchBytes = 192 << 20
-	audioCheckReferences = 4
-)
-
 type audioCheckFinding struct {
 	file web.FileEntry
 	audioquality.Result
+	duplicate *audioCheckDuplicate
+}
+
+func (f audioCheckFinding) needsReview() bool {
+	return f.duplicate != nil || f.NeedsReview()
 }
 
 type audioCheckReport struct {
@@ -40,17 +40,18 @@ type audioCheckReport struct {
 	unreadable       int
 	referenceQueue   int
 	withoutReference int
+	unfingerprinted  int
 	limited          bool
 	resumeAvailable  bool
 }
 
 type audioCheckScanState struct {
-	files   []web.FileEntry
-	limited bool
-	remote  bool
-	deep    bool
-	indexed map[string][]discovery.NavidromeAudio
-	cached  map[string]audioquality.CachedResult
+	files      []web.FileEntry
+	cached     map[string]audioquality.CachedResult
+	cursor     int
+	report     audioCheckReport
+	duplicates *audioCheckDuplicateIndex
+	pending    *audioCheckFingerprint
 }
 
 func audioCheckLibrary(cfg *config.Config) (string, error) {
@@ -84,31 +85,8 @@ func audioFileVersion(file web.FileEntry) audioquality.FileVersion {
 	return audioquality.FileVersion{Path: file.Path, Size: file.Size, Mod: file.ModTime.UnixNano()}
 }
 
-func scanAudioCheckBatch(ctx context.Context, cfg *config.Config, store *audioquality.Store, library string, user int64, deep bool) (audioCheckReport, error) {
-	state, err := newAudioCheckScanState(ctx, cfg, store, library, user, deep)
-	if err != nil {
-		return audioCheckReport{}, err
-	}
-	return state.scanBatch(ctx, cfg, store, library, deep)
-}
-
-func newAudioCheckScanState(ctx context.Context, cfg *config.Config, store *audioquality.Store, library string, user int64, deep bool) (*audioCheckScanState, error) {
-	return newAudioCheckScanStateMode(ctx, cfg, store, library, user, deep, false)
-}
-
-func newFullAudioCheckScanState(ctx context.Context, cfg *config.Config, store *audioquality.Store, library string, user int64) (*audioCheckScanState, error) {
-	return newAudioCheckScanStateMode(ctx, cfg, store, library, user, true, true)
-}
-
-func newAudioCheckScanStateMode(ctx context.Context, cfg *config.Config, store *audioquality.Store, library string, user int64, deep, full bool) (*audioCheckScanState, error) {
-	var files []web.FileEntry
-	var limited bool
-	var err error
-	if full {
-		files, limited, err = web.ListAllLibraryAudio(ctx, cfg)
-	} else {
-		files, limited, err = web.ListLibraryAudio(ctx, cfg)
-	}
+func newAudioCheckScanState(ctx context.Context, cfg *config.Config, store *audioquality.Store, library string, user int64, fingerprint bool) (*audioCheckScanState, error) {
+	files, limited, err := web.ListAllLibraryAudio(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -116,166 +94,177 @@ func newAudioCheckScanStateMode(ctx context.Context, cfg *config.Config, store *
 	if err != nil {
 		return nil, fmt.Errorf("无法读取体检记录: %w", err)
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
-	remote := cfg.Tidy.Mode == 2
-	state := &audioCheckScanState{files: files, limited: limited, remote: remote, deep: deep, cached: cached}
-	var indexed map[string][]discovery.NavidromeAudio
-	if remote && !deep {
-		// Share the existing Navidrome inventory wire format. If inventory
-		// is unavailable, still inspect files under the ordinary batch budget.
-		indexCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
-		songs, _ := discovery.ReadNavidromeAudio(indexCtx, cfg.PlaylistOrganizer, nil)
-		cancel()
-		indexed = make(map[string][]discovery.NavidromeAudio, len(songs))
-		for _, song := range songs {
-			if song.Path != "" {
-				name := path.Base(filepath.ToSlash(song.Path))
-				indexed[name] = append(indexed[name], song)
-			}
+	// Surface known issues and retry due files before walking healthy cache hits.
+	now := time.Now()
+	priority := func(file web.FileEntry) int {
+		item, exists := cached[file.Path]
+		switch {
+		case !exists || item.FileVersion != audioFileVersion(file) || (item.Unreadable && !now.Before(item.RetryAt)):
+			return 1
+		case !item.Unreadable && !item.Reviewed && item.NeedsReview():
+			return 0
+		default:
+			return 2
 		}
 	}
-	state.indexed = indexed
+	sort.Slice(files, func(i, j int) bool {
+		if a, b := priority(files[i]), priority(files[j]); a != b {
+			return a < b
+		}
+		return files[i].Path < files[j].Path
+	})
+	state := &audioCheckScanState{
+		files: files, cached: cached,
+		report: audioCheckReport{total: len(files), remaining: len(files), limited: limited},
+	}
+	if fingerprint {
+		reviews, err := store.DuplicateReviews(ctx, library, user)
+		if err != nil {
+			return nil, err
+		}
+		state.duplicates = newAudioCheckDuplicateIndex(reviews)
+	}
 	return state, nil
 }
 
-func (state *audioCheckScanState) scanBatch(ctx context.Context, cfg *config.Config, store *audioquality.Store, library string, deep bool) (audioCheckReport, error) {
-	files, cached := state.files, state.cached
-	report := audioCheckReport{total: len(files), limited: state.limited}
-	now := time.Now()
-	attempted := 0
-	var bytes int64
-	for _, file := range files {
-		version := audioFileVersion(file)
-		if item, ok := cached[file.Path]; ok && item.FileVersion == version && (!item.Unreadable || now.Before(item.RetryAt)) {
-			continue
+// scanNext stops at the first actionable finding. The cursor and lookup index
+// live with the card, while file results survive a process restart.
+func (s *audioCheckScanState) scanNext(ctx context.Context, cfg *config.Config, store *audioquality.Store, fingerprints *audiodupe.Store, session audioCheckSession, progress func(audioCheckReport)) (*audioCheckFinding, error) {
+	for s.pending != nil || s.cursor < len(s.files) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		if state.remote && !deep && indexedAudioLooksNormal(file, state.indexed[file.Name]) {
-			report.deferred++
-			continue
+		if pending := s.pending; pending != nil {
+			if !s.duplicates.trashed[audioFileVersion(pending.file)] {
+				if match := s.duplicates.match(pending.file, pending.fp, session.skippedDuplicates); match != nil {
+					return &audioCheckFinding{file: pending.file, Result: pending.result, duplicate: match}, nil
+				}
+				s.duplicates.add(pending.file, pending.result, pending.fp)
+			}
+			s.pending = nil
 		}
-		if file.Size > web.MaxLibraryAudioBytes {
-			report.unreadable++
-			continue
+		if s.cursor == len(s.files) {
+			break
 		}
-		if ctx.Err() != nil || attempted >= audioCheckBatchFiles || (state.remote && attempted > 0 && bytes+file.Size > audioCheckBatchBytes) {
-			report.remaining++
-			continue
-		}
-		attempted++
-		bytes += max(file.Size, 0)
-		item, err := inspectAudioCheckFile(ctx, cfg, file)
+		file := s.files[s.cursor]
+		item, fp, err := s.checkFile(ctx, cfg, store, fingerprints, session.library, file)
 		if err != nil {
-			if ctx.Err() != nil {
-				report.remaining++
-				continue
-			}
-			item = audioquality.CachedResult{FileVersion: version, Result: audioquality.Result{Unreadable: true}, RetryAt: now.Add(time.Hour)}
+			return nil, err
 		}
-		if err := store.Save(ctx, library, item); err != nil {
-			if ctx.Err() != nil {
-				report.remaining++
-				break
+		_, skipped := session.skipped[item.FileVersion]
+		trashed := s.duplicates != nil && s.duplicates.trashed[item.FileVersion]
+		if !skipped && !trashed && !item.Unreadable && !item.Reviewed && !item.NeedsReview() &&
+			!item.RetryAt.IsZero() && !time.Now().Before(item.RetryAt) {
+			web.EnsureAgentRuntime(cfg)
+			item.Reference = audioCheckSourceDuration(ctx, item.Result)
+			if err := ctx.Err(); err != nil {
+				return nil, err
 			}
-			return report, fmt.Errorf("无法保存体检记录: %w", err)
+			item.RetryAt = time.Time{}
+			if item.Reference == 0 {
+				item.RetryAt = time.Now().Add(6 * time.Hour)
+			}
+			if err := store.Save(ctx, session.library, item); err != nil {
+				return nil, err
+			}
+			s.cached[file.Path] = item
 		}
-		state.cached[file.Path] = item
+		s.cursor++
+		s.report.remaining--
+		if item.Unreadable {
+			s.report.unreadable++
+			progress(s.report)
+			continue
+		}
+		s.report.checked++
+		if item.Reference == 0 && !item.Damaged {
+			s.report.withoutReference++
+		}
+		if s.duplicates != nil && !trashed {
+			if audiodupe.LowInformation(fp) {
+				s.report.unfingerprinted++
+			} else {
+				s.pending = &audioCheckFingerprint{file: file, result: item.Result, fp: fp}
+			}
+		}
+		if !skipped && !trashed && !item.Reviewed && item.NeedsReview() {
+			return &audioCheckFinding{file: file, Result: item.Result}, nil
+		}
+		progress(s.report)
 	}
 
-	references := 0
-	for _, file := range files {
-		item, ok := cached[file.Path]
-		if !ok || item.FileVersion != audioFileVersion(file) {
-			continue
-		}
-		if item.Unreadable {
-			if !item.RetryAt.IsZero() && !time.Now().Before(item.RetryAt) {
-				report.remaining++
-			} else {
-				report.unreadable++
-			}
-			continue
-		}
-		if !item.Reviewed && !item.RetryAt.IsZero() && !time.Now().Before(item.RetryAt) {
-			if ctx.Err() == nil && references < audioCheckReferences {
-				references++
-				web.EnsureAgentRuntime(cfg)
-				item.Reference = audioCheckSourceDuration(ctx, item.Result)
-				item.RetryAt = time.Time{}
-				if item.Reference == 0 {
-					item.RetryAt = time.Now().Add(6 * time.Hour)
-				}
-				if ctx.Err() == nil {
-					if err := store.Save(ctx, library, item); err != nil {
-						return report, fmt.Errorf("无法保存时长对照: %w", err)
-					}
-					state.cached[file.Path] = item
-				}
-			} else {
-				report.referenceQueue++
-			}
-		}
-		report.checked++
-		if !item.Damaged && item.Reference == 0 {
-			report.withoutReference++
-		}
-		if !item.Reviewed && item.NeedsReview() {
-			report.findings = append(report.findings, audioCheckFinding{file: file, Result: item.Result})
-		}
-	}
-	sort.SliceStable(report.findings, func(i, j int) bool {
-		left, right := report.findings[i], report.findings[j]
-		if left.Damaged != right.Damaged {
-			return left.Damaged
-		}
-		return left.ShorterThanSource() && !right.ShorterThanSource()
-	})
-	return report, nil
+	return nil, nil
 }
 
-func (state *audioCheckScanState) cachedReport() audioCheckReport {
-	report := audioCheckReport{total: len(state.files), limited: state.limited}
-	now := time.Now()
-	for _, file := range state.files {
-		item, ok := state.cached[file.Path]
-		if !ok || item.FileVersion != audioFileVersion(file) {
-			if state.remote && !state.deep && indexedAudioLooksNormal(file, state.indexed[file.Name]) {
-				report.deferred++
-				continue
-			}
-			if file.Size > web.MaxLibraryAudioBytes {
-				report.unreadable++
-				continue
-			}
-			report.remaining++
-			continue
+func (s *audioCheckScanState) checkFile(ctx context.Context, cfg *config.Config, store *audioquality.Store, fingerprints *audiodupe.Store, library string, file web.FileEntry) (audioquality.CachedResult, audiodupe.Fingerprint, error) {
+	version := audioFileVersion(file)
+	item, known := s.cached[file.Path]
+	known = known && item.FileVersion == version
+	if known && item.Unreadable && time.Now().Before(item.RetryAt) {
+		return item, audiodupe.Fingerprint{}, nil
+	}
+	item.FileVersion = version
+	inspect := !known || item.Unreadable
+	var fp audiodupe.Fingerprint
+	fingerprint := s.duplicates != nil && !s.duplicates.trashed[version] && (inspect || !item.Damaged || item.TailGlitch())
+	if fingerprint {
+		var hit bool
+		var err error
+		fp, hit, err = fingerprints.LoadFingerprint(ctx, file.Path, version.Size, version.Mod)
+		if err != nil {
+			return item, fp, err
 		}
-		if item.Unreadable {
-			if !item.RetryAt.IsZero() && !time.Now().Before(item.RetryAt) {
-				report.remaining++
-			} else {
-				report.unreadable++
-			}
-			continue
+		fingerprint = !hit
+	}
+	if !inspect && !fingerprint {
+		return item, fp, nil
+	}
+	if file.Size > web.MaxLibraryAudioBytes && cfg.Tidy.Mode == 2 {
+		if inspect {
+			item = audioquality.CachedResult{FileVersion: version, Result: audioquality.Result{Unreadable: true}}
 		}
-		if !item.Reviewed && !item.RetryAt.IsZero() && !now.Before(item.RetryAt) {
-			report.referenceQueue++
-		}
-		report.checked++
-		if !item.Damaged && item.Reference == 0 {
-			report.withoutReference++
-		}
-		if !item.Reviewed && item.NeedsReview() {
-			report.findings = append(report.findings, audioCheckFinding{file: file, Result: item.Result})
+		return item, fp, nil
+	}
+
+	fileCtx, cancel := context.WithTimeout(ctx, 50*time.Second)
+	defer cancel()
+	local, cleanup, readErr := web.MaterializeLibraryAudio(fileCtx, cfg, file)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if readErr == nil && inspect {
+		item, readErr = inspectAudioCheckFile(fileCtx, local, version)
+	}
+	if readErr == nil && fingerprint && (!item.Damaged || item.TailGlitch()) {
+		fp, _ = audiodupe.FingerprintFile(fileCtx, local)
+	}
+	if readErr == nil {
+		// A slow fingerprint should not invalidate a successful quality check.
+		versionCtx, cancelVersion := context.WithTimeout(ctx, 8*time.Second)
+		_, readErr = web.CurrentLibraryAudioPathContext(versionCtx, cfg, file)
+		cancelVersion()
+	}
+	if err := ctx.Err(); err != nil {
+		return item, fp, err
+	}
+	if readErr != nil {
+		fp = audiodupe.Fingerprint{}
+		if inspect {
+			item = audioquality.CachedResult{FileVersion: version, Result: audioquality.Result{Unreadable: true}, RetryAt: time.Now().Add(time.Hour)}
 		}
 	}
-	sort.SliceStable(report.findings, func(i, j int) bool {
-		left, right := report.findings[i], report.findings[j]
-		if left.Damaged != right.Damaged {
-			return left.Damaged
+	if inspect {
+		if err := store.Save(ctx, library, item); err != nil {
+			return item, fp, err
 		}
-		return left.ShorterThanSource() && !right.ShorterThanSource()
-	})
-	return report
+		s.cached[file.Path] = item
+	}
+	if fingerprint && len(fp.Items) > 0 {
+		if err := fingerprints.SaveFingerprint(ctx, file.Path, version.Size, version.Mod, fp); err != nil {
+			return item, fp, err
+		}
+	}
+	return item, fp, nil
 }
 
 func cachedAudioCheckReport(ctx context.Context, store *audioquality.Store, library string, user int64) (audioCheckReport, error) {
@@ -317,54 +306,13 @@ func cachedAudioCheckReport(ctx context.Context, store *audioquality.Store, libr
 	return report, nil
 }
 
-func indexedAudioLooksNormal(file web.FileEntry, tracks []discovery.NavidromeAudio) bool {
-	var hit *discovery.NavidromeAudio
-	for i := range tracks {
-		track := &tracks[i]
-		if track.Size <= 0 || track.Size != file.Size {
-			continue
-		}
-		indexedPath := "/" + strings.TrimLeft(filepath.ToSlash(track.Path), "/")
-		if !strings.HasSuffix(indexedPath, "/"+strings.TrimLeft(file.Path, "/")) {
-			continue
-		}
-		if hit != nil {
-			return false
-		}
-		hit = track
-	}
-	if hit == nil || hit.Duration < 90 {
-		return false
-	}
-	switch strings.ToLower(file.Ext) {
-	case ".flac", ".wav":
-		return true
-	case ".mp3":
-		return hit.BitRate >= 192
-	case ".m4a", ".aac", ".ogg", ".opus", ".wma":
-		return hit.BitRate >= 128
-	default:
-		return false
-	}
-}
-
-func inspectAudioCheckFile(ctx context.Context, cfg *config.Config, file web.FileEntry) (audioquality.CachedResult, error) {
-	local, cleanup, err := web.MaterializeLibraryAudio(ctx, cfg, file)
-	if err != nil {
-		return audioquality.CachedResult{}, err
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
+func inspectAudioCheckFile(ctx context.Context, local string, version audioquality.FileVersion) (audioquality.CachedResult, error) {
 	result, err := audioquality.Inspect(ctx, local)
 	if err != nil {
 		return audioquality.CachedResult{}, err
 	}
-	if _, err := web.CurrentLibraryAudioPath(cfg, file); err != nil {
-		return audioquality.CachedResult{}, err
-	}
 	result.Source, _ = audioCheckSource(result.Source)
-	item := audioquality.CachedResult{FileVersion: audioFileVersion(file), Result: result}
+	item := audioquality.CachedResult{FileVersion: version, Result: result}
 	if !result.Damaged && result.Duration > 0 && result.Source != "" && result.Title != "" && result.Artist != "" {
 		item.RetryAt = time.Now()
 	}

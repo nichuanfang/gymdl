@@ -201,12 +201,16 @@ func listLibraryAudio(ctx context.Context, cfg *config.Config, all bool) ([]File
 		var truncated bool
 		var err error
 		if all {
-			entries, truncated, err = scanWebDAVFileIndexAllContext(ctx, webDAVDirectory(cfg), "/", core.GlobalWebDAV.Client)
+			entries, truncated, err = scanWebDAVFileIndexAllContext(ctx, webDAVDirectory(cfg), "/", core.GlobalWebDAV.ClientWithContext(ctx))
 		} else {
 			entries, truncated, err = scanWebDAVFileIndexContext(ctx, webDAVDirectory(cfg), "/", core.GlobalWebDAV.Client)
 		}
+		// The DAV client can interpret a canceled response body as an empty listing.
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
 		if err != nil {
-			return nil, false, fmt.Errorf("读取 WebDAV 曲库失败")
+			return nil, false, fmt.Errorf("读取 WebDAV 曲库失败: %w", err)
 		}
 		return audioOnly(entries), truncated, nil
 	}
@@ -215,6 +219,7 @@ func listLibraryAudio(ctx context.Context, cfg *config.Config, all bool) ([]File
 		return nil, false, fmt.Errorf("还没有配置整理目录")
 	}
 	var entries []FileEntry
+	var incomplete bool
 	err := filepath.WalkDir(root, func(full string, item os.DirEntry, err error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -222,11 +227,16 @@ func listLibraryAudio(ctx context.Context, cfg *config.Config, all bool) ([]File
 		if full == root && err != nil {
 			return err
 		}
-		if err != nil || item.IsDir() || !audioExtension(item.Name()) {
+		if err != nil {
+			incomplete = true
+			return nil
+		}
+		if !item.Type().IsRegular() || !audioExtension(item.Name()) {
 			return nil
 		}
 		info, err := item.Info()
 		if err != nil {
+			incomplete = true
 			return nil
 		}
 		rel, err := filepath.Rel(root, full)
@@ -244,7 +254,7 @@ func listLibraryAudio(ctx context.Context, cfg *config.Config, all bool) ([]File
 	if err != nil {
 		return nil, false, fmt.Errorf("读取本地曲库失败")
 	}
-	return entries, false, nil
+	return entries, incomplete, nil
 }
 
 func audioOnly(entries []FileEntry) []FileEntry {
@@ -308,9 +318,9 @@ func MaterializeLibraryAudio(ctx context.Context, cfg *config.Config, file FileE
 	if err != nil {
 		return "", nil, err
 	}
-	reader, err := core.GlobalWebDAV.Client.ReadStream(remote)
+	reader, err := core.GlobalWebDAV.ClientWithContext(ctx).ReadStream(remote)
 	if err != nil {
-		return "", nil, fmt.Errorf("读取音频失败")
+		return "", nil, fmt.Errorf("WebDAV 打开音频失败: %w", err)
 	}
 	defer reader.Close()
 	temp, err := os.CreateTemp("", "gymdl-fp-*"+file.Ext)
@@ -324,9 +334,17 @@ func MaterializeLibraryAudio(ctx context.Context, cfg *config.Config, file FileE
 	defer stop()
 	written, copyErr := io.Copy(temp, io.LimitReader(reader, MaxLibraryAudioBytes+1))
 	closeErr := temp.Close()
-	if copyErr != nil || ctx.Err() != nil || written > MaxLibraryAudioBytes || (file.Size >= 0 && written != file.Size) {
+	if copyErr != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("读取音频失败")
+		return "", nil, fmt.Errorf("WebDAV 读取音频失败: %w", copyErr)
+	}
+	if err := ctx.Err(); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	if written > MaxLibraryAudioBytes || (file.Size >= 0 && written != file.Size) {
+		cleanup()
+		return "", nil, fmt.Errorf("WebDAV 读取音频长度和目录记录不符")
 	}
 	if closeErr != nil {
 		cleanup()
@@ -338,6 +356,10 @@ func MaterializeLibraryAudio(ctx context.Context, cfg *config.Config, file FileE
 // CurrentLibraryAudioPath verifies the recorded version before issuing any
 // Telegram action. The WebDAV path returned is relative to the library root.
 func CurrentLibraryAudioPath(cfg *config.Config, file FileEntry) (string, error) {
+	return CurrentLibraryAudioPathContext(context.Background(), cfg, file)
+}
+
+func CurrentLibraryAudioPathContext(ctx context.Context, cfg *config.Config, file FileEntry) (string, error) {
 	var source string
 	var info os.FileInfo
 	var err error
@@ -350,7 +372,7 @@ func CurrentLibraryAudioPath(cfg *config.Config, file FileEntry) (string, error)
 			return "", err
 		}
 		source = strings.TrimLeft(file.Path, "/")
-		info, err = core.GlobalWebDAV.Client.Stat(remote)
+		info, err = core.GlobalWebDAV.ClientWithContext(ctx).Stat(remote)
 		if err != nil {
 			return "", err
 		}

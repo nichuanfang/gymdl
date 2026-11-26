@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -58,6 +59,18 @@ func InitWebDAV(cfg *config.WebDAVConfig) {
 		Client: client,
 		Outbox: NewWebDAVOutbox(DefaultWebDAVPendingDir),
 	}
+}
+
+// ClientWithContext binds a request context without mutating the shared client.
+func (w *WebDAV) ClientWithContext(ctx context.Context) *gowebdav.Client {
+	client := *w.Client
+	client.SetInterceptor(func(_ string, req *http.Request) {
+		*req = *req.WithContext(ctx)
+		if w.Config != nil && w.Config.WebDavHost != "" {
+			req.Host = w.Config.WebDavHost
+		}
+	})
+	return &client
 }
 
 // -------------------- 连接检测 --------------------

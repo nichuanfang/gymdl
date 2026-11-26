@@ -448,7 +448,7 @@ func scanWebDAVFileIndexContext(ctx context.Context, baseDir, relPath string, cl
 }
 
 func scanWebDAVFileIndexAllContext(ctx context.Context, baseDir, relPath string, client fileLibraryRemote) ([]FileEntry, bool, error) {
-	return scanWebDAVFileIndexContextWithLimits(ctx, baseDir, relPath, client, 0, 0, maxFileSearchDepth)
+	return scanWebDAVFileIndexContextWithLimits(ctx, baseDir, relPath, client, 0, 0, 0)
 }
 
 func scanWebDAVFileIndexContextWithLimits(ctx context.Context, baseDir, relPath string, client fileLibraryRemote, maxEntries, maxDirs, maxDepth int) ([]FileEntry, bool, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/internal/audiodupe"
 	"github.com/nichuanfang/gymdl/internal/audioquality"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
 	"github.com/nichuanfang/gymdl/internal/storage"
@@ -69,7 +71,7 @@ func TestAudioCheckTelegramCommandAndReview(t *testing.T) {
 		fmt.Fprint(w, `{"ok":true,"result":{"message_id":42,"chat":{"id":7,"type":"private"}}}`)
 	}))
 	defer server.Close()
-	api, err := tb.NewBot(tb.Settings{Offline: true, Synchronous: true, Token: "1:test", URL: server.URL})
+	api, err := tb.NewBot(tb.Settings{Offline: true, Synchronous: true, Token: "1:test", URL: server.URL, OnError: func(err error, _ tb.Context) { t.Errorf("Telegram handler: %v", err) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +144,7 @@ func TestAudioCheckTelegramCommandAndReview(t *testing.T) {
 	command()
 	first := next("editMessageText")
 	waitScan()
-	if !strings.Contains(first.text, "1/2") || !strings.Contains(first.text, "Test &amp; Song") || !strings.Contains(first.text, "低码率") {
+	if !strings.Contains(first.text, "已检查 1/2 首") || !strings.Contains(first.text, "Test &amp; Song") || !strings.Contains(first.text, "低码率") {
 		t.Fatalf("unexpected first card: %s", first.text)
 	}
 	button(first, "▶️ 试听")
@@ -157,9 +159,11 @@ func TestAudioCheckTelegramCommandAndReview(t *testing.T) {
 		t.Fatalf("wrong message callback accepted: %q", got.text)
 	}
 	click(normal, user, 42)
-	if got := next("editMessageText"); !strings.Contains(got.text, "2/2") {
+	next("editMessageText") // Progress on the original card.
+	if got := next("editMessageText"); !strings.Contains(got.text, "已检查 2/2 首") {
 		t.Fatalf("review did not open next finding: %q", got.text)
 	}
+	waitScan()
 	click(normal, user, 42)
 	if got := next("answerCallbackQuery"); !strings.Contains(got.text, "已过期") {
 		t.Fatalf("old callback moved the new card: %q", got.text)
@@ -167,7 +171,7 @@ func TestAudioCheckTelegramCommandAndReview(t *testing.T) {
 	command()
 	rescan := next("editMessageText")
 	waitScan()
-	if !strings.Contains(rescan.text, "1/1") || !strings.Contains(rescan.text, "低码率") {
+	if !strings.Contains(rescan.text, "已检查 1/2 首") || !strings.Contains(rescan.text, "低码率") {
 		t.Fatalf("reviewed file reappeared on next scan: %q", rescan.text)
 	}
 }
@@ -178,7 +182,7 @@ func TestAudioCheckCardsUseOneContinueActionAndFocusedReviewControls(t *testing.
 		report: audioCheckReport{total: 10, checked: 4, remaining: 3, deferred: 2, referenceQueue: 1},
 	}
 	text, markup := formatAudioCheckCard(session)
-	if !strings.Contains(text, "已检查 4/10 首") || !strings.Contains(text, "还有 6 首待检查") {
+	if !strings.Contains(text, "已检查 4/10 首") || !strings.Contains(text, "5 首待检查") {
 		t.Fatalf("result card lost progress: %s", text)
 	}
 	if len(markup.InlineKeyboard) != 1 || len(markup.InlineKeyboard[0]) != 1 {
@@ -194,7 +198,6 @@ func TestAudioCheckCardsUseOneContinueActionAndFocusedReviewControls(t *testing.
 		}
 	}
 
-	session.full = true
 	text, markup = formatAudioCheckProgressCard(session)
 	if strings.Contains(text, "全库") || strings.Contains(text, "深度") {
 		t.Fatalf("progress card still exposes scan mode: %s", text)
@@ -211,32 +214,6 @@ func TestAudioCheckCardsUseOneContinueActionAndFocusedReviewControls(t *testing.
 	_, markup = formatAudioCheckCard(session)
 	if got := markup.InlineKeyboard[len(markup.InlineKeyboard)-1][0].Text; got != "继续体检" {
 		t.Errorf("stopped full scan button = %q", got)
-	}
-}
-
-func TestAudioCheckContinueModeAdvancesWithoutExtraChoices(t *testing.T) {
-	tests := []struct {
-		name       string
-		session    audioCheckSession
-		wantDeep   bool
-		wantFull   bool
-		wantButton bool
-	}{
-		{name: "remaining batch", session: audioCheckSession{report: audioCheckReport{remaining: 2}}, wantButton: true},
-		{name: "deferred after fast scan", session: audioCheckSession{report: audioCheckReport{deferred: 3}}, wantDeep: true, wantButton: true},
-		{name: "limited listing expands library", session: audioCheckSession{report: audioCheckReport{limited: true}}, wantDeep: true, wantFull: true, wantButton: true},
-		{name: "fully complete", session: audioCheckSession{report: audioCheckReport{checked: 10, total: 10}}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			deep, full := audioCheckContinueMode(tc.session)
-			if deep != tc.wantDeep || full != tc.wantFull {
-				t.Fatalf("mode = deep:%t full:%t", deep, full)
-			}
-			if got := audioCheckCanContinue(tc.session); got != tc.wantButton {
-				t.Fatalf("continue button = %t", got)
-			}
-		})
 	}
 }
 
@@ -324,24 +301,52 @@ func TestCachedAudioCheckReportShowsCompletedFindingsWhenIndexStops(t *testing.T
 	}
 }
 
-func TestAudioCheckWebDAVDefersHealthyFilesAndCanDecodeThem(t *testing.T) {
-	fixture := filepath.Join(t.TempDir(), "song.flac")
-	writeAudioCheckFixture(t, fixture, "-c:a", "flac")
+func writeAudioCheckFingerprintFixture(t *testing.T) string {
+	t.Helper()
+	for _, tool := range []string{"ffprobe", "ffmpeg", "fpcalc"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip("requires " + tool)
+		}
+	}
+	file := filepath.Join(t.TempDir(), "recording.flac")
+	cmd := exec.CommandContext(t.Context(), "ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "anoisesrc=seed=23:d=12", "-c:a", "flac", file)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create fingerprint fixture: %v %s", err, output)
+	}
+	return file
+}
+
+func TestAudioCheckWebDAVReusesFileAndHandlesPartialTransfers(t *testing.T) {
+	fixture := writeAudioCheckFingerprintFixture(t)
 	data, err := os.ReadFile(fixture)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var downloads atomic.Int32
-	var partial atomic.Bool
+	var downloads, listings atomic.Int32
+	var partial, blockListing atomic.Bool
+	listingStarted := make(chan struct{}, 1)
+	releaseListing := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/rest/search3.view":
-			fmt.Fprintf(w, `{"subsonic-response":{"status":"ok","searchResult3":{"song":[{"id":"id","path":"/library/song.flac","duration":180,"bitRate":450,"size":%d}]}}}`, len(data))
+		case r.Method == "OPTIONS":
+			w.WriteHeader(http.StatusOK)
 		case r.Method == "PROPFIND":
+			if blockListing.Load() && r.Header.Get("Depth") == "1" {
+				_, _ = io.Copy(io.Discard, r.Body)
+				listingStarted <- struct{}{}
+				select {
+				case <-r.Context().Done():
+				case <-releaseListing:
+				}
+				return
+			}
 			w.Header().Set("Content-Type", "application/xml")
 			w.WriteHeader(http.StatusMultiStatus)
 			fmt.Fprint(w, `<d:multistatus xmlns:d="DAV:">`)
 			if r.URL.Path == "/library/" || r.URL.Path == "/library" {
+				if r.Header.Get("Depth") == "1" {
+					listings.Add(1)
+				}
 				fmt.Fprint(w, `<d:response><d:href>/library/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`)
 			}
 			fmt.Fprintf(w, `<d:response><d:href>/library/song.flac</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>%d</d:getcontentlength><d:getlastmodified>Sat, 21 Nov 2026 12:00:00 GMT</d:getlastmodified></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>`, len(data))
@@ -358,13 +363,18 @@ func TestAudioCheckWebDAVDefersHealthyFilesAndCanDecodeThem(t *testing.T) {
 		}
 	}))
 	defer server.Close()
+	defer close(releaseListing)
 	cfg := &config.Config{
 		Tidy:              &config.TidyConfig{Mode: 2},
 		WebDAV:            &config.WebDAVConfig{WebDAVDir: "library", WebDAVUrl: server.URL},
 		PlaylistOrganizer: &config.PlaylistOrganizerConfig{NavidromeURL: server.URL, NavidromeUsername: "user", NavidromePassword: "password"},
 	}
 	old := core.GlobalWebDAV
-	core.GlobalWebDAV = &core.WebDAV{Config: cfg.WebDAV, Client: gowebdav.NewClient(server.URL, "", "")}
+	client := gowebdav.NewClient(server.URL, "", "")
+	if err := client.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	core.GlobalWebDAV = &core.WebDAV{Config: cfg.WebDAV, Client: client}
 	t.Cleanup(func() { core.GlobalWebDAV = old })
 	store, err := audioquality.Open(filepath.Join(t.TempDir(), "audio.db"))
 	if err != nil {
@@ -373,31 +383,68 @@ func TestAudioCheckWebDAVDefersHealthyFilesAndCanDecodeThem(t *testing.T) {
 	defer store.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	fast, err := scanAudioCheckBatch(ctx, cfg, store, "webdav", 1, false)
-	if err != nil || downloads.Load() != 0 || fast.total != 1 || fast.deferred != 1 {
-		t.Fatalf("ordinary batch downloaded an indexed clean file: %#v, downloads=%d err=%v", fast, downloads.Load(), err)
-	}
-	fullState, err := newFullAudioCheckScanState(ctx, cfg, store, "webdav", 1)
+	fingerprints, err := audiodupe.Open(filepath.Join(t.TempDir(), "fingerprints.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pending := fullState.cachedReport(); pending.remaining != 1 || pending.deferred != 0 {
-		t.Fatalf("full scan should include quick-scan deferred files: %#v", pending)
+	defer fingerprints.Close()
+	load := func(library string) *audioCheckScanState {
+		t.Helper()
+		state, err := newAudioCheckScanState(ctx, cfg, store, library, 1, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state
 	}
-	deep, err := fullState.scanBatch(ctx, cfg, store, "webdav", true)
-	if err != nil || downloads.Load() != 1 || deep.checked != 1 || len(deep.findings) != 0 || deep.unreadable != 0 {
-		t.Fatalf("deep batch did not check the stored file: %#v, downloads=%d err=%v", deep, downloads.Load(), err)
+	scan := func(state *audioCheckScanState, library string) {
+		t.Helper()
+		finding, err := state.scanNext(ctx, cfg, store, fingerprints, audioCheckSession{library: library}, func(audioCheckReport) {})
+		if err != nil || finding != nil {
+			t.Fatalf("finding = %+v, err = %v", finding, err)
+		}
 	}
-	if _, err := fullState.scanBatch(ctx, cfg, store, "webdav", true); err != nil || downloads.Load() != 1 {
-		t.Fatalf("unchanged WebDAV file downloaded again: %d %v", downloads.Load(), err)
+	state := load("webdav")
+	scan(state, "webdav")
+	scan(state, "webdav")
+	if downloads.Load() != 1 || listings.Load() != 1 || state.report.checked != 1 || state.report.unfingerprinted != 0 {
+		t.Fatalf("inspection and fingerprint should share one download and one directory snapshot: %+v, GET=%d PROPFIND=%d", state.report, downloads.Load(), listings.Load())
+	}
+	scan(load("webdav"), "webdav")
+	if downloads.Load() != 1 {
+		t.Fatalf("unchanged WebDAV file downloaded again: %d", downloads.Load())
 	}
 	partial.Store(true)
-	unreadable, err := scanAudioCheckBatch(ctx, cfg, store, "partial-transfer", 1, true)
-	if err != nil || unreadable.unreadable != 1 || unreadable.checked != 0 || len(unreadable.findings) != 0 {
-		t.Fatalf("short WebDAV read was incorrectly reported as file damage: %#v %v", unreadable, err)
+	for range 2 {
+		state = load("partial-transfer")
+		scan(state, "partial-transfer")
+		if state.report.unreadable != 1 || state.report.checked != 0 {
+			t.Fatalf("short WebDAV read was incorrectly reported as file damage: %+v", state.report)
+		}
 	}
-	if _, err := scanAudioCheckBatch(ctx, cfg, store, "partial-transfer", 1, true); err != nil || downloads.Load() != 2 {
-		t.Fatalf("temporary transfer failure was immediately retried: downloads=%d err=%v", downloads.Load(), err)
+	if downloads.Load() != 2 {
+		t.Fatalf("temporary transfer failure was immediately retried: GET=%d", downloads.Load())
+	}
+	blockListing.Store(true)
+	listingCtx, cancelListing := context.WithCancel(ctx)
+	defer cancelListing()
+	listed := make(chan error, 1)
+	go func() {
+		_, err := newAudioCheckScanState(listingCtx, cfg, store, "webdav", 1, true)
+		listed <- err
+	}()
+	select {
+	case <-listingStarted:
+		cancelListing()
+	case <-ctx.Done():
+		t.Fatal("WebDAV listing did not start")
+	}
+	select {
+	case err := <-listed:
+		if err != context.Canceled {
+			t.Fatalf("canceling the listing returned %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled WebDAV listing did not return")
 	}
 }
 
@@ -452,7 +499,7 @@ func TestAudioCheckReplacesAnUneditableResultCard(t *testing.T) {
 		t.Fatal("expected one edit followed by a replacement card")
 	}
 	session := app.audioCheckSessions[7]
-	if session.message.ID != 43 || session.index != 1 || session.token == "" {
+	if session.message.ID != 43 || session.index != 0 || session.token == "" {
 		t.Fatalf("replacement session = %+v", session)
 	}
 	store, err := audioquality.Open(storage.DefaultDatabasePath)
@@ -492,5 +539,68 @@ func TestAudioCheckCardHidesTailGlitches(t *testing.T) {
 	text, _ = formatAudioCheckCard(session)
 	if !strings.Contains(text, "文件损坏") || !strings.Contains(text, "解码 2:00／标注 3:20") {
 		t.Fatal(text)
+	}
+}
+
+func TestAudioCheckReviewsDuplicateBeforeScanningNextFile(t *testing.T) {
+	fixture := writeAudioCheckFingerprintFixture(t)
+	data, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for _, name := range []string{"a.flac", "b.flac"} {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "c.flac"), []byte("broken audio"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Tidy: &config.TidyConfig{Mode: 1, DistDir: dir}}
+	database := filepath.Join(t.TempDir(), "audit.sqlite")
+	store, err := audioquality.Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	fingerprints, err := audiodupe.Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fingerprints.Close()
+	ctx := t.Context()
+	state, err := newAudioCheckScanState(ctx, cfg, store, "library", 7, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := audioCheckSession{library: "library", owner: 7}
+	progress := func(audioCheckReport) {}
+	finding, err := state.scanNext(ctx, cfg, store, fingerprints, session, progress)
+	if err != nil || finding == nil || finding.duplicate == nil || finding.duplicate.Kind != audiodupe.KindSame || state.cursor != 2 {
+		t.Fatalf("expected the duplicate before reading c.flac, cursor=%d, finding=%+v, err=%v", state.cursor, finding, err)
+	}
+	cached, err := store.Results(ctx, "library", 7)
+	if err != nil || len(cached) != 2 {
+		t.Fatalf("expected exactly two inspected files, got %d, err=%v", len(cached), err)
+	}
+	pair := audioCheckFilePair(finding.file, finding.duplicate.File)
+	review := audioquality.DuplicateReview{First: pair.First, Second: pair.Second}
+	if err := store.SaveDuplicateReview(ctx, "library", 7, review); err != nil {
+		t.Fatal(err)
+	}
+	state.duplicates.review(review)
+	finding, err = state.scanNext(ctx, cfg, store, fingerprints, session, progress)
+	if err != nil || finding == nil || finding.file.Name != "c.flac" || !finding.Damaged {
+		t.Fatalf("continue did not reach the next finding: %+v, %v", finding, err)
+	}
+	session.skipped = map[audioquality.FileVersion]struct{}{audioFileVersion(finding.file): {}}
+	state, err = newAudioCheckScanState(ctx, cfg, store, "library", 7, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finding, err = state.scanNext(ctx, cfg, store, fingerprints, session, progress)
+	if err != nil || finding != nil {
+		t.Fatalf("a reviewed pair reappeared after reloading the index: %+v, %v", finding, err)
 	}
 }
