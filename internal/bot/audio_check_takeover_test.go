@@ -22,6 +22,7 @@ type checkCall struct {
 	messageID string
 	text      string
 	markup    string
+	parseMode string
 }
 
 func checkTestBot(t *testing.T) (*tb.Bot, <-chan checkCall) {
@@ -34,12 +35,13 @@ func checkTestBot(t *testing.T) (*tb.Bot, <-chan checkCall) {
 			Text      string `json:"text"`
 			Markup    string `json:"reply_markup"`
 			MessageID string `json:"message_id"`
+			ParseMode string `json:"parse_mode"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Errorf("decode Telegram request: %v", err)
 		}
 		method := filepath.Base(r.URL.Path)
-		calls <- checkCall{method: method, messageID: payload.MessageID, text: payload.Text, markup: payload.Markup}
+		calls <- checkCall{method: method, messageID: payload.MessageID, text: payload.Text, markup: payload.Markup, parseMode: payload.ParseMode}
 		w.Header().Set("Content-Type", "application/json")
 		if method == "answerCallbackQuery" {
 			fmt.Fprint(w, `{"ok":true,"result":true}`)

@@ -150,7 +150,7 @@ func (app *BotApp) HandlePlaylistAssignmentWebAppSelection(selectionToken string
 	if !ok {
 		return errors.New("歌单选择链接已过期")
 	}
-	if app == nil || app.cfg == nil || app.cfg.Telegram == nil {
+	if app.cfg == nil || app.cfg.Telegram == nil {
 		return errors.New("Telegram 配置不可用")
 	}
 	if err := validateTelegramWebAppInitData(initData, app.cfg.Telegram.BotToken, assignment.userID, time.Now()); err != nil {

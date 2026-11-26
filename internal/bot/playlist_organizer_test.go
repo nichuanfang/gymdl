@@ -1549,3 +1549,34 @@ func TestAutoArchiveCopyNamesTheTargetPlaylists(t *testing.T) {
 		t.Fatalf("the archive step should name its playlists: %q", got)
 	}
 }
+
+// The progress card is rendered with HTML, so the edit call must carry the
+// parse mode. Without it Telegram showed "<b>自动整理歌单</b>" literally.
+func TestPlaylistAssignmentEditsAreSentWithHTMLParsing(t *testing.T) {
+	api, calls := checkTestBot(t)
+	app := &BotApp{bot: api}
+	message := &tb.Message{ID: 42, Chat: &tb.Chat{ID: 7, Type: tb.ChatPrivate}}
+
+	err := app.editPlaylistAssignmentMessage(message, formatAutoPlaylistAssignment(pendingPlaylistAssignment{
+		song:              unplaylistSong{ID: "song-1", Title: "夜行"},
+		selectedPlaylists: []string{"华语"},
+		selectionComplete: true,
+	}), &tb.ReplyMarkup{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case call := <-calls:
+		if call.method != "editMessageText" {
+			t.Fatalf("method = %q, want editMessageText", call.method)
+		}
+		if call.parseMode != "HTML" {
+			t.Fatalf("parse_mode = %q, want HTML", call.parseMode)
+		}
+		if !strings.Contains(call.text, "<b>自动整理歌单</b>") {
+			t.Fatalf("card text = %q", call.text)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no editMessageText request was made")
+	}
+}

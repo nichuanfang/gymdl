@@ -1843,7 +1843,7 @@ func (app *BotApp) commitPlaylistAssignmentRun(token string) (bool, error) {
 		}
 		return false, errors.New("另一项歌单维护正在运行，请稍后重试")
 	}
-	note := "正在放入 " + formatPlaylistNameList(started.selectedPlaylists) + "…"
+	note := "正在放入 " + utils.EscapeHTML(formatPlaylistNameList(started.selectedPlaylists)) + "…"
 	if started.autoAssign {
 		note = formatAutoPlaylistAssignment(started)
 	}
@@ -2334,16 +2334,19 @@ func truncatePlaylistLabel(value string, limit int) string {
 	return string(runes[:limit-1]) + "…"
 }
 
+// Every copy sent through here is the same text the chooser card renders with
+// HTML (`<b>` headings, escaped song titles), so the edit must parse it too.
+// Without the parse mode the auto-archive progress card showed literal tags.
 func (app *BotApp) editPlaylistAssignmentMessage(message *tb.Message, text string, markup *tb.ReplyMarkup) error {
 	app.playlistAssignmentRenderMu.Lock()
 	defer app.playlistAssignmentRenderMu.Unlock()
-	return app.editPlaylistAssignmentText(message, text, markup, "")
+	return app.editPlaylistAssignmentText(message, text, markup, tb.ModeHTML)
 }
 
 func (app *BotApp) editPlaylistAssignmentCallback(c tb.Context, text string, markup *tb.ReplyMarkup) error {
 	app.playlistAssignmentRenderMu.Lock()
 	defer app.playlistAssignmentRenderMu.Unlock()
-	return c.Edit(text, markup)
+	return c.Edit(text, tb.ModeHTML, markup)
 }
 
 func (app *BotApp) editPlaylistAssignmentCard(message *tb.Message, assignment pendingPlaylistAssignment) error {
