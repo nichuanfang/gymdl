@@ -111,6 +111,7 @@ playlist_organizer:
   navidrome_password: "" # Navidrome密码
   web_app_url: "" # Nginx 上 Telegram 歌单选择页面地址，例如 https://webapp.example.com
   playlist_assist: false  # 是否使用 AI 为歌单整理预选分类
+  auto_assign: false  # 自动整理：AI 选中歌单后直接归档，只有匹配不到歌单时才停下来手动选择（需要 playlist_assist: true）
   # 歌单名称和描述保存在 data/gymdl.sqlite3，用 /playlist_desc 或控制台维护
 
 # 收藏自动入库与遗珠找回

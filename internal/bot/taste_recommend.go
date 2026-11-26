@@ -97,7 +97,7 @@ func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string
 		}
 		text, _ := app.renderDiscoveryCard(card, 0)
 		platform := aichat.PlatformLabel(request.Platform)
-		if request.Platform == "" || request.Platform == discovery.TasteBoth {
+		if request.AutoPlatform || request.Platform == "" || request.Platform == discovery.TasteBoth {
 			platform = "自动选择（网易云 / QQ）"
 		}
 		scene := request.Filter.Scene
@@ -110,11 +110,10 @@ func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string
 	app.rediscoverMu.Unlock()
 	switch {
 	case args[0] == "next" && len(args) == 1:
-		if len(card.Tracks) == 0 {
-			request.Page++
-		}
+		request = nextTasteRequest(request, card)
 	case args[0] == "platform" && len(args) == 2 && discovery.ValidTastePlatform(args[1]):
 		request.Platform = args[1]
+		request.AutoPlatform = false
 		request.Page = 0
 	case args[0] == "scene" && len(args) == 2:
 		filter, ok := request.Filter.WithScene(args[1])
@@ -129,16 +128,38 @@ func (app *BotApp) handleTasteCallback(c tb.Context, token string, args []string
 	return app.startTasteRecommendation(c, request, &card)
 }
 
-// An unspecified platform means one of the two catalogs, chosen once for this
-// card. Later "next" clicks keep that choice; "自动选择" asks for a new draw.
+// An unspecified platform means one of the two catalogs, drawn per request:
+// "自动选择" reopens the draw, while an explicit platform stays put. The draw
+// is recorded on the card so a later "next" can tell the two apart.
 func chooseUnspecifiedTastePlatform(request discovery.TasteRequest) discovery.TasteRequest {
 	if request.Platform != discovery.TasteBoth {
 		return request
 	}
+	request.AutoPlatform = true
 	if tasteAutoPlatform() == "qq" {
 		request.Platform = "qq"
 	} else {
 		request.Platform = "netease"
+	}
+	return request
+}
+
+// nextTasteRequest advances a card to the next song. An automatic card draws a
+// fresh catalog each time so the two catalogs alternate; a card the listener
+// pinned to one platform keeps searching that one.
+func nextTasteRequest(request discovery.TasteRequest, card discovery.Card) discovery.TasteRequest {
+	if len(card.Tracks) == 0 {
+		request.Page++
+	}
+	if !request.AutoPlatform {
+		return request
+	}
+	previous := request.Platform
+	request.Platform = discovery.TasteBoth
+	request = chooseUnspecifiedTastePlatform(request)
+	if request.Platform != previous {
+		// A different catalog starts its own result list.
+		request.Page = 0
 	}
 	return request
 }

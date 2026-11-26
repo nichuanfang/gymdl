@@ -114,7 +114,7 @@ const labels: Record<string, string> = {
   lrc_api: 'LrcAPI', ai: 'AI', ai_playlist: 'AI 智能歌单生成', n8n_config: 'n8n', qq_music_api: 'QQ 音乐 API', additional_config: '附加功能',
   file: '日志文件', level: '日志等级', chat_id: 'Chat ID', allowed_users: '允许的用户', webhook_url: 'Webhook 地址',
   webhook_port: 'Webhook 端口', lrc_api_url: 'LrcAPI 地址', lrc_api_host: 'LrcAPI Host', base_url: '服务地址',
-  model: '模型', system_prompt: '系统提示词', n8n_base_url: 'n8n 地址', playlist_assist: 'AI 预选分类',
+  model: '模型', system_prompt: '系统提示词', n8n_base_url: 'n8n 地址', playlist_assist: 'AI 预选分类', auto_assign: '自动整理（匹配不到才停下）',
   api_key: 'API Key', music_rag_table_id: 'MusicRAG 数据表 ID',
   playlist_organizer: '歌单整理服务', olivetin_url: 'OliveTin 地址', olivetin_username: 'OliveTin 用户名',
   olivetin_password: 'OliveTin 密码', navidrome_url: 'Navidrome 地址', navidrome_username: 'Navidrome 用户名',

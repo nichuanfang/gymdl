@@ -1320,3 +1320,232 @@ func TestPlaylistAILimitSkipsLaterSongs(t *testing.T) {
 		t.Fatalf("cooldown copy = %q", got)
 	}
 }
+
+func TestAutoAssignArchivesOnlyWhenTheClassifierNamesAPlaylist(t *testing.T) {
+	base := pendingPlaylistAssignment{
+		token:          "auto-token-0123456789abcdef",
+		chatID:         10,
+		userID:         10,
+		song:           unplaylistSong{ID: "song-1", Title: "夜行", Artist: "歌手"},
+		playlists:      []config.PlaylistInfo{{Name: "华语"}, {Name: "摇滚"}},
+		webAppBaseURL:  "https://webapp.example.com",
+		selectionToken: "selection-1",
+		playlistAssist: true,
+		autoAssign:     true,
+		handledSongIDs: map[string]struct{}{},
+		expiresAt:      time.Now().Add(time.Minute),
+	}
+
+	matched := base
+	matched.aiSuggestedPlaylists = []string{"华语"}
+	if playlistAssignmentNeedsManual(matched) {
+		t.Fatal("a song the classifier matched should stay automatic")
+	}
+	if got := formatPlaylistAssignment(matched); !strings.Contains(got, "自动整理") || !strings.Contains(got, "正在放入《夜行》") {
+		t.Fatalf("auto progress card = %q", got)
+	}
+
+	missing := base
+	if !playlistAssignmentNeedsManual(missing) {
+		t.Fatal("an unmatched song must stop for a manual pick")
+	}
+	if got := formatPlaylistAssignment(missing); !strings.Contains(got, "AI 没匹配到合适歌单") || !strings.Contains(got, "夜行") {
+		t.Fatalf("manual fallback card = %q", got)
+	}
+
+	cooling := base
+	cooling.aiSuggestionUnavailable = true
+	if !playlistAssignmentNeedsManual(cooling) {
+		t.Fatal("a classifier outage must stop for a manual pick")
+	}
+	if got := formatPlaylistAssignment(cooling); !strings.Contains(got, "AI 这次没跑成") {
+		t.Fatalf("outage card = %q", got)
+	}
+
+	loading := base
+	loading.aiSuggestionLoading = true
+	if playlistAssignmentNeedsManual(loading) {
+		t.Fatal("loading should not prompt the user yet")
+	}
+
+	failed := matched
+	failed.statusNote = "❌ 歌单更新或核验失败。"
+	if !playlistAssignmentNeedsManual(failed) {
+		t.Fatal("a failed archive must surface for a retry")
+	}
+
+	retry := matched
+	retry.retryNext = true
+	if !playlistAssignmentNeedsManual(retry) {
+		t.Fatal("a failed lookup must surface for a retry")
+	}
+}
+
+func TestAutoAssignToggleIsOfferedOnlyForTheBatchFlow(t *testing.T) {
+	app := &BotApp{}
+	assignment := pendingPlaylistAssignment{
+		token:          "toggle-token-0123456789abc",
+		song:           unplaylistSong{ID: "song-1", Title: "夜行"},
+		playlists:      []config.PlaylistInfo{{Name: "华语"}},
+		playlistAssist: true,
+		handledSongIDs: map[string]struct{}{},
+		expiresAt:      time.Now().Add(time.Minute),
+	}
+	if !app.registerPlaylistAssignment(assignment) {
+		t.Fatal("failed to register assignment")
+	}
+	texts := buttonTexts(playlistAssignmentMarkup(assignment))
+	if !texts["⚡ 自动整理剩余歌曲"] {
+		t.Fatalf("batch flow should offer auto mode: %#v", texts)
+	}
+
+	updated, ok := app.togglePlaylistAssignmentAuto(assignment.token, true)
+	if !ok || !updated.autoAssign {
+		t.Fatalf("auto mode was not enabled: %#v ok=%t", updated, ok)
+	}
+	markup := playlistAssignmentMarkup(updated)
+	if !buttonTexts(markup)["✋ 改为手动确认"] {
+		t.Fatal("auto mode should offer a way back")
+	}
+	// 真实 token 是去掉连字符的 UUID，回调数据必须放进 Telegram 的 64 字节上限。
+	real := assignment
+	real.token = "0123456789abcdef0123456789abcdef"
+	real.autoAssign = true
+	for _, button := range playlistAssignmentMarkup(real).InlineKeyboard[0] {
+		if len(button.Data) > 64 {
+			t.Fatalf("auto callback is %d bytes: %q", len(button.Data), button.Data)
+		}
+	}
+	if text := formatAutoPlaylistAssignment(updated); !strings.Contains(text, "已归档 0 首") {
+		t.Fatalf("auto progress card = %q", text)
+	}
+
+	target := assignment
+	target.token = "target-token-0123456789abc"
+	target.chatID = 11
+	target.targetSong = &pendingMusicAction{title: "夜行"}
+	target.autoAssign = false
+	if !app.registerPlaylistAssignment(target) {
+		t.Fatal("failed to register target assignment")
+	}
+	if buttonTexts(playlistAssignmentMarkup(target))["⚡ 自动整理剩余歌曲"] {
+		t.Fatal("single-song flow should not offer auto mode")
+	}
+
+	noAssist := assignment
+	noAssist.token = "no-assist-token-0123456789"
+	noAssist.chatID = 12
+	noAssist.playlistAssist = false
+	noAssist.autoAssign = false
+	if !app.registerPlaylistAssignment(noAssist) {
+		t.Fatal("failed to register assignment without AI assistance")
+	}
+	if buttonTexts(playlistAssignmentMarkup(noAssist))["⚡ 自动整理剩余歌曲"] {
+		t.Fatal("auto mode needs the classifier")
+	}
+	if _, ok := app.togglePlaylistAssignmentAuto(noAssist.token, true); ok {
+		t.Fatal("auto mode must not be switchable without AI assistance")
+	}
+}
+
+func TestAutoAssignIgnoresSuggestionsOutsideThePlaylistWhitelist(t *testing.T) {
+	app := &BotApp{}
+	assignment := pendingPlaylistAssignment{
+		token:          "guard-token-0123456789abcd",
+		chatID:         10,
+		song:           unplaylistSong{ID: "song-1", Title: "夜行"},
+		playlists:      []config.PlaylistInfo{{Name: "华语"}},
+		selectionToken: "selection-1",
+		playlistAssist: true,
+		autoAssign:     true,
+		handledSongIDs: map[string]struct{}{},
+		expiresAt:      time.Now().Add(time.Minute),
+	}
+	if !app.registerPlaylistAssignment(assignment) {
+		t.Fatal("failed to register assignment")
+	}
+	if app.autoArchivePlaylistAssignment(assignment, []string{"不存在的歌单"}) {
+		t.Fatal("an unknown playlist must not be archived automatically")
+	}
+	stored, ok := app.getPlaylistAssignment(assignment.token)
+	if !ok || stored.selectionComplete || stored.processing {
+		t.Fatalf("a rejected suggestion changed the session: %+v", stored)
+	}
+
+	missing := assignment
+	missing.selectionToken = ""
+	if app.autoArchivePlaylistAssignment(missing, []string{"华语"}) {
+		t.Fatal("a session without a live selection token must not auto-archive")
+	}
+}
+
+func TestAutoAssignReportsWhenAnotherMaintenanceHoldsTheRunLock(t *testing.T) {
+	app := &BotApp{aiPlaylistRunning: map[int64]struct{}{10: {}}}
+	assignment := pendingPlaylistAssignment{
+		token:          "busy-token-0123456789abc",
+		chatID:         10,
+		song:           unplaylistSong{ID: "song-1", Title: "夜行"},
+		playlists:      []config.PlaylistInfo{{Name: "华语"}},
+		selectionToken: "selection-1",
+		playlistAssist: true,
+		autoAssign:     true,
+		handledSongIDs: map[string]struct{}{},
+		expiresAt:      time.Now().Add(time.Minute),
+	}
+	if !app.registerPlaylistAssignment(assignment) {
+		t.Fatal("failed to register assignment")
+	}
+	if !app.autoArchivePlaylistAssignment(assignment, []string{"华语"}) {
+		t.Fatal("the busy path should still take over from the caller")
+	}
+	stored, ok := app.getPlaylistAssignment(assignment.token)
+	if !ok || stored.processing {
+		t.Fatalf("the song should stay confirmable instead of hanging: %#v", stored)
+	}
+	if !stored.selectionComplete {
+		t.Fatal("the accepted selection should be preserved for a manual retry")
+	}
+}
+
+func TestAutoAssignKeepsAdvancingWithoutHoldingTheRunLock(t *testing.T) {
+	app := &BotApp{}
+	assignment := pendingPlaylistAssignment{
+		token:          "advance-token-0123456789ab",
+		chatID:         10,
+		playlistAssist: true,
+		autoAssign:     true,
+		handledSongIDs: map[string]struct{}{},
+		expiresAt:      time.Now().Add(time.Minute),
+	}
+	if !app.registerPlaylistAssignment(assignment) {
+		t.Fatal("failed to register assignment")
+	}
+	if !app.beginPlaylistAssignmentRun(assignment.chatID) {
+		t.Fatal("failed to take the run lock")
+	}
+	if app.beginPlaylistAssignmentRun(assignment.chatID) {
+		t.Fatal("the run lock should be exclusive")
+	}
+	app.finishPlaylistAssignmentRun(assignment.chatID)
+	if !app.beginPlaylistAssignmentRun(assignment.chatID) {
+		t.Fatal("the next song must be able to take the lock after the previous one advanced")
+	}
+}
+
+func TestAutoArchiveCopyNamesTheTargetPlaylists(t *testing.T) {
+	assignment := pendingPlaylistAssignment{
+		song:              unplaylistSong{ID: "song-1", Title: "夜行"},
+		selectedPlaylists: []string{"华语", "摇滚"},
+		selectionComplete: true,
+		addedCount:        2,
+		processedCount:    3,
+		skippedCount:      1,
+	}
+	got := formatAutoPlaylistAssignment(assignment)
+	if !strings.Contains(got, "已归档 2 首") || !strings.Contains(got, "已在歌单 1 首") || !strings.Contains(got, "跳过 1 首") {
+		t.Fatalf("progress totals = %q", got)
+	}
+	if !strings.Contains(got, "正在放入《夜行》→ 华语、摇滚…") {
+		t.Fatalf("the archive step should name its playlists: %q", got)
+	}
+}

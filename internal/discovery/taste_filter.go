@@ -8,10 +8,13 @@ import (
 const TasteBoth = "both"
 
 type TasteRequest struct {
-	Platform     string      `json:"platform"`
-	Filter       TasteFilter `json:"filter,omitempty"`
-	ExploreFirst bool        `json:"explore_first,omitempty"`
-	Page         int         `json:"page,omitempty"`
+	Platform string      `json:"platform"`
+	Filter   TasteFilter `json:"filter,omitempty"`
+	// AutoPlatform records that the listener never named a catalog, so the
+	// "next" click may draw again instead of staying on this card's platform.
+	AutoPlatform bool `json:"auto_platform,omitempty"`
+	ExploreFirst bool `json:"explore_first,omitempty"`
+	Page         int  `json:"page,omitempty"`
 }
 
 type TasteFilter struct {

@@ -65,6 +65,7 @@ type pendingPlaylistAssignment struct {
 	addedAny                bool
 	selectionComplete       bool
 	playlistAssist          bool
+	autoAssign              bool // 分类器选中歌单就直接归档，选不出才停下来等人
 	aiSuggestedPlaylists    []string
 	aiSuggestionUnavailable bool
 	aiSuggestionLoading     bool
@@ -1432,8 +1433,10 @@ func (app *BotApp) startPlaylistAssignmentForSong(c tb.Context, target *pendingM
 		return c.Send("歌单选择页面尚未配置：" + err.Error())
 	}
 	playlistAssist := false
+	autoAssign := false
 	if app.cfg.PlaylistOrganizer != nil {
 		playlistAssist = app.cfg.PlaylistOrganizer.PlaylistAssist
+		autoAssign = app.cfg.PlaylistOrganizer.AutoAssign
 	}
 	loadCtx, loadCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	entries, _, err := loadTidyPlaylists(loadCtx, app.playlistCatalog)
@@ -1483,6 +1486,7 @@ func (app *BotApp) startPlaylistAssignmentForSong(c tb.Context, target *pendingM
 		playlists:           append([]config.PlaylistInfo(nil), options...),
 		webAppBaseURL:       webAppBaseURL.String(),
 		playlistAssist:      playlistAssist,
+		autoAssign:          playlistAssist && autoAssign && target == nil,
 		processing:          true,
 		handledSongIDs:      make(map[string]struct{}),
 		hiddenPlaylistCount: len(skipped),
@@ -1604,7 +1608,47 @@ func (app *BotApp) loadPlaylistAssignmentAISuggestions(token string, song unplay
 	if !ok || updated.processing {
 		return
 	}
+	// 自动整理：AI 选中歌单就直接归档，只有匹配不到时才停下来等人选。
+	if updated.autoAssign && len(suggestions) > 0 && app.autoArchivePlaylistAssignment(updated, suggestions) {
+		return
+	}
 	app.presentPlaylistAssignment(updated)
+}
+
+// autoArchivePlaylistAssignment 把 AI 的建议直接当作选择提交。返回 false 表示
+// 没有接手，调用方继续展示手动选择卡片。
+func (app *BotApp) autoArchivePlaylistAssignment(assignment pendingPlaylistAssignment, suggestions []string) bool {
+	if assignment.processing || assignment.song.ID == "" || assignment.selectionToken == "" {
+		return false
+	}
+	selected, err := normalizePlaylistSelection(suggestions, assignment.playlists)
+	if err != nil {
+		utils.WarnWithFormat("[Telegram] 自动整理跳过：AI 建议不在歌单白名单内: %v", err)
+		return false
+	}
+	accepted, err := app.acceptPlaylistAssignmentSelection(assignment.token, assignment.selectionToken, selected)
+	if err != nil {
+		utils.WarnWithFormat("[Telegram] 自动整理跳过：%v", err)
+		return false
+	}
+	started, err := app.commitPlaylistAssignmentRun(accepted.token)
+	if err != nil {
+		utils.WarnWithFormat("[Telegram] 自动整理提交失败，转人工选择：%v", err)
+		if refreshed, ok := app.getPlaylistAssignment(accepted.token); ok {
+			app.presentPlaylistAssignment(refreshed)
+		}
+		return true
+	}
+	if !started {
+		// 另一项歌单维护占着运行锁，这首没有开始归档；画回确认卡片等用户重试。
+		utils.WarnWithFormat("[Telegram] 自动整理被其他歌单任务占用，改为手动确认")
+		if current, ok := app.getPlaylistAssignment(accepted.token); ok {
+			app.presentPlaylistAssignment(current)
+		}
+		return true
+	}
+	utils.InfoWithFormat("[Telegram] 自动整理 chat=%d song=%s → %s", accepted.chatID, accepted.song.ID, formatPlaylistNameList(selected))
+	return true
 }
 
 func (app *BotApp) storePlaylistAssignmentAISuggestions(token, songID string, seq int, suggestions []string, unavailable bool) (pendingPlaylistAssignment, bool) {
@@ -1701,6 +1745,27 @@ func (app *BotApp) HandlePlaylistAssignmentCallback(c tb.Context) error {
 		go app.loadPlaylistAssignmentAISuggestions(updated.token, updated.song, updated.aiSuggestionSeq)
 		return nil
 
+	case "auto":
+		if !assignment.playlistAssist {
+			return c.Respond(&tb.CallbackResponse{Text: "先开启 playlist_assist 才能自动整理", ShowAlert: true})
+		}
+		enable := len(args) == 3 && args[2] == "on"
+		updated, ok := app.togglePlaylistAssignmentAuto(token, enable)
+		if !ok {
+			return c.Respond(&tb.CallbackResponse{Text: "现在不能切换整理方式", ShowAlert: true})
+		}
+		if enable {
+			_ = c.Respond(&tb.CallbackResponse{Text: "已切换到自动整理"})
+		} else {
+			_ = c.Respond(&tb.CallbackResponse{Text: "已切换到手动整理"})
+		}
+		// 已有建议时立即按新模式处理当前这首，不必再等一首。
+		if updated.autoAssign && len(updated.aiSuggestedPlaylists) > 0 && !updated.aiSuggestionLoading &&
+			app.autoArchivePlaylistAssignment(updated, updated.aiSuggestedPlaylists) {
+			return nil
+		}
+		return app.editPlaylistAssignmentCard(updated.message, updated)
+
 	case "skip":
 		if assignment.targetSong != nil {
 			return c.Respond(&tb.CallbackResponse{Text: "请使用「结束整理」关闭这次整理。"})
@@ -1759,20 +1824,32 @@ func playlistAssignmentCallbackMatches(callback *tb.Callback, assignment pending
 // commitPlaylistAssignment treats the WebApp submit as the confirmation.
 // The archive runs in the background and the card moves on to the next song.
 func (app *BotApp) commitPlaylistAssignment(token string) error {
+	_, err := app.commitPlaylistAssignmentRun(token)
+	return err
+}
+
+// commitPlaylistAssignmentRun reports whether this call actually started the
+// archive. A quiet nil from another running maintenance task would otherwise
+// leave the card waiting on a job that never began.
+func (app *BotApp) commitPlaylistAssignmentRun(token string) (bool, error) {
 	started, ok := app.beginPlaylistAssignment(token)
 	if !ok {
-		return errors.New("这首正在处理或会话已过期")
+		return false, errors.New("这首正在处理或会话已过期")
 	}
 	if !app.beginPlaylistAssignmentRun(started.chatID) {
 		app.markPlaylistAssignmentProcessing(token, false)
 		if app.playlistAssignmentRunActive(started.chatID) {
-			return nil
+			return false, nil
 		}
-		return errors.New("另一项歌单维护正在运行，请稍后重试")
+		return false, errors.New("另一项歌单维护正在运行，请稍后重试")
 	}
-	_ = app.editPlaylistAssignmentMessage(started.message, "正在放入 "+formatPlaylistNameList(started.selectedPlaylists)+"…", &tb.ReplyMarkup{})
+	note := "正在放入 " + formatPlaylistNameList(started.selectedPlaylists) + "…"
+	if started.autoAssign {
+		note = formatAutoPlaylistAssignment(started)
+	}
+	_ = app.editPlaylistAssignmentMessage(started.message, note, &tb.ReplyMarkup{})
 	go app.completePlaylistAssignment(started.token)
-	return nil
+	return true, nil
 }
 
 func (app *BotApp) completePlaylistAssignment(token string) {
@@ -1780,7 +1857,17 @@ func (app *BotApp) completePlaylistAssignment(token string) {
 	if !ok {
 		return
 	}
-	defer app.finishPlaylistAssignmentRun(assignment.chatID)
+	// 运行锁要在读下一首之前放掉（见函数末尾），所以统一用 guard 释放，
+	// 避免 deferred 调用把下一首刚拿到的锁又删掉。
+	released := false
+	release := func() {
+		if released {
+			return
+		}
+		released = true
+		app.finishPlaylistAssignmentRun(assignment.chatID)
+	}
+	defer release()
 	service, err := newPlaylistOrganizerService(app.cfg.PlaylistOrganizer)
 	if err != nil {
 		app.failPlaylistAssignment(token, "❌ 整理服务配置无效，请检查配置后重试。", err)
@@ -1824,6 +1911,9 @@ func (app *BotApp) completePlaylistAssignment(token string) {
 		app.finishPlaylistAssignment(token)
 		return
 	}
+	// 先放掉运行锁再读下一首：自动整理要在下一首的建议返回后立刻提交，
+	// 如果这里还占着锁，那一首会被当成「另一项歌单维护正在运行」而卡住。
+	release()
 	app.advancePlaylistAssignment(token)
 }
 
@@ -1860,7 +1950,11 @@ func (app *BotApp) advancePlaylistAssignment(token string) {
 	if !ok {
 		return
 	}
-	app.editPlaylistAssignmentMessage(assignment.message, "⌛ 正在读取下一首待归档歌曲…", &tb.ReplyMarkup{})
+	loading := "⌛ 正在读取下一首待归档歌曲…"
+	if assignment.autoAssign {
+		loading = formatAutoPlaylistAssignment(assignment)
+	}
+	_ = app.editPlaylistAssignmentMessage(assignment.message, loading, &tb.ReplyMarkup{})
 	app.preparePlaylistAssignment(token)
 }
 
@@ -1943,12 +2037,63 @@ func (app *BotApp) playlistAssignmentSuggestion(assignment pendingPlaylistAssign
 		if app.playlistAICooling(time.Now()) {
 			return "AI 限流中，直接选即可"
 		}
+		if assignment.autoAssign {
+			return "⚠️ AI 这次没能给出歌单，请手动选一个"
+		}
 		return "这次没有建议，直接选即可"
 	}
 	if !assignment.playlistAssist {
 		return ""
 	}
+	if assignment.autoAssign {
+		return "⚠️ AI 没匹配到合适歌单，请手动选一个"
+	}
 	return "没有明显合适的，直接选即可"
+}
+
+// playlistAssignmentNeedsManual reports whether automatic archiving has to stop
+// for this song: the classifier named no playlist, could not run, or the archive
+// attempt failed and needs a retry. Everything else keeps running unattended.
+func playlistAssignmentNeedsManual(assignment pendingPlaylistAssignment) bool {
+	if assignment.song.ID == "" || assignment.aiSuggestionLoading {
+		return false
+	}
+	// A manual pick is already in flight; keep the normal confirm card.
+	if assignment.selectionComplete {
+		return true
+	}
+	if assignment.retryNext || strings.TrimSpace(assignment.statusNote) != "" {
+		return true
+	}
+	return len(assignment.aiSuggestedPlaylists) == 0
+}
+
+// formatAutoPlaylistAssignment keeps the auto loop quiet: the card only reports
+// progress until the user actually has to decide something.
+func formatAutoPlaylistAssignment(assignment pendingPlaylistAssignment) string {
+	var text strings.Builder
+	text.WriteString("⚡ <b>自动整理歌单</b>\n──────────────────\n")
+	fmt.Fprintf(&text, "已归档 %d 首", assignment.addedCount)
+	if assignment.processedCount > assignment.addedCount {
+		fmt.Fprintf(&text, "，已在歌单 %d 首", assignment.processedCount-assignment.addedCount)
+	}
+	if assignment.skippedCount > 0 {
+		fmt.Fprintf(&text, "，跳过 %d 首", assignment.skippedCount)
+	}
+	text.WriteString("\n\n")
+	switch {
+	case assignment.song.ID == "":
+		text.WriteString("正在读取下一首待归档歌曲…")
+	case assignment.aiSuggestionLoading:
+		fmt.Fprintf(&text, "正在判断《%s》…", utils.EscapeHTML(utils.TruncateString(displaySongValue(assignment.song.Title), 40)))
+	case assignment.selectionComplete && len(assignment.selectedPlaylists) > 0:
+		fmt.Fprintf(&text, "正在放入《%s》→ %s…",
+			utils.EscapeHTML(utils.TruncateString(displaySongValue(assignment.song.Title), 40)),
+			utils.EscapeHTML(formatPlaylistNameList(assignment.selectedPlaylists)))
+	default:
+		fmt.Fprintf(&text, "正在放入《%s》…", utils.EscapeHTML(utils.TruncateString(displaySongValue(assignment.song.Title), 40)))
+	}
+	return text.String()
 }
 
 func playlistAssignmentHeading(assignment pendingPlaylistAssignment) string {
@@ -1988,6 +2133,11 @@ func formatPlaylistNameList(names []string) string {
 }
 
 func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
+	// In auto mode the card only appears when the classifier had nothing to
+	// offer; the rest of the loop stays out of the way.
+	if assignment.autoAssign && !playlistAssignmentNeedsManual(assignment) {
+		return formatAutoPlaylistAssignment(assignment)
+	}
 	var text strings.Builder
 	text.WriteString(playlistAssignmentHeading(assignment))
 	text.WriteString("\n──────────────────\n")
@@ -2027,6 +2177,13 @@ func formatPlaylistAssignment(assignment pendingPlaylistAssignment) string {
 	} else if note := strings.TrimSpace(assignment.statusNote); note != "" {
 		text.WriteString("\n\n")
 		text.WriteString(utils.EscapeHTML(note))
+	} else if assignment.autoAssign && !assignment.selectionComplete {
+		text.WriteString("\n\n")
+		if assignment.aiSuggestionUnavailable {
+			text.WriteString("⚠️ 自动整理已暂停：AI 这次没跑成（限流或出错）或被跳过，请手动选一个。")
+		} else {
+			text.WriteString("⚠️ 自动整理已暂停：AI 没匹配到合适歌单，请手动选一个。")
+		}
 	}
 	if assignment.hiddenPlaylistCount > 0 {
 		fmt.Fprintf(&text, "\n⚠️ %d 个歌单未显示。", assignment.hiddenPlaylistCount)
@@ -2094,7 +2251,14 @@ func playlistAssignmentSourceURL(raw string) string {
 
 func playlistAssignmentMarkup(assignment pendingPlaylistAssignment) *tb.ReplyMarkup {
 	markup := &tb.ReplyMarkup{}
-	rows := make([]tb.Row, 0, 3)
+	rows := make([]tb.Row, 0, 4)
+	// 自动整理运行中不需要选歌单，只留「结束整理」和模式切换。
+	if assignment.autoAssign && !playlistAssignmentNeedsManual(assignment) {
+		rows = append(rows, markup.Row(markup.Data("结束整理", playlistAssignmentCallbackUnique, "stop", assignment.token)))
+		rows = append(rows, markup.Row(playlistAssignmentAutoButton(markup, assignment)))
+		markup.Inline(rows...)
+		return markup
+	}
 	if assignment.retryNext {
 		rows = append(rows, markup.Row(
 			markup.Data("↻ 重试查询", playlistAssignmentCallbackUnique, "next", assignment.token),
@@ -2127,8 +2291,21 @@ func playlistAssignmentMarkup(assignment pendingPlaylistAssignment) *tb.ReplyMar
 	} else {
 		rows = append(rows, markup.Row(markup.Data("结束整理", playlistAssignmentCallbackUnique, "stop", assignment.token)))
 	}
+	// 批量整理时始终保留自动/手动切换，卡在某一首也能立刻改模式。
+	if assignment.playlistAssist && assignment.targetSong == nil {
+		rows = append(rows, markup.Row(playlistAssignmentAutoButton(markup, assignment)))
+	}
 	markup.Inline(rows...)
 	return markup
+}
+
+// playlistAssignmentAutoButton toggles one-tap archiving for this session. It
+// is only offered in the batch flow, where the next song is unknown.
+func playlistAssignmentAutoButton(markup *tb.ReplyMarkup, assignment pendingPlaylistAssignment) tb.Btn {
+	if assignment.autoAssign {
+		return markup.Data("✋ 改为手动确认", playlistAssignmentCallbackUnique, "auto", assignment.token, "off")
+	}
+	return markup.Data("⚡ 自动整理剩余歌曲", playlistAssignmentCallbackUnique, "auto", assignment.token, "on")
 }
 
 func displaySongValue(value string) string {
@@ -2390,6 +2567,22 @@ func (app *BotApp) beginPlaylistAssignmentReselection(token string) (pendingPlay
 	assignment.webAppButtonURL = webAppURL
 	assignment.statusNote = ""
 	assignment.expiresAt = time.Now().Add(playlistAssignmentTTL)
+	app.playlistAssignments[token] = assignment
+	return clonePlaylistAssignment(assignment), true
+}
+
+// togglePlaylistAssignmentAuto 切换本次整理是否自动归档。自动模式只在 AI 给出
+// 建议时接管，其余情况仍然停下等人。
+func (app *BotApp) togglePlaylistAssignmentAuto(token string, enable bool) (pendingPlaylistAssignment, bool) {
+	app.playlistAssignmentMu.Lock()
+	defer app.playlistAssignmentMu.Unlock()
+	app.ensurePlaylistAssignmentMapsLocked()
+	app.purgePlaylistAssignmentsLocked(time.Now())
+	assignment, ok := app.playlistAssignments[token]
+	if !ok || assignment.processing || !assignment.playlistAssist {
+		return pendingPlaylistAssignment{}, false
+	}
+	assignment.autoAssign = enable
 	app.playlistAssignments[token] = assignment
 	return clonePlaylistAssignment(assignment), true
 }

@@ -282,6 +282,7 @@ playlist_organizer:
   navidrome_password: '' # Navidrome密码
   web_app_url: '' # Nginx 上 Telegram 歌单选择页面地址，例如 https://webapp.example.com
   playlist_assist: false # 是否使用 AI 为歌单整理预选分类
+  auto_assign: false # 自动整理：AI 选中歌单后直接归档，只有匹配不到歌单时才停下手动选择
   # 歌单名称和描述保存在 SQLite，用 /playlist_desc 或控制台维护
 
 # 收藏自动入库与遗珠找回
@@ -354,12 +355,12 @@ n8n_config:
 
 > 📚 **歌单配置**：连接信息归属 `playlist_organizer`。歌单名称和描述只保存在 SQLite。每天 04:10 从 Navidrome 同步名称，已有描述保持不变；新歌单的第一句描述来自 Navidrome 备注。用 `/playlist_desc` 或控制台修改描述。
 
-> 🎼 **歌单整理**：`/assign_playlist` 由 gymdl 逐首处理。每首歌先展示歌曲卡片；开启 AI 建议后，WebSearch 和分类完成时才显示长期使用的 Nginx 歌单选择页面，确保 AI 匹配能作为默认勾选项。等待期间可跳过本首或结束整理；AI 不可用时仍可手动选择。AI 建议需要开启 `playlist_organizer.playlist_assist` 和 `ai.enable`，会使用歌曲来源备注协助核验。MusicRAG 仍消费 n8n `music_rag` 表；请配置 `n8n_config.n8n_base_url`、有数据表行读取/新增/删除权限的 `n8n_config.api_key` 和 `n8n_config.music_rag_table_id`。未配置时歌单仍会更新，但机器人会明确提示 MusicRAG 状态未同步；`/empty_trash` 必须配置状态表桥接后才会执行。
+> 🎼 **歌单整理**：`/assign_playlist` 默认逐首手动确认。每首歌先展示歌曲卡片；开启 AI 建议后，WebSearch 和分类完成时才显示长期使用的 Nginx 歌单选择页面，确保 AI 匹配能作为默认勾选项。等待期间可跳过本首或结束整理；AI 不可用时仍可手动选择。整理过程中随时可点卡片底部的「⚡ 自动整理剩余歌曲」切到半自动：AI 选中歌单就直接归档并继续下一首，只有 AI 匹配不到歌单或调用失败时才停下等你选；点「✋ 改为手动确认」可切回。把 `playlist_organizer.auto_assign` 设为 `true` 则从第一首起就半自动。两种方式都需要开启 `playlist_organizer.playlist_assist` 和 `ai.enable`，会使用歌曲来源备注协助核验。MusicRAG 仍消费 n8n `music_rag` 表；请配置 `n8n_config.n8n_base_url`、有数据表行读取/新增/删除权限的 `n8n_config.api_key` 和 `n8n_config.music_rag_table_id`。未配置时歌单仍会更新，但机器人会明确提示 MusicRAG 状态未同步；`/empty_trash` 必须配置状态表桥接后才会执行。
 > 🤖 **AI 智能歌单**：`/ai_playlist` 在 gymdl 中直接调用 AI、Pinecone 和 Navidrome，可从已有的 `[AI]` 歌单中选择空歌单或已有曲目的歌单。文本模型复用 `ai.base_url`、`ai.api_key` 和 `ai.model`；Embedding 可单独设置 `embedding_base_url`、`embedding_api_key` 与服务返回的模型 ID。Embedding 模型、namespace 和 1536 维索引必须与 MusicRAG 入库配置一致；检索意图和歌单编排模型可通过 `query_model` / `playlist_model` 覆盖。
 
 ### 歌单与回收站流程
 
-- **`/assign_playlist` 歌单整理**：gymdl 先读取第一首待整理歌曲并展示原有风格的歌曲卡片。启用 AI 归档建议后，WebSearch 和分类在后台运行；完成后再显示 Nginx 歌单选择页，并把建议设为默认勾选项，避免旧页面先打开时收不到建议。等待期间仍可跳过本首或结束整理；AI 不可用或没有可靠匹配时可手动选择。建议会使用歌曲名、艺人、专辑、来源备注和同歌手已有归档。用户逐首核对并确认后，gymdl 补加歌曲、同步 MusicRAG 状态，再展示下一首；失败时可安全重试，状态表按歌曲 ID 去重。
+- **`/assign_playlist` 歌单整理**：gymdl 先读取第一首待整理歌曲并展示原有风格的歌曲卡片。启用 AI 归档建议后，WebSearch 和分类在后台运行；完成后再显示 Nginx 歌单选择页，并把建议设为默认勾选项，避免旧页面先打开时收不到建议。等待期间仍可跳过本首或结束整理；AI 不可用或没有可靠匹配时可手动选择。建议会使用歌曲名、艺人、专辑、来源备注和同歌手已有归档。用户逐首核对并确认后，gymdl 补加歌曲、同步 MusicRAG 状态，再展示下一首；失败时可安全重试，状态表按歌曲 ID 去重。切到半自动（卡片上的「⚡ 自动整理剩余歌曲」或 `playlist_organizer.auto_assign: true`）后，AI 给出歌单就自动归档并继续，只有匹配不到歌单或 AI 调用失败时才停下来等手动选择。
 - **`/ai_playlist` AI 智能歌单**：读取所有 `[AI]` 歌单，包括已有曲目的歌单。用户选择目标后发送生成要求或快捷主题，GymDL 将备注和要求改写为检索描述，再通过 Embedding 和 Pinecone 召回候选歌曲；检查歌曲仍在 Navidrome 曲库后由 AI 编排并展示预览，可调整要求或换一版。确认时会复核预览时的歌单曲目快照，再替换整份歌单；确认前不改动曲目。计划和原有曲目快照保存在 `data/gymdl.sqlite3`，部分替换或复核失败后可安全续跑。AI 编排失败时会使用规则排序兜底；失效 Pinecone 向量按批删除，避免逐首发起请求。
 - **`/empty_trash` 清空回收站**：校验歌曲 ID 和相对文件路径，预检 MusicRAG 删除权限及 Pinecone 连通性，再展示待删数量供用户确认（5 分钟内有效）。确认时会重新读取回收站；若内容变化则停止并要求重新确认。清理顺序为 Pinecone 向量、MusicRAG 状态、歌曲文件。失败会报告阶段和文件进度；各删除操作可幂等重试，重新发送 `/empty_trash` 即可重试未完成的清理。
 - **定时清空回收站**：开启 `additional_config.enable_cron` 并配置 OliveTin、Navidrome 和 Pinecone 后，每 30 分钟检查名为「回收站」的歌单。发现歌曲时复用上述清理流程自动删除。手动清空等待确认或其他歌单维护正在运行时，本轮跳过。

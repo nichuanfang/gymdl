@@ -296,6 +296,7 @@ func (c *Config) setDefaults() {
 			NavidromePassword: "",
 			WebAppURL:         "",
 			PlaylistAssist:    false,
+			AutoAssign:        false,
 			TidyPlaylist:      make([]PlaylistInfo, 0),
 		}
 	} else if c.PlaylistOrganizer.TidyPlaylist == nil {
@@ -310,6 +311,12 @@ func (c *Config) setDefaults() {
 		}
 		c.N8NConfig.PlaylistAssist = false
 		c.N8NConfig.TidyPlaylist = nil
+	}
+	// Automatic archiving needs a classifier; without AI assistance it would
+	// either do nothing or archive without a reason. Legacy configs may turn
+	// playlist_assist on above, so this runs after that migration.
+	if c.PlaylistOrganizer != nil && !c.PlaylistOrganizer.PlaylistAssist {
+		c.PlaylistOrganizer.AutoAssign = false
 	}
 	if c.AdditionalConfig == nil {
 		c.AdditionalConfig = &AdditionalConfig{

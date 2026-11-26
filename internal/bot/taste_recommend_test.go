@@ -303,3 +303,60 @@ func TestChooseUnspecifiedTastePlatformPicksOneCatalog(t *testing.T) {
 		t.Fatalf("40 draws only saw %v; random choice is stuck", seen)
 	}
 }
+
+func TestAutoTasteDrawsAgainOnNextButPinnedPlatformStays(t *testing.T) {
+	original := tasteAutoPlatform
+	t.Cleanup(func() { tasteAutoPlatform = original })
+
+	auto := chooseUnspecifiedTastePlatform(discovery.TasteRequest{Platform: discovery.TasteBoth})
+	if !auto.AutoPlatform || (auto.Platform != "netease" && auto.Platform != "qq") {
+		t.Fatalf("automatic draw = %+v", auto)
+	}
+	// 自动选择的卡片每次「换一首」都重抽，所以连续换歌能看到两个平台。
+	tasteAutoPlatform = func() string { return "netease" }
+	if got := nextTasteRequest(auto, discovery.Card{Tracks: []discovery.Track{{Title: " listened "}}}); got.Platform != "netease" || !got.AutoPlatform || got.Page != 0 {
+		t.Fatalf("auto next = %+v", got)
+	}
+	tasteAutoPlatform = func() string { return "qq" }
+	if got := nextTasteRequest(auto, discovery.Card{Tracks: []discovery.Track{{Title: "listened"}}}); got.Platform != "qq" || !got.AutoPlatform {
+		t.Fatalf("auto next after a catalog change = %+v", got)
+	}
+	// 同一平台内的翻页仍然保留页码，只有换平台才清零。
+	auto.Platform = "qq"
+	tasteAutoPlatform = func() string { return "qq" }
+	if got := nextTasteRequest(auto, discovery.Card{}); got.Page != 1 || got.Platform != "qq" {
+		t.Fatalf("empty card should advance the page on the same catalog: %+v", got)
+	}
+	tasteAutoPlatform = func() string { return "netease" }
+	if got := nextTasteRequest(auto, discovery.Card{}); got.Page != 0 || got.Platform != "netease" {
+		t.Fatalf("a catalog change should start at page 0: %+v", got)
+	}
+
+	pinned := chooseUnspecifiedTastePlatform(discovery.TasteRequest{Platform: "qq", Page: 3})
+	if pinned.AutoPlatform || pinned.Page != 3 {
+		t.Fatalf("explicit platform became automatic: %+v", pinned)
+	}
+	tasteAutoPlatform = func() string { return "netease" }
+	if got := nextTasteRequest(pinned, discovery.Card{}); got.Platform != "qq" || got.Page != 4 || got.AutoPlatform {
+		t.Fatalf("pinned platform redrew: %+v", got)
+	}
+}
+
+func TestChoosingAPlatformStopsTheAutomaticDraw(t *testing.T) {
+	original := tasteAutoPlatform
+	t.Cleanup(func() { tasteAutoPlatform = original })
+	tasteAutoPlatform = func() string { return "qq" }
+
+	auto := chooseUnspecifiedTastePlatform(discovery.TasteRequest{Platform: discovery.TasteBoth})
+	if !auto.AutoPlatform {
+		t.Fatalf("initial draw is not automatic: %+v", auto)
+	}
+	// 用户在设置页点了「网易云」后应当锁定，不再随换歌重抽。
+	auto.Platform = "netease"
+	auto.AutoPlatform = false
+	for i := 0; i < 8; i++ {
+		if got := nextTasteRequest(auto, discovery.Card{}); got.Platform != "netease" || got.AutoPlatform {
+			t.Fatalf("pinned draw %d = %+v", i, got)
+		}
+	}
+}

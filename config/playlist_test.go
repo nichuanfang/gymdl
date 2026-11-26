@@ -78,3 +78,32 @@ func unmarshalFile(path string, target any) error {
 	}
 	return yaml.Unmarshal(data, target)
 }
+
+func TestAutoAssignNeedsPlaylistAssist(t *testing.T) {
+	withoutAssist := &Config{PlaylistOrganizer: &PlaylistOrganizerConfig{AutoAssign: true}}
+	withoutAssist.SetDefaultsForTest()
+	if withoutAssist.PlaylistOrganizer.AutoAssign {
+		t.Fatal("auto_assign must stay off without playlist_assist")
+	}
+	withAssist := &Config{PlaylistOrganizer: &PlaylistOrganizerConfig{PlaylistAssist: true, AutoAssign: true}}
+	withAssist.SetDefaultsForTest()
+	if !withAssist.PlaylistOrganizer.AutoAssign {
+		t.Fatal("auto_assign was dropped although playlist_assist is on")
+	}
+	shipped := &Config{}
+	shipped.SetDefaultsForTest()
+	if shipped.PlaylistOrganizer.AutoAssign || shipped.PlaylistOrganizer.PlaylistAssist {
+		t.Fatalf("defaults must keep playlist archiving manual: %+v", shipped.PlaylistOrganizer)
+	}
+}
+
+func TestAutoAssignFollowsLegacyPlaylistAssistMigration(t *testing.T) {
+	c := &Config{
+		PlaylistOrganizer: &PlaylistOrganizerConfig{AutoAssign: true},
+		N8NConfig:         &N8NConfig{PlaylistAssist: true},
+	}
+	c.SetDefaultsForTest()
+	if !c.PlaylistOrganizer.PlaylistAssist || !c.PlaylistOrganizer.AutoAssign {
+		t.Fatalf("legacy assist migration should keep auto_assign: %+v", c.PlaylistOrganizer)
+	}
+}
