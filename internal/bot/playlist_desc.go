@@ -97,6 +97,11 @@ func (app *BotApp) PlaylistDescCommand(c tb.Context) error {
 	if app.playlistCatalog == nil {
 		return c.Send("歌单库还没准备好，请检查数据库。")
 	}
+	// Re-sending /playlist_desc moves the live card to the bottom instead of
+	// leaving it buried; page, edit target and undo state are preserved.
+	if session, ok := app.livePlaylistDesc(c.Chat().ID, c.Sender().ID); ok {
+		return app.takeoverPlaylistDescCard(c, session)
+	}
 	if hold, blocked := app.beginMaintenanceCommand(c, "d"); blocked {
 		return app.presentMaintenanceHold(c, hold, "d", nil)
 	}
@@ -125,6 +130,38 @@ func (app *BotApp) PlaylistDescCommand(c tb.Context) error {
 	if blocked {
 		return app.presentMaintenanceHold(c, hold, "d", message)
 	}
+	return nil
+}
+
+// livePlaylistDesc returns the user's open description card, if any.
+func (app *BotApp) livePlaylistDesc(chatID, userID int64) (pendingPlaylistDesc, bool) {
+	app.playlistDescMu.Lock()
+	defer app.playlistDescMu.Unlock()
+	app.ensurePlaylistDescLocked(time.Now())
+	token, ok := app.playlistDescByChat[chatID]
+	if !ok {
+		return pendingPlaylistDesc{}, false
+	}
+	session, ok := app.playlistDescSessions[token]
+	if !ok || session.userID != userID || session.syncing {
+		return pendingPlaylistDesc{}, false
+	}
+	return session, true
+}
+
+// takeoverPlaylistDescCard re-renders the current page onto a new bottom card.
+// The token is unchanged, so in-flight callbacks from either card still resolve
+// until the old card is retired.
+func (app *BotApp) takeoverPlaylistDescCard(c tb.Context, session pendingPlaylistDesc) error {
+	old := session.message
+	text, markup := formatPlaylistDesc(session, "已移到聊天底部，当前页和编辑位置都保留。")
+	message, err := c.Bot().Send(c.Chat(), text, tb.ModeHTML, markup)
+	if err != nil {
+		return err
+	}
+	session.message = message
+	app.savePlaylistDesc(session)
+	app.retireMaintenanceCard(old, maintenanceMovedText("d"))
 	return nil
 }
 

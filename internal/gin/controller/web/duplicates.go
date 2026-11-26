@@ -17,6 +17,7 @@ import (
 	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/internal/audiodupe"
 	"github.com/nichuanfang/gymdl/internal/gin/response"
+	"github.com/nichuanfang/gymdl/internal/lyricmeta"
 	"github.com/nichuanfang/gymdl/internal/storage"
 )
 
@@ -155,7 +156,11 @@ func runLibraryDuplicateScan(ctx context.Context, cfg *config.Config) {
 		fail(fmt.Errorf("查重已中断"))
 		return
 	}
-	report.Groups = audiodupe.Cluster(tracks)
+	report.Groups, report.LyricConflicts = audiodupe.Cluster(tracks)
+	if report.Groups == nil {
+		report.Groups = []audiodupe.Group{}
+	}
+	report.LyricConflictCount = len(report.LyricConflicts)
 	report.Status = "done"
 	report.UpdatedAt = time.Now().UTC()
 	setDuplicateReport(report)
@@ -272,10 +277,10 @@ func fingerprintLibraryFile(ctx context.Context, cfg *config.Config, store *audi
 		return audiodupe.Track{}, fmt.Errorf("文件过大")
 	}
 	mod := file.ModTime.UnixNano()
-	if fp, ok, err := store.LoadFingerprint(ctx, file.Path, file.Size, mod); err != nil {
+	if fp, evidence, ok, err := store.LoadFingerprintWithLyric(ctx, file.Path, file.Size, mod); err != nil {
 		return audiodupe.Track{}, err
 	} else if ok {
-		return libraryTrack(file, mod, fp), nil
+		return libraryTrack(file, mod, fp, evidence), nil
 	}
 	localPath, cleanup, err := MaterializeLibraryAudio(ctx, cfg, file)
 	if cleanup != nil {
@@ -294,14 +299,15 @@ func fingerprintLibraryFile(ctx context.Context, cfg *config.Config, store *audi
 	if err != nil {
 		return audiodupe.Track{}, err
 	}
-	if err = store.SaveFingerprint(ctx, file.Path, file.Size, mod, fp); err != nil {
+	evidence := lyricmeta.ReadFile(localPath)
+	if err = store.SaveFingerprintWithLyric(ctx, file.Path, file.Size, mod, fp, evidence); err != nil {
 		return audiodupe.Track{}, err
 	}
-	return libraryTrack(file, mod, fp), nil
+	return libraryTrack(file, mod, fp, evidence), nil
 }
 
-func libraryTrack(file FileEntry, mod int64, fp audiodupe.Fingerprint) audiodupe.Track {
-	return audiodupe.Track{Path: file.Path, Name: file.Name, Ext: file.Ext, Size: file.Size, ModTimeUnix: mod, Fingerprint: fp}
+func libraryTrack(file FileEntry, mod int64, fp audiodupe.Fingerprint, evidence lyricmeta.Evidence) audiodupe.Track {
+	return audiodupe.Track{Path: file.Path, Name: file.Name, Ext: file.Ext, Size: file.Size, ModTimeUnix: mod, Fingerprint: fp, LyricEvidence: lyricmeta.Normalize(evidence)}
 }
 
 const MaxLibraryAudioBytes = 512 << 20

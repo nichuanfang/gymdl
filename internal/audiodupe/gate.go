@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nichuanfang/gymdl/internal/lyricmeta"
 	"github.com/nichuanfang/gymdl/internal/storage"
 )
 
@@ -59,11 +60,24 @@ func Decide(c Comparison) (Decision, float64) {
 	}
 }
 
+// DecideWithLyric preserves the audio thresholds for unknown or matching lyric
+// evidence, and lets a clear vocal/instrumental mismatch pass immediately.
+func DecideWithLyric(c Comparison, candidate, library lyricmeta.Evidence) (Decision, float64, bool) {
+	sim := Similarity(c)
+	if lyricmeta.Conflict(candidate, library) {
+		return DecisionProceed, sim, true
+	}
+	decision, sim := Decide(c)
+	return decision, sim, false
+}
+
 // LibraryMatch is one library file close enough to block or ask.
 type LibraryMatch struct {
-	Path       string
-	Similarity float64
-	Decision   Decision
+	Path          string             `json:"path,omitempty"`
+	Similarity    float64            `json:"similarity,omitempty"`
+	Decision      Decision           `json:"decision,omitempty"`
+	LyricEvidence lyricmeta.Evidence `json:"lyric_evidence,omitempty"`
+	LyricConflict bool               `json:"lyric_conflict,omitempty"`
 }
 
 func (m *LibraryMatch) Error() string {
@@ -128,17 +142,34 @@ var openStore = func(path string) (*Store, error) {
 // ReviewFiles checks one new file against the stored fingerprint index.
 // Albums, an empty index, a missing fpcalc, and a failed fingerprint continue the ingest.
 func ReviewFiles(ctx context.Context, paths []string, bypass bool) error {
+	return ReviewFilesWithLyric(ctx, paths, lyricmeta.Unknown, bypass)
+}
+
+// ReviewFilesWithLyric checks a single-file ingest and carries the provider's
+// lyric evidence into the decision.
+func ReviewFilesWithLyric(ctx context.Context, paths []string, evidence lyricmeta.Evidence, bypass bool) error {
 	if bypass || len(paths) != 1 || strings.TrimSpace(paths[0]) == "" {
 		return nil
 	}
-	return ReviewFile(ctx, paths[0], 0, false)
+	return ReviewFileWithLyric(ctx, paths[0], 0, evidence, false)
 }
 
 // ReviewFile compares one temp file. durationSec is the tagged length, used only
 // to skip fpcalc when nothing already indexed is even close in length.
 func ReviewFile(ctx context.Context, path string, durationSec float64, bypass bool) error {
+	return ReviewFileWithLyric(ctx, path, durationSec, lyricmeta.Unknown, bypass)
+}
+
+// ReviewFileWithLyric is ReviewFile with lyric evidence on both sides.
+func ReviewFileWithLyric(ctx context.Context, path string, durationSec float64, evidence lyricmeta.Evidence, bypass bool) error {
 	if bypass || strings.TrimSpace(path) == "" {
 		return nil
+	}
+	evidence = lyricmeta.Normalize(evidence)
+	if evidence == lyricmeta.Unknown {
+		if tagged := lyricmeta.ReadFile(path); tagged != lyricmeta.Unknown {
+			evidence = tagged
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -189,15 +220,16 @@ func ReviewFile(ctx context.Context, path string, durationSec float64, bypass bo
 		}
 		return nil
 	}
-	track, cmp, ok := matchLibrary(fp, library, true)
+	track, cmp, ok := matchLibrary(fp, library, false)
 	if !ok {
 		return nil
 	}
-	decision, sim := Decide(cmp)
+	decision, sim, conflict := DecideWithLyric(cmp, evidence, track.LyricEvidence)
 	if decision == DecisionProceed {
 		return nil
 	}
-	return &LibraryMatch{Path: track.Path, Similarity: sim, Decision: decision}
+	return &LibraryMatch{Path: track.Path, Similarity: sim, Decision: decision,
+		LyricEvidence: track.LyricEvidence, LyricConflict: conflict}
 }
 
 // FingerprintFile runs fpcalc on one local file. The timeout is inside the call.

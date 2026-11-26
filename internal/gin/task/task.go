@@ -258,7 +258,7 @@ func reviewProcessorAudio(p music.Processor, bypass bool) error {
 	if count != 1 || strings.TrimSpace(one.MusicPath) == "" {
 		return nil
 	}
-	return audiodupe.ReviewFile(context.Background(), one.MusicPath, float64(one.Duration), bypass)
+	return audiodupe.ReviewFileWithLyric(context.Background(), one.MusicPath, float64(one.Duration), one.LyricEvidence, bypass)
 }
 
 func (tm *TaskManager) finishMusicTask(id string, p music.Processor, err error) {

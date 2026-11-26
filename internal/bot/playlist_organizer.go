@@ -1407,6 +1407,11 @@ func (app *BotApp) startPlaylistAssignmentForSong(c tb.Context, target *pendingM
 		return c.Send("歌单选择页面仅支持与机器人私聊，请在私聊中发送 /assign_playlist。")
 	}
 	if target == nil {
+		// Re-sending /assign_playlist brings the open card to the bottom with
+		// the same song, playlist page and progress.
+		if assignment, ok := app.livePlaylistAssignment(c.Chat().ID, c.Sender().ID); ok {
+			return app.takeoverPlaylistAssignmentCard(c, assignment)
+		}
 		if hold, blocked := app.beginMaintenanceCommand(c, "a"); blocked {
 			return app.presentMaintenanceHold(c, hold, "a", nil)
 		}
@@ -2220,6 +2225,38 @@ func (app *BotApp) notifyPlaylistAssignment(chatID int64, message *tb.Message, n
 	if _, err := app.bot.Send(tb.ChatID(chatID), note); err != nil && logger != nil {
 		logger.Warn("[Telegram] 发送整理恢复提示失败", zap.Error(err))
 	}
+}
+
+// livePlaylistAssignment returns the user's open assignment card, if any.
+func (app *BotApp) livePlaylistAssignment(chatID, userID int64) (pendingPlaylistAssignment, bool) {
+	app.playlistAssignmentMu.Lock()
+	defer app.playlistAssignmentMu.Unlock()
+	app.ensurePlaylistAssignmentMapsLocked()
+	app.purgePlaylistAssignmentsLocked(time.Now())
+	token, ok := app.playlistAssignmentByChat[chatID]
+	if !ok {
+		return pendingPlaylistAssignment{}, false
+	}
+	assignment, ok := app.playlistAssignments[token]
+	if !ok || assignment.userID != userID || assignment.processing {
+		return pendingPlaylistAssignment{}, false
+	}
+	return clonePlaylistAssignment(assignment), true
+}
+
+// takeoverPlaylistAssignmentCard re-renders the open assignment on a new bottom
+// card. The token is unchanged, so song, playlist page, selection and progress
+// are all preserved and the old card's buttons keep resolving until retired.
+func (app *BotApp) takeoverPlaylistAssignmentCard(c tb.Context, assignment pendingPlaylistAssignment) error {
+	old := assignment.message
+	message, err := c.Bot().Send(c.Chat(), formatPlaylistAssignment(assignment), tb.ModeHTML, playlistAssignmentMarkup(assignment))
+	if err != nil {
+		return err
+	}
+	assignment.message = message
+	app.updatePlaylistAssignment(assignment)
+	app.retireMaintenanceCard(old, maintenanceMovedText("a"))
+	return nil
 }
 
 func (app *BotApp) registerPlaylistAssignment(assignment pendingPlaylistAssignment) bool {

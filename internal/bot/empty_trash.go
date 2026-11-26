@@ -408,6 +408,11 @@ func (app *BotApp) startEmptyTrash(c tb.Context) error {
 	if c.Chat() == nil || c.Sender() == nil {
 		return c.Send("无法读取 Telegram 会话信息，请在聊天中重新发送 /empty_trash。")
 	}
+	// Re-sending /empty_trash brings the pending confirmation to the bottom
+	// instead of leaving it buried, keeping the same token and plan.
+	if pending, ok := app.liveEmptyTrashConfirmation(c.Chat().ID, c.Sender().ID); ok {
+		return app.takeoverEmptyTrashCard(c, pending)
+	}
 	if hold, blocked := app.beginMaintenanceCommand(c, "t"); blocked {
 		return app.presentMaintenanceHold(c, hold, "t", nil)
 	}
@@ -598,6 +603,40 @@ func (app *BotApp) hasPendingEmptyTrash(chatID int64) bool {
 		}
 	}
 	return false
+}
+
+// liveEmptyTrashConfirmation returns the user's pending confirmation card.
+// A processing run is not re-sent because the confirm click is already
+// consuming the same pending record.
+func (app *BotApp) liveEmptyTrashConfirmation(chatID, userID int64) (pendingEmptyTrash, bool) {
+	app.emptyTrashMu.Lock()
+	defer app.emptyTrashMu.Unlock()
+	app.purgePendingEmptyTrashLocked(time.Now())
+	for _, pending := range app.emptyTrashPending {
+		if pending.chatID == chatID && pending.userID == userID && !pending.processing {
+			return pending, true
+		}
+	}
+	return pendingEmptyTrash{}, false
+}
+
+// takeoverEmptyTrashCard re-sends the confirmation at the bottom and retires
+// the old card. The token is unchanged, so either card's buttons resolve to the
+// same plan until the old one is retired.
+func (app *BotApp) takeoverEmptyTrashCard(c tb.Context, pending pendingEmptyTrash) error {
+	old := pending.message
+	message, err := c.Bot().Send(c.Chat(), formatEmptyTrashPreview(pending.plan), emptyTrashConfirmationMarkup(pending.token))
+	if err != nil {
+		return err
+	}
+	app.emptyTrashMu.Lock()
+	if current, ok := app.emptyTrashPending[pending.token]; ok && !current.processing {
+		current.message = message
+		app.emptyTrashPending[pending.token] = current
+	}
+	app.emptyTrashMu.Unlock()
+	app.retireMaintenanceCard(old, maintenanceMovedText("t"))
+	return nil
 }
 
 func (app *BotApp) registerPendingEmptyTrash(pending pendingEmptyTrash) bool {

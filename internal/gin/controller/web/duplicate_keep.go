@@ -174,6 +174,16 @@ func planDuplicateRemoval(report audiodupe.Report, running bool, keep string, re
 	if found == nil {
 		return audiodupe.Group{}, errors.New("要留下的版本不在这次查重结果里")
 	}
+	// Historical reports could predate lyric evidence. Never delete from a
+	// group that mixes a vocal and an instrumental; re-scan instead.
+	if found.HasLyricConflict() {
+		return audiodupe.Group{}, errors.New("这组里有一首有歌词、一首是纯音乐，需要人工核对，请重新查重")
+	}
+	for _, group := range report.LyricConflicts {
+		if groupHasPath(group, keep) {
+			return audiodupe.Group{}, errors.New("这组属于歌词冲突核对项，不能批量删歌")
+		}
+	}
 	for _, path := range remove {
 		if !groupHasPath(*found, path) {
 			return audiodupe.Group{}, errors.New("要删除的文件不在这一组里")
@@ -256,6 +266,23 @@ func dropRemovedDuplicateTracks(report audiodupe.Report, removed []string) audio
 		groups = []audiodupe.Group{}
 	}
 	report.Groups = groups
+	conflicts := make([]audiodupe.Group, 0, len(report.LyricConflicts))
+	for _, group := range report.LyricConflicts {
+		kept := make([]audiodupe.Track, 0, len(group.Tracks))
+		for _, track := range group.Tracks {
+			if _, ok := gone[cleanDuplicatePath(track.Path)]; ok {
+				continue
+			}
+			kept = append(kept, track)
+		}
+		if len(kept) < 2 {
+			continue
+		}
+		group.Tracks = kept
+		conflicts = append(conflicts, group)
+	}
+	report.LyricConflicts = conflicts
+	report.LyricConflictCount = len(conflicts)
 	report.UpdatedAt = time.Now().UTC()
 	return report
 }

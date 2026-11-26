@@ -158,7 +158,7 @@ func reviewSessionAudio(s *Session, p music.Processor) error {
 	if len(songs) != 1 || strings.TrimSpace(songs[0].MusicPath) == "" {
 		return nil
 	}
-	return audiodupe.ReviewFile(context.Background(), songs[0].MusicPath, float64(songs[0].Duration), s.AcceptSimilarAudio)
+	return audiodupe.ReviewFileWithLyric(context.Background(), songs[0].MusicPath, float64(songs[0].Duration), songs[0].LyricEvidence, s.AcceptSimilarAudio)
 }
 
 func nonNilMusicSongs(songs []*music.SongInfo) []*music.SongInfo {

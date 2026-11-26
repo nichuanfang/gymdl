@@ -51,6 +51,11 @@ func (app *BotApp) AudioCheckCommand(c tb.Context) error {
 	if payload != "" && payload != "deep" {
 		return c.Send("发送 /audio_check 开始体检。")
 	}
+	// Re-sending the command brings the live card to the bottom of the chat and
+	// takes the running task over, instead of leaving it buried above.
+	if current, ok := app.currentAudioCheck(c.Chat().ID, c.Sender().ID); ok {
+		return app.takeoverAudioCheckCard(c, current)
+	}
 	return app.startAudioCheck(c, nil)
 }
 
@@ -359,6 +364,11 @@ func (app *BotApp) HandleAudioCheckCallback(c tb.Context) error {
 		return c.Respond(&tb.CallbackResponse{Text: "操作无效，请在私聊中使用 /audio_check。", ShowAlert: true})
 	}
 	action, token := args[0], args[1]
+	// The 返回体检 button lives on a source/download card, so it is handled
+	// before the "is this the current card message" check that follows.
+	if action == "resume" {
+		return app.resumeAudioCheckCard(c, token)
+	}
 	chat := c.Chat().ID
 	app.audioCheckMu.Lock()
 	session, ok := app.audioCheckSessions[chat]
@@ -505,6 +515,7 @@ func (app *BotApp) openAudioCheckFile(c tb.Context, session audioCheckSession, f
 		return c.Send("文件已变化或暂不可读，请跳过后继续。")
 	}
 	song := finding.musicAction(currentPath, cfg.Tidy.Mode)
+	song.checkToken = session.token
 	if !sources {
 		if err := app.sendMusicActionAudio(c, song); err != nil {
 			return c.Send("试听失败，文件可能已损坏，或 Telegram 无法发送这个格式。")

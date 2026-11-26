@@ -11,6 +11,7 @@ import (
 
 	browser "github.com/EDDYCJY/fake-useragent"
 	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/internal/lyricmeta"
 	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/utils"
 	"go.senan.xyz/taglib"
@@ -54,8 +55,9 @@ type SongInfo struct {
 	SourceURL       string // 公开歌曲页
 	MusicPath       string // 音乐文件路径
 	PicUrl          string // 封面图url
-	Lyric           string // 歌词
-	Year            int    // 年份
+	Lyric           string             // 歌词
+	LyricEvidence   lyricmeta.Evidence `json:"lyric_evidence,omitempty"` // 可用于判重的歌词证据
+	Year            int                // 年份
 	Genre           string // 流派
 	Tidy            string // 入库方式(默认/webdav)
 }
@@ -189,6 +191,7 @@ func ReadTags(path string) (*SongInfo, error) {
 
 	if l, ok := tags[taglib.Lyrics]; ok && len(l) > 0 {
 		songInfo.Lyric = l[0]
+		songInfo.LyricEvidence = lyricmeta.FromLyricsText(songInfo.Lyric)
 	}
 
 	if ge, ok := tags[taglib.Genre]; ok && len(ge) > 0 {
@@ -285,6 +288,9 @@ func FillDefaultTags(path string, info *SongInfo) {
 		}
 		info.Lyric = lyric
 		updates[taglib.Lyrics] = []string{info.Lyric}
+	}
+	if info.LyricEvidence == "" {
+		info.LyricEvidence = lyricmeta.FromLyricsText(info.Lyric)
 	}
 
 	if len(updates) > 0 {

@@ -259,6 +259,7 @@ export interface LibraryDuplicateTrack {
   ext: string
   size: number
   mod_unix: number
+  lyric_evidence?: 'present' | 'explicit_instrumental' | 'unknown'
 }
 
 export interface LibraryDuplicateGroup {
@@ -274,6 +275,8 @@ export interface LibraryDuplicateReport {
   error?: string
   updated_at?: string
   groups: LibraryDuplicateGroup[]
+  lyric_conflicts?: LibraryDuplicateGroup[]
+  lyric_conflict_count?: number
 }
 
 export const getLibraryDuplicates = () => get<LibraryDuplicateReport>('/duplicates')

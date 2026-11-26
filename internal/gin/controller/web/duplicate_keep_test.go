@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/nichuanfang/gymdl/internal/audiodupe"
+	"github.com/nichuanfang/gymdl/internal/lyricmeta"
 )
 
 func sampleDuplicateReport() audiodupe.Report {
@@ -125,5 +126,53 @@ func TestDropRemovedDuplicateTracksKeepsTheSurvivor(t *testing.T) {
 	report := dropRemovedDuplicateTracks(sampleDuplicateReport(), []string{"a/one.mp3"})
 	if len(report.Groups) != 1 || report.Groups[0].Kind != audiodupe.KindSimilar {
 		t.Fatal(report.Groups)
+	}
+}
+
+func TestPlanDuplicateRemovalRefusesLyricConflict(t *testing.T) {
+	report := audiodupe.Report{
+		Status: "done",
+		Groups: []audiodupe.Group{{
+			Kind: audiodupe.KindSame,
+			Tracks: []audiodupe.Track{
+				{Path: "a/vocal.flac", LyricEvidence: lyricmeta.Present},
+				{Path: "a/instrumental.flac", LyricEvidence: lyricmeta.ExplicitInstrumental},
+			},
+		}},
+	}
+	if _, err := planDuplicateRemoval(report, false, "a/vocal.flac", []string{"a/instrumental.flac"}); err == nil || !strings.Contains(err.Error(), "人工核对") {
+		t.Fatalf("a mixed group must be refused, got %v", err)
+	}
+
+	// A lyric conflict item can never be batched, even if it also appears in Groups.
+	withConflictItem := audiodupe.Report{
+		Status:         "done",
+		Groups:         sampleDuplicateReport().Groups,
+		LyricConflicts: []audiodupe.Group{{Kind: audiodupe.KindSame, Tracks: []audiodupe.Track{{Path: "c/vocal.flac"}, {Path: "c/instrumental.flac"}}}},
+	}
+	if _, err := planDuplicateRemoval(withConflictItem, false, "a/one.flac", []string{"a/one.mp3"}); err != nil {
+		t.Fatalf("unrelated conflict item must not block a normal group: %v", err)
+	}
+}
+
+func TestDropRemovedDuplicateTracksUpdatesConflicts(t *testing.T) {
+	report := audiodupe.Report{
+		Status: "done",
+		LyricConflicts: []audiodupe.Group{{
+			Kind: audiodupe.KindSame,
+			Tracks: []audiodupe.Track{
+				{Path: "c/vocal.flac"},
+				{Path: "c/instrumental.flac"},
+				{Path: "c/live.flac"},
+			},
+		}},
+	}
+	report = dropRemovedDuplicateTracks(report, []string{"c/live.flac"})
+	if len(report.LyricConflicts) != 1 || len(report.LyricConflicts[0].Tracks) != 2 || report.LyricConflictCount != 1 {
+		t.Fatalf("conflicts should drop the removed track and stay reviewable: %#v count=%d", report.LyricConflicts, report.LyricConflictCount)
+	}
+	report = dropRemovedDuplicateTracks(report, []string{"c/vocal.flac"})
+	if len(report.LyricConflicts) != 0 || report.LyricConflictCount != 0 {
+		t.Fatalf("a conflict item below two tracks should disappear: %#v", report.LyricConflicts)
 	}
 }

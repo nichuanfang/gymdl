@@ -62,6 +62,7 @@ func (app *BotApp) presentMusicSourceChoices(ctx context.Context, c tb.Context, 
 		tokens = append(tokens, token)
 		app.storeMusicAction(token, pendingMusicAction{
 			title: item.Name, choice: item.URL, confirmSource: confirm, expiresAt: time.Now().Add(musicActionTTL),
+			checkToken: action.checkToken,
 		})
 		rows = append(rows, markup.Row(
 			markup.URL(fmt.Sprintf("打开 %d", i+1), discoveryListenURL(item.URL)),
@@ -69,6 +70,9 @@ func (app *BotApp) presentMusicSourceChoices(ctx context.Context, c tb.Context, 
 		))
 	}
 	text.WriteString("\n\n实际码率以下载结果为准。下载同名同格式的版本可能覆盖原文件。")
+	if action.checkToken != "" {
+		rows = append(rows, markup.Row(markup.Data("⬅️ 返回体检", audioCheckCallback, "resume", action.checkToken)))
+	}
 	markup.Inline(rows...)
 	app.setMusicActionMessages(tokens, message, nil, c.Sender().ID, c.Chat().ID)
 	_, err = c.Bot().Edit(message, text.String(), tb.ModeHTML, markup)
@@ -78,7 +82,11 @@ func (app *BotApp) presentMusicSourceChoices(ctx context.Context, c tb.Context, 
 func (app *BotApp) confirmMusicSourceChoice(c tb.Context, action pendingMusicAction) error {
 	token := strings.ReplaceAll(uuid.NewString(), "-", "")
 	markup := &tb.ReplyMarkup{}
-	markup.Inline(markup.Row(markup.Data("确认下载", musicActionCallbackUnique, "download", token)))
+	row := tb.Row{markup.Data("确认下载", musicActionCallbackUnique, "download", token)}
+	if action.checkToken != "" {
+		row = append(row, markup.Data("⬅️ 返回体检", audioCheckCallback, "resume", action.checkToken))
+	}
+	markup.Inline(row)
 	message, err := c.Bot().Send(c.Chat(),
 		"下载《"+utils.TruncateString(displaySongValue(action.title), 100)+"》？如果新音源与原文件同名同格式，原文件可能被覆盖。", markup)
 	if err != nil {
@@ -86,6 +94,7 @@ func (app *BotApp) confirmMusicSourceChoice(c tb.Context, action pendingMusicAct
 	}
 	app.storeMusicAction(token, pendingMusicAction{
 		title: action.title, choice: action.choice, expiresAt: time.Now().Add(10 * time.Minute),
+		checkToken: action.checkToken,
 	})
 	app.setMusicActionMessages([]string{token}, message, markup, c.Sender().ID, c.Chat().ID)
 	return nil

@@ -197,7 +197,7 @@ func reviewOneSong(ctx context.Context, songs []*music.SongInfo, bypass bool) er
 	if count != 1 || strings.TrimSpace(one.MusicPath) == "" {
 		return nil
 	}
-	return audiodupe.ReviewFile(ctx, one.MusicPath, float64(one.Duration), bypass)
+	return audiodupe.ReviewFileWithLyric(ctx, one.MusicPath, float64(one.Duration), one.LyricEvidence, bypass)
 }
 
 func musicSourceURL(t Track) string {

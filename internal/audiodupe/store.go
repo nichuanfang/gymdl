@@ -6,20 +6,24 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
+	"github.com/nichuanfang/gymdl/internal/lyricmeta"
 	"github.com/nichuanfang/gymdl/internal/storage"
 )
 
 // Report is the last finished or in-progress scan the console can show.
 type Report struct {
-	Status    string    `json:"status"`
-	Scanned   int       `json:"scanned"`
-	Total     int       `json:"total"`
-	Skipped   int       `json:"skipped"`
-	Error     string    `json:"error,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Groups    []Group   `json:"groups"`
+	Status             string    `json:"status"`
+	Scanned            int       `json:"scanned"`
+	Total              int       `json:"total"`
+	Skipped            int       `json:"skipped"`
+	Error              string    `json:"error,omitempty"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	Groups             []Group   `json:"groups"`
+	LyricConflicts     []Group   `json:"lyric_conflicts,omitempty"`
+	LyricConflictCount int       `json:"lyric_conflict_count,omitempty"`
 }
 
 // Store caches fingerprints and the latest grouping. It never removes audio files.
@@ -38,8 +42,13 @@ func Open(path string) (*Store, error) {
 		mod_unix INTEGER NOT NULL,
 		duration REAL NOT NULL,
 		items BLOB NOT NULL,
+		lyric_evidence TEXT,
 		updated INTEGER NOT NULL
 	)`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err = ensureFingerprintLyricColumn(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -105,7 +114,7 @@ func (s *Store) ListDuration(ctx context.Context, lo, hi float64, excludePath st
 	if hi <= 0 {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT path, duration, items FROM audio_fingerprints WHERE duration >= ? AND duration <= ? AND path <> ?`, lo, hi, excludePath)
+	rows, err := s.db.QueryContext(ctx, `SELECT path, duration, items, lyric_evidence FROM audio_fingerprints WHERE duration >= ? AND duration <= ? AND path <> ?`, lo, hi, excludePath)
 	if err != nil {
 		return nil, err
 	}
@@ -114,26 +123,39 @@ func (s *Store) ListDuration(ctx context.Context, lo, hi float64, excludePath st
 	for rows.Next() {
 		var track Track
 		var blob []byte
-		if err = rows.Scan(&track.Path, &track.Fingerprint.Duration, &blob); err != nil {
+		var evidence sql.NullString
+		if err = rows.Scan(&track.Path, &track.Fingerprint.Duration, &blob, &evidence); err != nil {
 			return nil, err
 		}
 		track.Fingerprint.Items = decodeItems(blob)
+		track.LyricEvidence = lyricmeta.Normalize(lyricmeta.Evidence(evidence.String))
 		tracks = append(tracks, track)
 	}
 	return tracks, rows.Err()
 }
 
 func (s *Store) LoadFingerprint(ctx context.Context, path string, size, modUnix int64) (Fingerprint, bool, error) {
+	fp, _, ok, err := s.LoadFingerprintWithLyric(ctx, path, size, modUnix)
+	return fp, ok, err
+}
+
+// LoadFingerprintWithLyric treats pre-lyric rows as cache misses so the next
+// scan can repopulate both the fingerprint and its evidence.
+func (s *Store) LoadFingerprintWithLyric(ctx context.Context, path string, size, modUnix int64) (Fingerprint, lyricmeta.Evidence, bool, error) {
 	var duration float64
 	var blob []byte
-	err := s.db.QueryRowContext(ctx, `SELECT duration, items FROM audio_fingerprints WHERE path=? AND size=? AND mod_unix=?`, path, size, modUnix).Scan(&duration, &blob)
+	var evidence sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT duration, items, lyric_evidence FROM audio_fingerprints WHERE path=? AND size=? AND mod_unix=?`, path, size, modUnix).Scan(&duration, &blob, &evidence)
 	if err == sql.ErrNoRows {
-		return Fingerprint{}, false, nil
+		return Fingerprint{}, lyricmeta.Unknown, false, nil
 	}
 	if err != nil {
-		return Fingerprint{}, false, err
+		return Fingerprint{}, lyricmeta.Unknown, false, err
 	}
-	return Fingerprint{Duration: duration, Items: decodeItems(blob)}, true, nil
+	if !evidence.Valid || strings.TrimSpace(evidence.String) == "" {
+		return Fingerprint{}, lyricmeta.Unknown, false, nil
+	}
+	return Fingerprint{Duration: duration, Items: decodeItems(blob)}, lyricmeta.Normalize(lyricmeta.Evidence(evidence.String)), true, nil
 }
 
 func (s *Store) DeleteFingerprint(ctx context.Context, path string) error {
@@ -145,9 +167,14 @@ func (s *Store) DeleteFingerprint(ctx context.Context, path string) error {
 }
 
 func (s *Store) SaveFingerprint(ctx context.Context, path string, size, modUnix int64, fp Fingerprint) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO audio_fingerprints(path,size,mod_unix,duration,items,updated) VALUES(?,?,?,?,?,?)
-		ON CONFLICT(path) DO UPDATE SET size=excluded.size, mod_unix=excluded.mod_unix, duration=excluded.duration, items=excluded.items, updated=excluded.updated`,
-		path, size, modUnix, fp.Duration, encodeItems(fp.Items), time.Now().Unix())
+	return s.SaveFingerprintWithLyric(ctx, path, size, modUnix, fp, lyricmeta.Unknown)
+}
+
+func (s *Store) SaveFingerprintWithLyric(ctx context.Context, path string, size, modUnix int64, fp Fingerprint, evidence lyricmeta.Evidence) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO audio_fingerprints(path,size,mod_unix,duration,items,lyric_evidence,updated) VALUES(?,?,?,?,?,?,?)
+		ON CONFLICT(path) DO UPDATE SET size=excluded.size, mod_unix=excluded.mod_unix, duration=excluded.duration,
+		items=excluded.items, lyric_evidence=excluded.lyric_evidence, updated=excluded.updated`,
+		path, size, modUnix, fp.Duration, encodeItems(fp.Items), lyricmeta.Normalize(evidence), time.Now().Unix())
 	return err
 }
 
@@ -177,7 +204,50 @@ func (s *Store) LoadReport(ctx context.Context) (Report, error) {
 	if report.Groups == nil {
 		report.Groups = []Group{}
 	}
+	if report.LyricConflicts == nil {
+		report.LyricConflicts = []Group{}
+	}
+	for i := range report.Groups {
+		for j := range report.Groups[i].Tracks {
+			report.Groups[i].Tracks[j].LyricEvidence = lyricmeta.Normalize(report.Groups[i].Tracks[j].LyricEvidence)
+		}
+	}
+	for i := range report.LyricConflicts {
+		for j := range report.LyricConflicts[i].Tracks {
+			report.LyricConflicts[i].Tracks[j].LyricEvidence = lyricmeta.Normalize(report.LyricConflicts[i].Tracks[j].LyricEvidence)
+		}
+	}
+	report.LyricConflictCount = len(report.LyricConflicts)
 	return report, nil
+}
+
+func ensureFingerprintLyricColumn(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(audio_fingerprints)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, kind string
+		var notNull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &kind, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == "lyric_evidence" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE audio_fingerprints ADD COLUMN lyric_evidence TEXT`)
+	return err
 }
 
 func encodeItems(items []uint32) []byte {

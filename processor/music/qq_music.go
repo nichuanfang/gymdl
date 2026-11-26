@@ -18,6 +18,7 @@ import (
 
 	"github.com/nichuanfang/gymdl/config"
 	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/internal/lyricmeta"
 	"github.com/nichuanfang/gymdl/internal/qqmusic"
 	"github.com/nichuanfang/gymdl/processor"
 	"github.com/nichuanfang/gymdl/utils"
@@ -726,6 +727,9 @@ func (qmApi *QQMusicAPI) newGetRequest(path string, params map[string]string) (*
 // updateSongInfo 更新元信息
 func (qmApi *QQMusicAPI) updateSongInfo(qm *QQMusicProcessor, data QQSong, fileMetadata utils.QQMusicFileMetadata, lyric, mediaURL, coverURL string) {
 	tidyType := processor.DetermineTidyType(qm.cfg)
+	// Classify the provider's lyric before substituting the placeholder:
+	// the placeholder itself must stay Unknown, never a real lyric.
+	evidence := lyricmeta.FromLyricsText(lyric)
 	if lyric == "" {
 		lyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
 	}
@@ -744,6 +748,7 @@ func (qmApi *QQMusicAPI) updateSongInfo(qm *QQMusicProcessor, data QQSong, fileM
 		SourceURL:       qqmusic.SongPageURL(data.Mid, qqmusic.AlbumCoverID(coverURL)),
 		PicUrl:          coverURL,
 		Lyric:           lyric,
+		LyricEvidence:   evidence,
 		Tidy:            tidyType,
 	}
 	qm.songs = append(qm.songs, songInfo)

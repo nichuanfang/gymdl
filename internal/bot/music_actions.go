@@ -41,6 +41,9 @@ type pendingMusicAction struct {
 	origin        *tb.Message
 	markup        *tb.ReplyMarkup
 	deleting      bool
+	// checkToken points back at the health-check card that opened this action,
+	// so the source/confirm cards can offer a 返回体检 button.
+	checkToken string
 }
 
 func (app *BotApp) musicActionMarkup(song *music.SongInfo, sourceURL string) (string, *tb.ReplyMarkup) {

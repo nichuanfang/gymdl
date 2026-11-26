@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nichuanfang/gymdl/internal/lyricmeta"
 )
 
 type Result struct {
@@ -23,6 +25,7 @@ type Result struct {
 	Reference            float64
 	Damaged              bool
 	Unreadable           bool
+	LyricEvidence        lyricmeta.Evidence `json:"lyric_evidence,omitempty"`
 }
 
 func LowBitrate(codec string, bitrate int) bool {
@@ -79,7 +82,7 @@ func Inspect(ctx context.Context, filename string) (Result, error) {
 	defer cancel()
 	probe := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe",
 		"-format_whitelist", audioFormats, "-select_streams", "a:0",
-		"-show_entries", "stream=codec_name,bit_rate,duration:stream_tags=title,artist,album,comment:format=duration:format_tags=title,artist,album,comment",
+		"-show_entries", "stream=codec_name,bit_rate,duration:stream_tags=title,artist,album,comment,lyrics:format=duration:format_tags=title,artist,album,comment,lyrics",
 		"-of", "json", "-i", filename)
 	output, err := probe.Output()
 	if err != nil {
@@ -130,6 +133,7 @@ func Inspect(ctx context.Context, filename string) (Result, error) {
 	result := Result{
 		Title: tag("title"), Artist: tag("artist"), Album: tag("album"), Source: tag("comment"),
 		Codec: stream.Codec, Bitrate: (bps + 500) / 1000, Duration: declared,
+		LyricEvidence: lyricmeta.FromLyricsText(tag("lyrics")),
 	}
 	var progress bytes.Buffer
 	var decodeErrors bytes.Buffer

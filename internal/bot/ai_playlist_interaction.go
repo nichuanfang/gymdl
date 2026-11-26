@@ -73,6 +73,11 @@ func (app *BotApp) startAIPlaylist(c tb.Context) error {
 	if c.Chat() == nil || c.Sender() == nil {
 		return c.Send("无法读取 Telegram 会话信息，请在聊天中重新发送 /ai_playlist。")
 	}
+	// Re-sending /ai_playlist brings the open card to the bottom with its menu,
+	// target, preview and pending input intact.
+	if session, ok := app.getAIPlaylistSessionByChat(c.Chat().ID); ok && session.userID == c.Sender().ID {
+		return app.takeoverAIPlaylistCard(c, session)
+	}
 	if hold, blocked := app.beginMaintenanceCommand(c, "i"); blocked {
 		return app.presentMaintenanceHold(c, hold, "i", nil)
 	}
@@ -1031,6 +1036,24 @@ func (app *BotApp) getAIPlaylistSession(token string) (pendingAIPlaylistSession,
 	app.purgeAIPlaylistSessionsLocked(time.Now())
 	session, ok := app.aiPlaylistSessions[token]
 	return cloneAIPlaylistSession(session), ok
+}
+
+// takeoverAIPlaylistCard re-renders the live menu on a new bottom card. The
+// token is unchanged so the same callbacks keep working; a processing session
+// is left alone so an in-flight write is not interrupted.
+func (app *BotApp) takeoverAIPlaylistCard(c tb.Context, session pendingAIPlaylistSession) error {
+	if session.processing {
+		return c.Send("AI 歌单正在处理上一项操作，请稍后再试。")
+	}
+	old := session.message
+	message, err := c.Bot().Send(c.Chat(), formatAIPlaylistSession(session), aiPlaylistSessionMarkup(session))
+	if err != nil {
+		return err
+	}
+	session.message = message
+	app.updateAIPlaylistSession(session)
+	app.retireMaintenanceCard(old, maintenanceMovedText("i"))
+	return nil
 }
 
 func (app *BotApp) getAIPlaylistSessionByChat(chatID int64) (pendingAIPlaylistSession, bool) {

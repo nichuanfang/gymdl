@@ -66,7 +66,10 @@ func TestClusterKeepsSimilarOutOfDuplicateGroups(t *testing.T) {
 		return value
 	})}
 	other := Track{Path: "other.flac", Fingerprint: pattern(200, func(i int, value uint32) uint32 { return value ^ 0xaaaaaaaa })}
-	groups := Cluster([]Track{sameA, sameB, edited, other})
+	groups, conflicts := Cluster([]Track{sameA, sameB, edited, other})
+	if len(conflicts) != 0 {
+		t.Fatalf("unexpected lyric conflicts: %#v", conflicts)
+	}
 	var duplicates, similar int
 	for _, group := range groups {
 		switch group.Kind {

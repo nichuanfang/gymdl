@@ -19,6 +19,7 @@ import (
 	ncmutils "github.com/XiaoMengXinX/Music163Api-Go/utils"
 	downloader "github.com/XiaoMengXinX/SimpleDownloader"
 	"github.com/nichuanfang/gymdl/core"
+	"github.com/nichuanfang/gymdl/internal/lyricmeta"
 	"github.com/nichuanfang/gymdl/internal/netease"
 	"github.com/nichuanfang/gymdl/utils"
 
@@ -446,9 +447,10 @@ func (ncm *NetEaseProcessor) FetchPlaylistSongData(musicIDs []int, cfg *config.C
 			Url:         u.Url,
 			SourceURL:   netease.SongPageURL(strconv.Itoa(s.Id), coverURL),
 			PicUrl:      coverURL,
-			Tidy:        tidy,
-			Lyric:       lyric,
-			Year:        year,
+			Tidy:          tidy,
+			Lyric:         lyric,
+			LyricEvidence: lyricmeta.FromLyricsText(lyric),
+			Year:          year,
 		}
 	}
 
@@ -469,6 +471,7 @@ func (ncm *NetEaseProcessor) buildSongInfo(cfg *config.Config, detail *types.Son
 	tidy := processor.DetermineTidyType(cfg)
 
 	ncmLyric := utils.ParseNCMLyric(lyric)
+	evidence := lyricmeta.FromLyricsText(ncmLyric)
 	if ncmLyric == "" {
 		ncmLyric = "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"
 	}
@@ -486,9 +489,10 @@ func (ncm *NetEaseProcessor) buildSongInfo(cfg *config.Config, detail *types.Son
 		Url:         u.Url,
 		SourceURL:   netease.SongPageURL(strconv.Itoa(s.Id), coverURL),
 		PicUrl:      coverURL,
-		Tidy:        tidy,
-		Lyric:       ncmLyric,
-		Year:        year,
+		Tidy:          tidy,
+		Lyric:         ncmLyric,
+		LyricEvidence: evidence,
+		Year:          year,
 	}
 }
 

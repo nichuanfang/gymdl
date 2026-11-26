@@ -18,7 +18,25 @@
       <div class="count-row">
         <span>重复 {{ sameGroups.length }} 组</span>
         <span>相似 {{ similarGroups.length }} 组</span>
+        <span v-if="conflictGroups.length">歌词冲突 {{ conflictGroups.length }} 组</span>
       </div>
+    </n-card>
+
+    <n-card v-if="conflictGroups.length" size="small" :bordered="false" class="studio-card">
+      <header class="conflict-head">
+        <n-tag :bordered="false" type="error">需要人工核对</n-tag>
+        <span>音频相同，但一首有歌词、一首是纯音乐。这里不会批量删歌，请自己确认。</span>
+      </header>
+      <ul>
+        <li v-for="(group, index) in conflictGroups" :key="`conflict-${index}`">
+          <div>
+            <strong>{{ groupLabel(group, index) }}</strong>
+            <p v-for="track in group.tracks" :key="track.path">
+              {{ lyricLabel(track.lyric_evidence) }} · {{ track.path }}
+            </p>
+          </div>
+        </li>
+      </ul>
     </n-card>
 
     <article v-for="(group, index) in report.groups" :key="`${group.kind}-${index}`" class="group-card">
@@ -80,6 +98,17 @@ let skipActivate = true
 const running = computed(() => report.value.status === 'running')
 const sameGroups = computed(() => (report.value.groups || []).filter((group) => group.kind === 'same'))
 const similarGroups = computed(() => (report.value.groups || []).filter((group) => group.kind === 'similar'))
+const conflictGroups = computed(() => report.value.lyric_conflicts || [])
+
+function lyricLabel(evidence?: string) {
+  if (evidence === 'present') return '有歌词'
+  if (evidence === 'explicit_instrumental') return '纯音乐'
+  return '歌词未知'
+}
+function groupLabel(group: LibraryDuplicateGroup, index: number) {
+  const first = group.tracks?.[0]?.name || group.tracks?.[0]?.path || ''
+  return `冲突 ${index + 1} · ${first}`
+}
 const statusText = computed(() => {
   const current = report.value
   if (current.status === 'running') return `正在比对 ${current.scanned} / ${current.total || '…'}`
@@ -252,6 +281,8 @@ onUnmounted(() => {
 .group-card a { color: #63e2b7; text-decoration: none; flex-shrink: 0; }
 .group-card .n-button { margin-top: 12px; }
 .choice { display: flex; align-items: center; gap: 6px; color: #d5e4de; font-size: 13px; flex-shrink: 0; }
+.conflict-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.conflict-head span { color: #7d8c86; font-size: 12px; }
 @media (max-width: 700px) {
   .group-card li { align-items: flex-start; }
 }
