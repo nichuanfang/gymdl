@@ -68,10 +68,13 @@ config.yaml.bak
 config.playlists.yaml
 config.playlists.yaml.bak
 
-# Local Codex instructions; skills stay tracked
+# Local Codex instructions; the root guide and skills stay tracked
 AGENTS.md
+!/AGENTS.md
 .codex/*
 !.codex/skills/
+!.codex/environment.toml
+!.codex/environments/
 
 # Provider-failure dumps are written next to the working directory and contain
 # conversation text; never commit them.

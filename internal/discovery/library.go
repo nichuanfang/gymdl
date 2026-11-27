@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
-	"github.com/nichuanfang/gymdl/utils"
+	"go.uber.org/zap"
 )
 
 type Library interface {
@@ -84,9 +84,24 @@ type LibrarySnapshotState struct {
 	LoadedAt time.Time
 }
 
+type navidromeWarningMode uint8
+
+const (
+	navidromeNoWarning navidromeWarningMode = iota
+	navidromeNoSnapshot
+	navidromeStaleSnapshot
+	navidromeExpiredSnapshot
+)
+
+type navidromeWarningState struct {
+	mode navidromeWarningMode
+	kind navidromeFailureKind
+}
+
 type NavidromeLibrary struct {
 	Config     *config.PlaylistOrganizerConfig
 	Client     *http.Client
+	Logger     *zap.Logger
 	mu         sync.Mutex
 	byTitle    map[string][]Track
 	expires    time.Time
@@ -94,6 +109,7 @@ type NavidromeLibrary struct {
 	retryAt    time.Time
 	stale      bool
 	lastErr    error
+	warned     navidromeWarningState
 }
 
 func (l *NavidromeLibrary) Invalidate() {
@@ -134,23 +150,91 @@ func (l *NavidromeLibrary) refreshLocked(ctx context.Context, now time.Time) err
 		}
 		return l.lastErr
 	}
-	wasStale := l.stale
-	if err := l.load(ctx); err != nil {
+	hadFailure := l.warned.mode != navidromeNoWarning
+	stats, err := l.load(ctx)
+	if err != nil {
 		l.lastErr = err
 		l.retryAt = now.Add(libraryRetryDelay)
 		if l.canUseStaleLocked(now) {
-			if !l.stale {
-				utils.WarnWithFormat("[Navidrome] 曲库刷新失败，暂用最近快照: %v", err)
-			}
 			l.stale = true
+			l.warnRefreshFailureLocked(navidromeStaleSnapshot, err, stats, now)
 			return nil
 		}
+		mode := navidromeNoSnapshot
+		if l.byTitle != nil && !l.snapshotAt.IsZero() {
+			mode = navidromeExpiredSnapshot
+		}
+		l.warnRefreshFailureLocked(mode, err, stats, now)
 		return err
 	}
-	if wasStale {
-		utils.InfoWithFormat("[Navidrome] 曲库连接已恢复，快照刷新成功")
+	if hadFailure {
+		libraryLogger(l.Logger).Info("[Navidrome] 曲库连接已恢复，快照刷新成功",
+			zap.Int("songs", stats.Songs),
+			zap.Int("pages", stats.Pages),
+			zap.Int("retries", stats.Retries),
+			zap.Time("snapshot_at", l.snapshotAt),
+		)
 	}
+	l.warned = navidromeWarningState{}
 	return nil
+}
+
+func (l *NavidromeLibrary) warnRefreshFailureLocked(mode navidromeWarningMode, err error, stats navidromeReadStats, now time.Time) {
+	failure := navidromeFailureInfo(err)
+	if failure.canceled {
+		return
+	}
+	state := navidromeWarningState{mode: mode, kind: failure.kind}
+	if l.warned == state {
+		return
+	}
+
+	fields := []zap.Field{
+		zap.String("failure_kind", failure.kind.logValue()),
+		zap.String("reason", failure.message),
+		zap.Int("retries", stats.Retries),
+	}
+	if stats.Attempts > 0 {
+		fields = append(fields, zap.Int("attempts", stats.Attempts))
+	}
+	if failure.statusCode != 0 {
+		fields = append(fields, zap.Int("status_code", failure.statusCode))
+	}
+	if stats.LastRetryOffset >= 0 {
+		fields = append(fields, zap.Int("last_retry_offset", stats.LastRetryOffset))
+	}
+	if stats.LastRetryStatus != 0 {
+		fields = append(fields, zap.Int("last_retry_status", stats.LastRetryStatus))
+	}
+
+	message := "Navidrome 曲库连接失败，暂无可用的历史快照"
+	switch mode {
+	case navidromeStaleSnapshot:
+		age := now.Sub(l.snapshotAt)
+		message = "Navidrome 曲库刷新失败，继续使用最近快照"
+		fields = append(fields,
+			zap.Time("snapshot_at", l.snapshotAt),
+			zap.Duration("snapshot_age", age),
+			zap.Duration("snapshot_max_age", libraryMaxAge),
+		)
+	case navidromeExpiredSnapshot:
+		age := now.Sub(l.snapshotAt)
+		message = "Navidrome 最近快照已超过可用时限，暂时无法核对曲库"
+		fields = append(fields,
+			zap.Time("snapshot_at", l.snapshotAt),
+			zap.Duration("snapshot_age", age),
+			zap.Duration("snapshot_max_age", libraryMaxAge),
+		)
+	}
+	libraryLogger(l.Logger).Warn(message, fields...)
+	l.warned = state
+}
+
+func libraryLogger(logger *zap.Logger) *zap.Logger {
+	if logger == nil {
+		return zap.NewNop()
+	}
+	return logger
 }
 
 func (l *NavidromeLibrary) canUseStaleLocked(now time.Time) bool {
@@ -192,10 +276,11 @@ func hasOwnershipCredits(t Track) bool {
 	return len(artistCredits(t.Artist)) > 0
 }
 
-func (l *NavidromeLibrary) load(ctx context.Context) error {
-	audio, err := ReadNavidromeAudio(ctx, l.Config, l.Client)
+func (l *NavidromeLibrary) load(ctx context.Context) (navidromeReadStats, error) {
+	initialLoad := l.byTitle == nil
+	audio, stats, err := readNavidromeAudio(ctx, l.Config, l.Client)
 	if err != nil {
-		return err
+		return stats, err
 	}
 	index := make(map[string][]Track, len(audio))
 	for _, song := range audio {
@@ -213,7 +298,32 @@ func (l *NavidromeLibrary) load(ctx context.Context) error {
 	l.retryAt = time.Time{}
 	l.stale = false
 	l.lastErr = nil
-	return nil
+	if l.logger() != nil && l.warned.mode == navidromeNoWarning && (initialLoad || stats.Retries > 0) {
+		message := "Navidrome 曲库首次加载完成"
+		if !initialLoad {
+			message = "Navidrome 曲库重试后刷新完成"
+		}
+		fields := []zap.Field{
+			zap.Int("songs", stats.Songs),
+			zap.Int("pages", stats.Pages),
+			zap.Int("retries", stats.Retries),
+		}
+		if stats.LastRetryOffset >= 0 {
+			fields = append(fields, zap.Int("last_retry_offset", stats.LastRetryOffset))
+		}
+		if stats.LastRetryStatus != 0 {
+			fields = append(fields, zap.Int("last_retry_status", stats.LastRetryStatus))
+		}
+		l.logger().Info(message, fields...)
+	}
+	return stats, nil
+}
+
+func (l *NavidromeLibrary) logger() *zap.Logger {
+	if l == nil || l.Logger == nil {
+		return nil
+	}
+	return l.Logger
 }
 
 type NavidromeAudio struct {
@@ -225,8 +335,23 @@ type NavidromeAudio struct {
 }
 
 func ReadNavidromeAudio(ctx context.Context, c *config.PlaylistOrganizerConfig, client *http.Client) ([]NavidromeAudio, error) {
+	audio, _, err := readNavidromeAudio(ctx, c, client)
+	return audio, err
+}
+
+type navidromeReadStats struct {
+	Songs           int
+	Pages           int
+	Retries         int
+	Attempts        int
+	LastRetryOffset int
+	LastRetryStatus int
+}
+
+func readNavidromeAudio(ctx context.Context, c *config.PlaylistOrganizerConfig, client *http.Client) ([]NavidromeAudio, navidromeReadStats, error) {
+	stats := navidromeReadStats{LastRetryOffset: -1}
 	if c == nil || c.NavidromeURL == "" || c.NavidromeUsername == "" || c.NavidromePassword == "" {
-		return nil, &navidromeFailure{kind: navidromeConfiguration, message: "请配置 Navidrome 连接后再核对实际曲库"}
+		return nil, stats, &navidromeFailure{kind: navidromeConfiguration, message: "请配置 Navidrome 连接后再核对实际曲库"}
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
@@ -234,45 +359,89 @@ func ReadNavidromeAudio(ctx context.Context, c *config.PlaylistOrganizerConfig, 
 	var songs []NavidromeAudio
 	seen := map[string]bool{}
 	for offset := 0; offset < 100000; offset += 500 {
-		page, err := readNavidromePage(ctx, c, client, offset)
+		page, retries, lastStatus, err := readNavidromePage(ctx, c, client, offset)
+		stats.Attempts = retries + 1
+		if retries > 0 {
+			stats.Retries += retries
+			stats.LastRetryOffset = offset
+			stats.LastRetryStatus = lastStatus
+		}
 		if err != nil {
-			return nil, err
+			return nil, stats, err
 		}
 		for _, s := range page {
 			if s.ID == "" || seen[s.ID] {
-				return nil, &navidromeFailure{kind: navidromeInvalidResponse, message: "Navidrome 曲库响应异常，请稍后重试"}
+				return nil, stats, &navidromeFailure{kind: navidromeInvalidResponse, message: "Navidrome 曲库响应异常，请稍后重试"}
 			}
 			seen[s.ID] = true
 			songs = append(songs, s)
 		}
+		stats.Songs = len(songs)
+		stats.Pages++
 		if len(page) < 500 {
-			return songs, nil
+			return songs, stats, nil
 		}
 	}
-	return nil, &navidromeFailure{kind: navidromeInvalidResponse, message: "Navidrome 曲库超过安全分页上限，请检查曲库状态"}
+	return nil, stats, &navidromeFailure{kind: navidromeInvalidResponse, message: "Navidrome 曲库超过安全分页上限，请检查曲库状态"}
 }
 
-func readNavidromePage(ctx context.Context, c *config.PlaylistOrganizerConfig, client *http.Client, offset int) ([]NavidromeAudio, error) {
+func readNavidromePage(ctx context.Context, c *config.PlaylistOrganizerConfig, client *http.Client, offset int) ([]NavidromeAudio, int, int, error) {
 	var lastErr error
+	retries := 0
+	lastStatus := 0
 	for attempt := 0; attempt < navidromeAttempts; attempt++ {
 		songs, err := readNavidromePageOnce(ctx, c, client, offset)
 		if err == nil {
-			return songs, nil
+			return songs, retries, lastStatus, nil
 		}
 		lastErr = err
 		var failure *navidromeFailure
 		if !errors.As(err, &failure) || !failure.retryable() || attempt == navidromeAttempts-1 {
-			return nil, err
+			return nil, retries, lastStatus, err
 		}
+		retries++
+		lastStatus = failure.statusCode
 		timer := time.NewTimer(navidromeRetryDelay(attempt))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, navidromeContextFailure(ctx)
+			return nil, retries, lastStatus, navidromeContextFailure(ctx)
 		case <-timer.C:
 		}
 	}
-	return nil, lastErr
+	return nil, retries, lastStatus, lastErr
+}
+
+type navidromeFailureInfoValue struct {
+	kind       navidromeFailureKind
+	statusCode int
+	message    string
+	canceled   bool
+}
+
+func navidromeFailureInfo(err error) navidromeFailureInfoValue {
+	info := navidromeFailureInfoValue{message: "unknown failure"}
+	var failure *navidromeFailure
+	if errors.As(err, &failure) {
+		info.kind = failure.kind
+		info.statusCode = failure.statusCode
+		info.message = failure.message
+		info.canceled = errors.Is(err, context.Canceled)
+	}
+	return info
+}
+
+func (kind navidromeFailureKind) logValue() string {
+	switch kind {
+	case navidromeAuthentication:
+		return "authentication"
+	case navidromeInvalidResponse:
+		return "invalid_response"
+	case navidromeConfiguration:
+		return "configuration"
+	default:
+		return "unavailable"
+	}
 }
 
 func readNavidromePageOnce(ctx context.Context, c *config.PlaylistOrganizerConfig, client *http.Client, offset int) ([]NavidromeAudio, error) {

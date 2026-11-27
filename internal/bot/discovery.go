@@ -46,7 +46,7 @@ func (app *BotApp) initDiscovery() {
 		return index.Ready(ctx)
 	})
 	taste.HistoryOwner = tasteHistoryOwner(app.cfg.Telegram)
-	app.discovery = &discovery.Service{Store: store, Provider: &discovery.Providers{Config: app.cfg}, Library: &discovery.NavidromeLibrary{Config: app.cfg.PlaylistOrganizer}, Enabled: settings.Enable, PollInterval: time.Duration(settings.PollIntervalMinutes) * time.Minute, SummaryInterval: time.Duration(settings.SummaryIntervalMinutes) * time.Minute,
+	app.discovery = &discovery.Service{Store: store, Provider: &discovery.Providers{Config: app.cfg}, Library: &discovery.NavidromeLibrary{Config: app.cfg.PlaylistOrganizer, Logger: utils.Logger()}, Enabled: settings.Enable, PollInterval: time.Duration(settings.PollIntervalMinutes) * time.Minute, SummaryInterval: time.Duration(settings.SummaryIntervalMinutes) * time.Minute,
 		Taste: taste, SlowNetease: true,
 		History: func(ctx context.Context) ([]discovery.Track, error) {
 			if app.cfg.AI == nil {
