@@ -15,9 +15,8 @@ var takeoverPersistHook = persistAudioCheckSession
 // is no longer the bound one, so both the text and the callback guard stop it.
 const audioCheckMovedText = "🔁 曲库体检已移到聊天底部，请用最新那张卡片继续。"
 
-// currentAudioCheck returns the live session owned by user in this chat. An
-// expired finished card is not resumable, so re-sending /audio_check starts a
-// fresh scan instead of taking it over.
+// currentAudioCheck returns a card the command can still bring back. A closed
+// summary has no actions, so re-sending the command starts a new scan.
 func (app *BotApp) currentAudioCheck(chat, owner int64) (audioCheckSession, bool) {
 	app.audioCheckMu.Lock()
 	defer app.audioCheckMu.Unlock()
@@ -28,21 +27,15 @@ func (app *BotApp) currentAudioCheck(chat, owner int64) (audioCheckSession, bool
 	if !current.running && time.Now().After(current.expires) {
 		return audioCheckSession{}, false
 	}
-	return current, true
+	_, hasFinding := currentAudioCheckFinding(current)
+	return current, current.running || current.busy || hasFinding || audioCheckCanContinue(current)
 }
 
 // takeoverAudioCheckCard re-sends the live card at the bottom of the chat and
 // rebinds the task to it, then retires the old card. The scan keeps running on
 // its own goroutine: only the message binding changes, so a re-send never
-// restarts or double-starts a scan.
+// restarts or double-starts a scan. The caller holds audioCheckCardMu.
 func (app *BotApp) takeoverAudioCheckCard(c tb.Context, session audioCheckSession) error {
-	if session.busy {
-		return c.Send("原卡片的操作还在处理，请稍后再试。")
-	}
-	// Refresh from the live binding so the new card shows the newest state.
-	if live, ok := app.liveAudioCheckBinding(session.message.Chat.ID); ok {
-		session = live
-	}
 	if session.busy {
 		return c.Send("原卡片的操作还在处理，请稍后再试。")
 	}
@@ -75,33 +68,24 @@ func (app *BotApp) takeoverAudioCheckCard(c tb.Context, session audioCheckSessio
 	return nil
 }
 
-// commitAudioCheckBinding swaps the message binding only if the session still
-// points at the card the caller read. The new binding is persisted outside the
-// lock; if the save fails the old binding is restored so the original card
-// keeps working.
+// commitAudioCheckBinding publishes the new card only after saving it, while
+// keeping callbacks from changing the session during the swap.
 func (app *BotApp) commitAudioCheckBinding(previous, next audioCheckSession, message *tb.Message) bool {
 	chat := previous.message.Chat.ID
 	app.audioCheckMu.Lock()
+	defer app.audioCheckMu.Unlock()
 	current, ok := app.audioCheckSessions[chat]
-	if !ok || current.token != previous.token || !sameMusicActionMessage(current.message, previous.message) {
-		app.audioCheckMu.Unlock()
+	if !ok || current.busy || current.token != previous.token || !sameMusicActionMessage(current.message, previous.message) {
 		return false
 	}
 	current.message = message
 	current.token = next.token
 	current.expires = next.expires
-	app.audioCheckSessions[chat] = current
-	app.audioCheckMu.Unlock()
-
 	if err := takeoverPersistHook(current); err != nil {
-		app.audioCheckMu.Lock()
-		if latest, ok := app.audioCheckSessions[chat]; ok && latest.token == current.token {
-			app.audioCheckSessions[chat] = previous
-		}
-		app.audioCheckMu.Unlock()
 		utils.WarnWithFormat("无法保存体检卡片接管: %v", err)
 		return false
 	}
+	app.audioCheckSessions[chat] = current
 	return true
 }
 
@@ -116,10 +100,9 @@ func (app *BotApp) liveAudioCheckBinding(chat int64) (audioCheckSession, bool) {
 // resumeAudioCheckCard brings the task's current card back to the bottom. It is
 // the 返回体检 target on the source/download cards, which carry the card token.
 func (app *BotApp) resumeAudioCheckCard(c tb.Context, token string) error {
-	chat := c.Chat().ID
-	app.audioCheckMu.Lock()
-	current, ok := app.audioCheckSessions[chat]
-	app.audioCheckMu.Unlock()
+	app.audioCheckCardMu.Lock()
+	defer app.audioCheckCardMu.Unlock()
+	current, ok := app.liveAudioCheckBinding(c.Chat().ID)
 	if !ok || current.token != token || current.owner != c.Sender().ID {
 		return c.Respond(&tb.CallbackResponse{Text: "体检卡片已更新，请使用最新的那张。", ShowAlert: true})
 	}

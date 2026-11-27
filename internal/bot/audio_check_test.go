@@ -334,6 +334,9 @@ func TestAudioCheckWebDAVReusesFileAndHandlesPartialTransfers(t *testing.T) {
 	}
 	var downloads, listings atomic.Int32
 	var partial, blockListing atomic.Bool
+	var blockDownload atomic.Bool
+	downloadStarted := make(chan struct{}, 1)
+	releaseDownload := make(chan struct{}, 1)
 	listingStarted := make(chan struct{}, 1)
 	releaseListing := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -362,6 +365,17 @@ func TestAudioCheckWebDAVReusesFileAndHandlesPartialTransfers(t *testing.T) {
 			fmt.Fprintf(w, `<d:response><d:href>/library/song.flac</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>%d</d:getcontentlength><d:getlastmodified>Sat, 21 Nov 2026 12:00:00 GMT</d:getlastmodified></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>`, len(data))
 		case r.Method == "GET" && r.URL.Path == "/library/song.flac":
 			downloads.Add(1)
+			if blockDownload.Load() {
+				select {
+				case downloadStarted <- struct{}{}:
+				default:
+				}
+				select {
+				case <-r.Context().Done():
+					return
+				case <-releaseDownload:
+				}
+			}
 			if partial.Load() {
 				_, _ = w.Write(data[:len(data)/2])
 			} else {
@@ -463,6 +477,60 @@ func TestAudioCheckWebDAVReusesFileAndHandlesPartialTransfers(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("canceled WebDAV listing did not return")
 	}
+
+	t.Run("continue retries deferred transfer on the live card", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		blockListing.Store(false)
+		api, calls := checkTestBot(t)
+		app := checkTestApp(t, api)
+		app.cfg.Tidy = cfg.Tidy
+		app.cfg.WebDAV = cfg.WebDAV
+		t.Cleanup(app.stopAudioCheck)
+		api.Handle("/audio_check", app.AudioCheckCommand)
+		api.Handle(&audioCheckEndpoint, app.HandleAudioCheckCallback)
+		chat := &tb.Chat{ID: 7, Type: tb.ChatPrivate}
+		user := &tb.User{ID: 7}
+		command := func() {
+			api.ProcessUpdate(tb.Update{Message: &tb.Message{ID: 90, Text: "/audio_check", Sender: user, Chat: chat}})
+		}
+		command()
+		first := checkWait(t, calls, "editMessageText", nil)
+		waitForAudioCheckScan(t, app)
+		if !strings.Contains(first.text, "已检查 0/1 首") || !strings.Contains(first.text, "1 首没能取到文件") {
+			t.Fatalf("transfer failure did not produce a retryable summary: %+v", first)
+		}
+		var markup tb.ReplyMarkup
+		if err := json.Unmarshal([]byte(first.markup), &markup); err != nil {
+			t.Fatal(err)
+		}
+		if len(markup.InlineKeyboard) != 1 || len(markup.InlineKeyboard[0]) != 1 || markup.InlineKeyboard[0][0].Text != "继续体检" {
+			t.Fatalf("retry control missing: %+v", markup)
+		}
+		beforeDownloads, beforeListings := downloads.Load(), listings.Load()
+		partial.Store(false)
+		blockDownload.Store(true)
+		api.ProcessUpdate(tb.Update{Callback: &tb.Callback{ID: "retry", Sender: user,
+			Message: &tb.Message{ID: 101, Chat: chat}, Data: markup.InlineKeyboard[0][0].Data}})
+		select {
+		case <-downloadStarted:
+		case <-time.After(6 * time.Second):
+			t.Fatal("continue did not retry the failed WebDAV read")
+		}
+		command()
+		checkWait(t, calls, "sendMessage", func(c checkCall) bool {
+			return strings.Contains(c.text, "正在检查") && strings.Contains(c.markup, "停止")
+		})
+		close(releaseDownload)
+		result := checkWait(t, calls, "editMessageText", func(c checkCall) bool {
+			return strings.Contains(c.text, "已检查 1/1 首")
+		})
+		waitForAudioCheckScan(t, app)
+		if result.messageID != "102" || strings.Contains(result.markup, "继续体检") ||
+			downloads.Load() != beforeDownloads+1 || listings.Load() != beforeListings+1 {
+			t.Fatalf("expected one retry and the completed result on the moved card: %+v, GET=%d, listings=%d",
+				result, downloads.Load()-beforeDownloads, listings.Load()-beforeListings)
+		}
+	})
 }
 
 func TestAudioCheckOnlyUsesTheSameSourceAndEditionForDuration(t *testing.T) {

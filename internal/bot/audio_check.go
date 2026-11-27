@@ -52,11 +52,6 @@ func (app *BotApp) AudioCheckCommand(c tb.Context) error {
 	if payload != "" && payload != "deep" {
 		return c.Send("发送 /audio_check 开始体检。")
 	}
-	// Re-sending the command brings the live card to the bottom of the chat and
-	// takes the running task over, instead of leaving it buried above.
-	if current, ok := app.currentAudioCheck(c.Chat().ID, c.Sender().ID); ok {
-		return app.takeoverAudioCheckCard(c, current)
-	}
 	return app.startAudioCheck(c, nil)
 }
 
@@ -70,6 +65,13 @@ func missingAudioCheckTool() string {
 }
 
 func (app *BotApp) startAudioCheck(c tb.Context, previous *audioCheckSession) error {
+	app.audioCheckCardMu.Lock()
+	defer app.audioCheckCardMu.Unlock()
+	if previous == nil {
+		if current, ok := app.currentAudioCheck(c.Chat().ID, c.Sender().ID); ok {
+			return app.takeoverAudioCheckCard(c, current)
+		}
+	}
 	if tool := missingAudioCheckTool(); tool != "" {
 		return c.Send("曲库体检需要 " + tool + "，当前运行环境未安装。")
 	}
@@ -270,6 +272,10 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 	session.report = state.report
 	if finding != nil {
 		session.report.findings = []audioCheckFinding{*finding}
+	} else if err == nil && session.report.deferred > 0 {
+		// The cursor is exhausted. Continuing must list the library again so
+		// it can retry the files that could not be fetched in this pass.
+		session.state = nil
 	}
 	notice := session.notice
 	if strings.HasPrefix(notice, "容器重启后") || strings.HasPrefix(notice, "已停止") {
@@ -288,6 +294,11 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 }
 
 func (app *BotApp) completeAudioCheck(api tb.API, session audioCheckSession, notice string, more bool) {
+	app.audioCheckCardMu.Lock()
+	defer app.audioCheckCardMu.Unlock()
+	if binding, ok := app.liveAudioCheckBinding(session.message.Chat.ID); ok {
+		session.message = binding.message
+	}
 	session.report.resumeAvailable = more
 	session.notice = notice
 	if err := app.presentAudioCheck(api, session); err != nil {
@@ -688,6 +699,16 @@ func formatAudioCheckProgressCard(session audioCheckSession) (string, *tb.ReplyM
 }
 
 func (app *BotApp) editAudioCheckProgress(api tb.API, session audioCheckSession) error {
+	app.audioCheckCardMu.Lock()
+	defer app.audioCheckCardMu.Unlock()
+	chat := session.message.Chat.ID
+	app.audioCheckMu.Lock()
+	if binding, ok := app.audioCheckSessions[chat]; ok {
+		session.message, session.token = binding.message, binding.token
+		binding.report = session.report
+		app.audioCheckSessions[chat] = binding
+	}
+	app.audioCheckMu.Unlock()
 	text, markup := formatAudioCheckProgressCard(session)
 	_, err := api.Edit(session.message, text, tb.ModeHTML, markup)
 	return err

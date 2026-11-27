@@ -46,6 +46,7 @@ type BotApp struct {
 	musicActionMu              sync.Mutex
 	musicActions               map[string]pendingMusicAction
 	audioCheckMu               sync.Mutex
+	audioCheckCardMu           sync.Mutex
 	audioCheckTrashMu          sync.Mutex
 	audioCheckSessions         map[int64]audioCheckSession
 	audioCheckDone             chan struct{}
