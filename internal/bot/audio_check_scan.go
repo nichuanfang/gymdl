@@ -21,6 +21,12 @@ import (
 	"github.com/nichuanfang/gymdl/processor"
 )
 
+// audioCheckFileTimeout bounds one file's download + analysis + fingerprint.
+// A 36MB FLAC took 13.6s to fetch over the frp tunnel on a healthy day, and a
+// library file may be 512MB, so a 50s budget marked every large file unreadable
+// during an outage. The download dominates, hence the generous value.
+const audioCheckFileTimeout = 3 * time.Minute
+
 type audioCheckFinding struct {
 	file web.FileEntry
 	audioquality.Result
@@ -99,6 +105,9 @@ func newAudioCheckScanState(ctx context.Context, cfg *config.Config, store *audi
 	priority := func(file web.FileEntry) int {
 		item, exists := cached[file.Path]
 		switch {
+		// A previous transfer failure is retried first: it was never judged.
+		case exists && item.ReadFailed:
+			return 0
 		case !exists || item.FileVersion != audioFileVersion(file) || (item.Unreadable && !now.Before(item.RetryAt)):
 			return 1
 		case !item.Unreadable && !item.Reviewed && item.NeedsReview():
@@ -171,6 +180,14 @@ func (s *audioCheckScanState) scanNext(ctx context.Context, cfg *config.Config, 
 		}
 		s.cursor++
 		s.report.remaining--
+		if item.ReadFailed {
+			// A fetch failure is not a damaged song. Counting it as deferred
+			// keeps it out of the "暂时没读到" total, which is reserved for
+			// files that were fetched but could not be decoded.
+			s.report.deferred++
+			progress(s.report)
+			continue
+		}
 		if item.Unreadable {
 			s.report.unreadable++
 			progress(s.report)
@@ -200,6 +217,10 @@ func (s *audioCheckScanState) checkFile(ctx context.Context, cfg *config.Config,
 	version := audioFileVersion(file)
 	item, known := s.cached[file.Path]
 	known = known && item.FileVersion == version
+	// A transfer failure is not a verdict on the audio: always retry it.
+	if known && item.ReadFailed {
+		known = false
+	}
 	if known && item.Unreadable && time.Now().Before(item.RetryAt) {
 		return item, audiodupe.Fingerprint{}, nil
 	}
@@ -226,12 +247,16 @@ func (s *audioCheckScanState) checkFile(ctx context.Context, cfg *config.Config,
 		return item, fp, nil
 	}
 
-	fileCtx, cancel := context.WithTimeout(ctx, 50*time.Second)
+	fileCtx, cancel := context.WithTimeout(ctx, audioCheckFileTimeout)
 	defer cancel()
 	local, cleanup, readErr := web.MaterializeLibraryAudio(fileCtx, cfg, file)
 	if cleanup != nil {
 		defer cleanup()
 	}
+	// A fetch failure says nothing about the audio. Report it as a transfer
+	// problem so the file is retried on the next scan instead of being
+	// remembered as damaged for an hour.
+	transferFailed := readErr != nil
 	if readErr == nil && inspect {
 		item, readErr = inspectAudioCheckFile(fileCtx, local, version)
 	}
@@ -246,6 +271,20 @@ func (s *audioCheckScanState) checkFile(ctx context.Context, cfg *config.Config,
 	}
 	if err := ctx.Err(); err != nil {
 		return item, fp, err
+	}
+	if transferFailed {
+		fp = audiodupe.Fingerprint{}
+		if inspect {
+			// Keep the row so a later scan can reuse it, but mark it as a
+			// transfer failure and drop the retry gate: the very next scan
+			// must try again as soon as the tunnel is back.
+			item = audioquality.CachedResult{FileVersion: version, ReadFailed: true}
+			if err := store.Save(ctx, library, item); err != nil {
+				return item, fp, err
+			}
+			s.cached[file.Path] = item
+		}
+		return item, fp, nil
 	}
 	if readErr != nil {
 		fp = audiodupe.Fingerprint{}
@@ -274,6 +313,11 @@ func cachedAudioCheckReport(ctx context.Context, store *audioquality.Store, libr
 	}
 	report := audioCheckReport{total: len(cached), resumeAvailable: true}
 	for name, item := range cached {
+		if item.ReadFailed {
+			// Not counted as checked; the next scan retries the transfer.
+			report.deferred++
+			continue
+		}
 		if item.Unreadable {
 			if !item.RetryAt.IsZero() && !time.Now().Before(item.RetryAt) {
 				report.remaining++

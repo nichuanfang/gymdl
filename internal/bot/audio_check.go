@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/core"
 	"github.com/nichuanfang/gymdl/internal/audiodupe"
 	"github.com/nichuanfang/gymdl/internal/audioquality"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
@@ -179,6 +180,21 @@ func (app *BotApp) finishAudioCheck(done chan struct{}, cancel context.CancelFun
 	close(done)
 }
 
+// audioCheckTransportReady reports whether the library is reachable. Local
+// tidy mode always is; WebDAV mode pings the endpoint because a dead tunnel
+// would otherwise be recorded as a library full of unreadable files.
+func audioCheckTransportReady(ctx context.Context, cfg *config.Config) bool {
+	if cfg == nil || cfg.Tidy == nil || cfg.Tidy.Mode != 2 {
+		return true
+	}
+	if core.GlobalWebDAV == nil || core.GlobalWebDAV.Client == nil {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return core.GlobalWebDAV.ClientWithContext(probeCtx).Connect() == nil
+}
+
 func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Config, session audioCheckSession) {
 	store, err := audioquality.Open(storage.DefaultDatabasePath)
 	if err != nil {
@@ -201,6 +217,17 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 		fingerprint = false
 	}
 	if state == nil {
+		// Every file is downloaded before it can be inspected, so an
+		// unreachable tunnel would mark the whole library unreadable. Check it
+		// once up front and leave the cached verdicts alone.
+		if !audioCheckTransportReady(ctx, cfg) {
+			app.completeAudioCheck(api, session, "WebDAV 当前连不上，先不体检，稍后再试。", true)
+			return
+		}
+		// Clear last outage's transfer failures so this pass retries them.
+		if dropped, dropErr := store.ForgetReadFailures(ctx, session.library); dropErr == nil && dropped > 0 {
+			utils.InfoWithFormat("[AudioCheck] 清理 %d 条传输失败记录，本次重新尝试", dropped)
+		}
 		state, err = newAudioCheckScanState(ctx, cfg, store, session.library, session.owner, fingerprint)
 		if err != nil {
 			if app.audioCheckIsStopping() {
@@ -615,6 +642,11 @@ func formatAudioCheckCard(session audioCheckSession) (string, *tb.ReplyMarkup) {
 		}
 		if pending := report.remaining + report.deferred; pending > 0 {
 			fmt.Fprintf(&text, "\n%d 首待检查", pending)
+		}
+		// Files the tunnel could not deliver this pass. They are part of 待检查
+		// because the next scan retries them, and must not read as damaged.
+		if report.deferred > 0 {
+			fmt.Fprintf(&text, "\n其中 %d 首没能取到文件，下次体检会重试", report.deferred)
 		}
 		if report.referenceQueue > 0 {
 			fmt.Fprintf(&text, "\n%d 首待核对音源时长", report.referenceQueue)

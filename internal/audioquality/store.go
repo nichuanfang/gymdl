@@ -22,6 +22,10 @@ type CachedResult struct {
 	Result
 	Reviewed bool
 	RetryAt  time.Time
+	// ReadFailed marks a file whose content could not be fetched at all
+	// (WebDAV down, transfer aborted). It is not a verdict about the audio:
+	// the next scan must retry it instead of trusting a cached "unreadable".
+	ReadFailed bool
 }
 
 func Open(filename string) (*Store, error) {
@@ -32,7 +36,7 @@ func Open(filename string) (*Store, error) {
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS audio_quality_results(
 			library TEXT NOT NULL, path TEXT NOT NULL, size INTEGER NOT NULL, modified INTEGER NOT NULL,
-			result TEXT NOT NULL, retry_at INTEGER NOT NULL,
+			result TEXT NOT NULL, retry_at INTEGER NOT NULL, read_failed INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY(library,path)
 		);
 		CREATE TABLE IF NOT EXISTS audio_quality_reviews(
@@ -52,14 +56,46 @@ func Open(filename string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	store := &Store{db: db}
+	if err := store.ensureReadFailedColumn(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+// ensureReadFailedColumn upgrades databases created before transfer failures
+// were tracked separately from unreadable audio.
+func (s *Store) ensureReadFailedColumn() error {
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info('audio_quality_results')`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err = rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == "read_failed" {
+			return nil
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`ALTER TABLE audio_quality_results ADD COLUMN read_failed INTEGER NOT NULL DEFAULT 0`)
+	return err
 }
 
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) Results(ctx context.Context, library string, user int64) (map[string]CachedResult, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT a.path,a.size,a.modified,a.result,a.retry_at,r.user_id IS NOT NULL
+		SELECT a.path,a.size,a.modified,a.result,a.retry_at,a.read_failed,r.user_id IS NOT NULL
 		FROM audio_quality_results a LEFT JOIN audio_quality_reviews r
 		ON r.library=a.library AND r.path=a.path AND r.size=a.size AND r.modified=a.modified AND r.user_id=?
 		WHERE a.library=?`, user, library)
@@ -72,7 +108,7 @@ func (s *Store) Results(ctx context.Context, library string, user int64) (map[st
 		var item CachedResult
 		var payload string
 		var retryAt int64
-		if err := rows.Scan(&item.Path, &item.Size, &item.Mod, &payload, &retryAt, &item.Reviewed); err != nil {
+		if err := rows.Scan(&item.Path, &item.Size, &item.Mod, &payload, &retryAt, &item.ReadFailed, &item.Reviewed); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(payload), &item.Result); err != nil {
@@ -96,11 +132,23 @@ func (s *Store) Save(ctx context.Context, library string, item CachedResult) err
 		retryAt = item.RetryAt.Unix()
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO audio_quality_results(library,path,size,modified,result,retry_at) VALUES(?,?,?,?,?,?)
+		INSERT INTO audio_quality_results(library,path,size,modified,result,retry_at,read_failed) VALUES(?,?,?,?,?,?,?)
 		ON CONFLICT(library,path) DO UPDATE SET size=excluded.size,modified=excluded.modified,
-		result=excluded.result,retry_at=excluded.retry_at`,
-		library, item.Path, item.Size, item.Mod, string(payload), retryAt)
+		result=excluded.result,retry_at=excluded.retry_at,read_failed=excluded.read_failed`,
+		library, item.Path, item.Size, item.Mod, string(payload), retryAt, item.ReadFailed)
 	return err
+}
+
+// ForgetReadFailures drops cached rows whose audio could never be fetched, so
+// a scan after the tunnel recovers starts from a clean slate instead of
+// carrying last outage's verdicts. Rows with real findings are left alone.
+func (s *Store) ForgetReadFailures(ctx context.Context, library string) (int64, error) {
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM audio_quality_results WHERE library=? AND read_failed=1`, library)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 func (s *Store) MarkNormal(ctx context.Context, library string, user int64, file FileVersion) (bool, error) {

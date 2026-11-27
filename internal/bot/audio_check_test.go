@@ -423,16 +423,23 @@ func TestAudioCheckWebDAVReusesFileAndHandlesPartialTransfers(t *testing.T) {
 	if downloads.Load() != 1 {
 		t.Fatalf("unchanged WebDAV file downloaded again: %d", downloads.Load())
 	}
+	// A short read is a transfer failure, not a verdict on the audio: it must
+	// not be counted as unreadable, and the next scan must try again instead
+	// of trusting the cached result.
 	partial.Store(true)
-	for range 2 {
-		state = load("partial-transfer")
-		scan(state, "partial-transfer")
-		if state.report.unreadable != 1 || state.report.checked != 0 {
-			t.Fatalf("short WebDAV read was incorrectly reported as file damage: %+v", state.report)
-		}
+	before := downloads.Load()
+	state = load("partial-transfer")
+	scan(state, "partial-transfer")
+	if state.report.deferred != 1 || state.report.unreadable != 0 || state.report.checked != 0 {
+		t.Fatalf("short WebDAV read should be deferred, not reported as damage: %+v", state.report)
 	}
-	if downloads.Load() != 2 {
-		t.Fatalf("temporary transfer failure was immediately retried: GET=%d", downloads.Load())
+	if downloads.Load() != before+1 {
+		t.Fatalf("short read should have downloaded once: GET=%d", downloads.Load())
+	}
+	state = load("partial-transfer")
+	scan(state, "partial-transfer")
+	if downloads.Load() != before+2 {
+		t.Fatalf("a transfer failure must be retried on the next scan: GET=%d", downloads.Load())
 	}
 	blockListing.Store(true)
 	listingCtx, cancelListing := context.WithCancel(ctx)
