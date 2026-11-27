@@ -34,17 +34,19 @@ type DiscoveryTrack struct {
 
 // DiscoveryBatch is one rediscover result. Counts match the Telegram card.
 type DiscoveryBatch struct {
-	Tracks           []DiscoveryTrack
-	SkippedOwned     int
-	Unconfirmed      int
-	SkippedShown     int
-	SkippedPending   int
-	SkippedDismissed int
-	SkippedQueued    int
-	SkippedArtistCap int
-	SkippedDuplicate int
-	SkippedOther     int
-	Unavailable      int
+	Tracks            []DiscoveryTrack
+	SkippedOwned      int
+	Unconfirmed       int
+	SkippedShown      int
+	SkippedPending    int
+	SkippedDismissed  int
+	SkippedQueued     int
+	SkippedArtistCap  int
+	SkippedDuplicate  int
+	SkippedOther      int
+	Unavailable       int
+	LibraryStale      bool
+	LibrarySnapshotAt int64
 }
 
 // DiscoveryEnqueueResult is one row's queue decision. The browser must use
@@ -497,16 +499,42 @@ func discoveryNotice(platform string, requested int, batch DiscoveryBatch) strin
 	name := discoveryPlatformName(platform)
 	count := len(batch.Tracks)
 	reasonText := discoveryCandidateSummary(batch)
+	snapshotNotice := rediscoverLibrarySnapshotNotice(batch.LibraryStale, batch.LibrarySnapshotAt)
 	if count == 0 {
+		var text string
 		if reasonText != "" {
-			return fmt.Sprintf("这次在%s没有找到可入库的遗珠。候选池里：%s。可以换个平台，或稍后再试。", name, reasonText)
+			text = fmt.Sprintf("这次在%s没有找到可入库的遗珠。候选池里：%s。可以换个平台，或稍后再试。", name, reasonText)
+		} else {
+			text = "在" + name + "里，这批历史和收藏暂时没有可确认的缺失歌曲。可以换个平台或稍后再试。"
 		}
-		return "在" + name + "里，这批历史和收藏暂时没有可确认的缺失歌曲。可以换个平台或稍后再试。"
+		return withSnapshotNotice(text, snapshotNotice)
 	}
 	if reasonText == "" {
+		return snapshotNotice
+	}
+	return withSnapshotNotice(fmt.Sprintf("这次先听这首。候选池里还有：%s。", reasonText), snapshotNotice)
+}
+
+func withSnapshotNotice(text, notice string) string {
+	if notice == "" {
+		return text
+	}
+	if text == "" {
+		return notice
+	}
+	return notice + "\n" + text
+}
+
+func rediscoverLibrarySnapshotNotice(stale bool, snapshotUnix int64) string {
+	if !stale || snapshotUnix <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("这次先听这首。候选池里还有：%s。", reasonText)
+	age := time.Since(time.Unix(snapshotUnix, 0))
+	minutes := int(age / time.Minute)
+	if minutes < 1 {
+		minutes = 1
+	}
+	return fmt.Sprintf("曲库连接波动，本次使用了约 %d 分钟前的快照核对。", minutes)
 }
 
 // discoveryCandidateSummary separates the one result the user receives from

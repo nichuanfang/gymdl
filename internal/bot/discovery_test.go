@@ -604,6 +604,24 @@ func TestRediscoverEmptyCopyExplainsSeparateSkipReasons(t *testing.T) {
 	}
 }
 
+func TestRediscoverShowsRecentSnapshotFallback(t *testing.T) {
+	snapshot := time.Now().Add(-15 * time.Minute)
+	batch := discovery.RediscoverBatch{
+		Unconfirmed: 1, LibraryStale: true, LibrarySnapshotAt: snapshot,
+	}
+	text := rediscoverEmptyCopy("netease", batch)
+	if !strings.Contains(text, "曲库连接波动") || !strings.Contains(text, "15 分钟前") {
+		t.Fatalf("snapshot fallback was not visible: %s", text)
+	}
+	track := discovery.Track{Platform: "netease", ID: "1", Title: "一", Artist: "甲", Album: "专辑", Verified: true}
+	cardText, _ := discoveryRecommendationCard(discovery.Card{
+		Tracks: []discovery.Track{track}, LibraryStale: true, LibrarySnapshotAt: snapshot.Unix(), Requested: 1,
+	}, 0)
+	if !strings.Contains(cardText, "15 分钟前") {
+		t.Fatalf("snapshot fallback was not visible on the card: %s", cardText)
+	}
+}
+
 func TestRediscoverRedrawAndCancelButtons(t *testing.T) {
 	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
 	if err != nil {

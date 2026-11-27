@@ -1216,6 +1216,7 @@ func TestDeferredDiscoveryActionCardWaitsForExactWebDAVFile(t *testing.T) {
 }
 
 func TestNavidromeInventoryAndFailures(t *testing.T) {
+	withoutNavidromeRetryDelay(t)
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -1237,8 +1238,15 @@ func TestNavidromeInventoryAndFailures(t *testing.T) {
 	}
 	server.Close()
 	l.Invalidate()
+	if owned, err = l.Contains(context.Background(), tr); err != nil || !owned || !l.SnapshotState().Stale {
+		t.Fatalf("recent snapshot was not used after refresh failure: owned=%t err=%v", owned, err)
+	}
+	l.mu.Lock()
+	l.snapshotAt = time.Now().Add(-31 * time.Minute)
+	l.mu.Unlock()
+	l.Invalidate()
 	if _, err = l.Contains(context.Background(), tr); err == nil {
-		t.Fatal("failed refresh treated as missing")
+		t.Fatal("expired snapshot was treated as current")
 	}
 }
 

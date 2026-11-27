@@ -30,6 +30,16 @@ func TestDiscoveryNoticeSkipsTheOwnedCountWhenSongsRemain(t *testing.T) {
 	}
 }
 
+func TestDiscoveryNoticeExplainsSnapshotFallback(t *testing.T) {
+	snapshot := time.Now().Add(-15 * time.Minute).Unix()
+	notice := discoveryNotice("netease", 1, DiscoveryBatch{
+		Tracks: []DiscoveryTrack{{Title: "晴天"}}, LibraryStale: true, LibrarySnapshotAt: snapshot,
+	})
+	if !strings.Contains(notice, "曲库连接波动") || !strings.Contains(notice, "15 分钟前") {
+		t.Fatalf("snapshot fallback was not visible: %q", notice)
+	}
+}
+
 func TestPlaylistDescriptionsHideFunctionalPlaylists(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	path := filepath.Join(t.TempDir(), "gymdl.sqlite3")

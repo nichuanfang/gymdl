@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,25 +16,99 @@ import (
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/utils"
 )
 
 type Library interface {
 	Contains(context.Context, Track) (bool, error)
 }
 
-// libraryCacheTTL keeps the Navidrome catalog warm across /rediscover and the
-// ownership checks that follow it. Downloads still go through the dedupe store.
-const libraryCacheTTL = 10 * time.Minute
+const (
+	// A fresh snapshot avoids loading the full catalog for every click. A
+	// recently expired snapshot remains usable for a short outage so a song is
+	// not declared missing just because the tunnel is reconnecting.
+	libraryCacheTTL   = 10 * time.Minute
+	libraryMaxAge     = 30 * time.Minute
+	libraryRetryDelay = 30 * time.Second
+	navidromeAttempts = 3
+)
 
-type NavidromeLibrary struct {
-	Config  *config.PlaylistOrganizerConfig
-	Client  *http.Client
-	mu      sync.Mutex
-	byTitle map[string][]Track
-	expires time.Time
+var navidromeRetryDelay = func(attempt int) time.Duration {
+	base := 2 * time.Second
+	if attempt > 0 {
+		base = 6 * time.Second
+	}
+	// Keep simultaneous callers from retrying on exactly the same boundary.
+	return time.Duration(float64(base) * (0.8 + rand.Float64()*0.4))
 }
 
-func (l *NavidromeLibrary) Invalidate() { l.mu.Lock(); l.expires = time.Time{}; l.mu.Unlock() }
+type navidromeFailureKind int
+
+const (
+	navidromeUnavailable navidromeFailureKind = iota
+	navidromeAuthentication
+	navidromeInvalidResponse
+	navidromeConfiguration
+)
+
+type navidromeFailure struct {
+	kind       navidromeFailureKind
+	statusCode int
+	cause      error
+	message    string
+}
+
+func (e *navidromeFailure) Error() string { return e.message }
+func (e *navidromeFailure) Unwrap() error { return e.cause }
+
+func (e *navidromeFailure) retryable() bool {
+	if e.kind != navidromeUnavailable {
+		return false
+	}
+	if e.statusCode >= 500 && e.statusCode <= 599 {
+		return true
+	}
+	switch e.statusCode {
+	case 0, http.StatusNotFound, http.StatusRequestTimeout, http.StatusTooEarly,
+		http.StatusTooManyRequests:
+		return true
+	default:
+		return false
+	}
+}
+
+// LibrarySnapshotState is safe to inspect after Contains returns. The caller
+// can warn that ownership filtering used a recent snapshot during an outage.
+type LibrarySnapshotState struct {
+	Stale    bool
+	LoadedAt time.Time
+}
+
+type NavidromeLibrary struct {
+	Config     *config.PlaylistOrganizerConfig
+	Client     *http.Client
+	mu         sync.Mutex
+	byTitle    map[string][]Track
+	expires    time.Time
+	snapshotAt time.Time
+	retryAt    time.Time
+	stale      bool
+	lastErr    error
+}
+
+func (l *NavidromeLibrary) Invalidate() {
+	l.mu.Lock()
+	l.expires = time.Time{}
+	l.retryAt = time.Time{}
+	l.mu.Unlock()
+}
+
+func (l *NavidromeLibrary) SnapshotState() LibrarySnapshotState {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return LibrarySnapshotState{Stale: l.stale, LoadedAt: l.snapshotAt}
+}
+
 func (l *NavidromeLibrary) Contains(ctx context.Context, t Track) (bool, error) {
 	owned, _, err := l.matchOwnership(ctx, t)
 	return owned, err
@@ -41,13 +117,48 @@ func (l *NavidromeLibrary) Contains(ctx context.Context, t Track) (bool, error) 
 func (l *NavidromeLibrary) matchOwnership(ctx context.Context, t Track) (owned, ambiguous bool, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if time.Now().After(l.expires) {
-		if err := l.load(ctx); err != nil {
+	now := time.Now()
+	if now.After(l.expires) {
+		if err := l.refreshLocked(ctx, now); err != nil {
 			return false, false, err
 		}
 	}
 	owned, ambiguous = l.ownsLocked(t)
 	return owned, ambiguous, nil
+}
+
+func (l *NavidromeLibrary) refreshLocked(ctx context.Context, now time.Time) error {
+	if l.byTitle != nil && now.Before(l.retryAt) {
+		if l.canUseStaleLocked(now) {
+			return nil
+		}
+		return l.lastErr
+	}
+	wasStale := l.stale
+	if err := l.load(ctx); err != nil {
+		l.lastErr = err
+		l.retryAt = now.Add(libraryRetryDelay)
+		if l.canUseStaleLocked(now) {
+			if !l.stale {
+				utils.WarnWithFormat("[Navidrome] 曲库刷新失败，暂用最近快照: %v", err)
+			}
+			l.stale = true
+			return nil
+		}
+		return err
+	}
+	if wasStale {
+		utils.InfoWithFormat("[Navidrome] 曲库连接已恢复，快照刷新成功")
+	}
+	return nil
+}
+
+func (l *NavidromeLibrary) canUseStaleLocked(now time.Time) bool {
+	if l.byTitle == nil || l.snapshotAt.IsZero() {
+		return false
+	}
+	age := now.Sub(l.snapshotAt)
+	return age >= 0 && age <= libraryMaxAge
 }
 
 func (l *NavidromeLibrary) ownsLocked(t Track) (owned, ambiguous bool) {
@@ -95,8 +206,13 @@ func (l *NavidromeLibrary) load(ctx context.Context) error {
 		}
 		index[key] = append(index[key], t)
 	}
+	now := time.Now()
 	l.byTitle = index
-	l.expires = time.Now().Add(libraryCacheTTL)
+	l.snapshotAt = now
+	l.expires = now.Add(libraryCacheTTL)
+	l.retryAt = time.Time{}
+	l.stale = false
+	l.lastErr = nil
 	return nil
 }
 
@@ -110,7 +226,7 @@ type NavidromeAudio struct {
 
 func ReadNavidromeAudio(ctx context.Context, c *config.PlaylistOrganizerConfig, client *http.Client) ([]NavidromeAudio, error) {
 	if c == nil || c.NavidromeURL == "" || c.NavidromeUsername == "" || c.NavidromePassword == "" {
-		return nil, fmt.Errorf("请配置 Navidrome 连接后再核对实际曲库")
+		return nil, &navidromeFailure{kind: navidromeConfiguration, message: "请配置 Navidrome 连接后再核对实际曲库"}
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
@@ -118,44 +234,110 @@ func ReadNavidromeAudio(ctx context.Context, c *config.PlaylistOrganizerConfig, 
 	var songs []NavidromeAudio
 	seen := map[string]bool{}
 	for offset := 0; offset < 100000; offset += 500 {
-		salt := token()
-		sum := md5.Sum([]byte(c.NavidromePassword + salt))
-		q := url.Values{"u": {c.NavidromeUsername}, "t": {fmt.Sprintf("%x", sum)}, "s": {salt}, "v": {"1.16.1"}, "c": {"gymdl"}, "f": {"json"}, "query": {""}, "artistCount": {"0"}, "albumCount": {"0"}, "songCount": {"500"}, "songOffset": {strconv.Itoa(offset)}}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.NavidromeURL, "/")+"/rest/search3.view?"+q.Encode(), nil)
+		page, err := readNavidromePage(ctx, c, client, offset)
 		if err != nil {
-			return nil, fmt.Errorf("Navidrome 地址无效")
+			return nil, err
 		}
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("无法连接 Navidrome，未判断曲库缺失")
-		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			return nil, fmt.Errorf("Navidrome 曲库入口返回 HTTP %d", resp.StatusCode)
-		}
-		var body struct {
-			Response struct {
-				Status string `json:"status"`
-				Search struct {
-					Songs []NavidromeAudio `json:"song"`
-				} `json:"searchResult3"`
-			} `json:"subsonic-response"`
-		}
-		err = json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&body)
-		resp.Body.Close()
-		if err != nil || body.Response.Status != "ok" {
-			return nil, fmt.Errorf("Navidrome 曲库读取失败，未判断曲库缺失")
-		}
-		for _, s := range body.Response.Search.Songs {
+		for _, s := range page {
 			if s.ID == "" || seen[s.ID] {
-				return nil, fmt.Errorf("Navidrome 分页不完整，未判断曲库缺失")
+				return nil, &navidromeFailure{kind: navidromeInvalidResponse, message: "Navidrome 曲库响应异常，请稍后重试"}
 			}
 			seen[s.ID] = true
 			songs = append(songs, s)
 		}
-		if len(body.Response.Search.Songs) < 500 {
+		if len(page) < 500 {
 			return songs, nil
 		}
 	}
-	return nil, fmt.Errorf("Navidrome 曲库超过安全分页上限，未判断曲库缺失")
+	return nil, &navidromeFailure{kind: navidromeInvalidResponse, message: "Navidrome 曲库超过安全分页上限，请检查曲库状态"}
+}
+
+func readNavidromePage(ctx context.Context, c *config.PlaylistOrganizerConfig, client *http.Client, offset int) ([]NavidromeAudio, error) {
+	var lastErr error
+	for attempt := 0; attempt < navidromeAttempts; attempt++ {
+		songs, err := readNavidromePageOnce(ctx, c, client, offset)
+		if err == nil {
+			return songs, nil
+		}
+		lastErr = err
+		var failure *navidromeFailure
+		if !errors.As(err, &failure) || !failure.retryable() || attempt == navidromeAttempts-1 {
+			return nil, err
+		}
+		timer := time.NewTimer(navidromeRetryDelay(attempt))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, navidromeContextFailure(ctx)
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func readNavidromePageOnce(ctx context.Context, c *config.PlaylistOrganizerConfig, client *http.Client, offset int) ([]NavidromeAudio, error) {
+	salt := token()
+	sum := md5.Sum([]byte(c.NavidromePassword + salt))
+	q := url.Values{"u": {c.NavidromeUsername}, "t": {fmt.Sprintf("%x", sum)}, "s": {salt}, "v": {"1.16.1"}, "c": {"gymdl"}, "f": {"json"}, "query": {""}, "artistCount": {"0"}, "albumCount": {"0"}, "songCount": {"500"}, "songOffset": {strconv.Itoa(offset)}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.NavidromeURL, "/")+"/rest/search3.view?"+q.Encode(), nil)
+	if err != nil {
+		return nil, &navidromeFailure{kind: navidromeConfiguration, cause: err, message: "Navidrome 地址无效"}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, navidromeContextFailure(ctx)
+		}
+		return nil, &navidromeFailure{kind: navidromeUnavailable, cause: err, message: "曲库隧道暂不可用，请稍后重试"}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		message := "Navidrome 曲库服务返回异常，请稍后重试"
+		kind := navidromeUnavailable
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			kind = navidromeAuthentication
+			message = "Navidrome 登录失效，请检查账号配置"
+		case http.StatusNotFound, http.StatusRequestTimeout, http.StatusTooEarly,
+			http.StatusTooManyRequests:
+			message = "曲库隧道暂不可用，请稍后重试"
+		default:
+			if resp.StatusCode >= 500 && resp.StatusCode <= 599 {
+				message = "曲库隧道暂不可用，请稍后重试"
+			}
+		}
+		return nil, &navidromeFailure{kind: kind, statusCode: resp.StatusCode, message: message}
+	}
+	var body struct {
+		Response struct {
+			Status string `json:"status"`
+			Error  struct {
+				Code int `json:"code"`
+			} `json:"error"`
+			Search struct {
+				Songs []NavidromeAudio `json:"song"`
+			} `json:"searchResult3"`
+		} `json:"subsonic-response"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&body); err != nil {
+		return nil, &navidromeFailure{kind: navidromeInvalidResponse, cause: err, message: "Navidrome 曲库响应异常，请稍后重试"}
+	}
+	if body.Response.Status != "ok" {
+		kind := navidromeInvalidResponse
+		message := "Navidrome 曲库响应异常，请稍后重试"
+		if body.Response.Error.Code >= 40 && body.Response.Error.Code <= 43 {
+			kind = navidromeAuthentication
+			message = "Navidrome 登录失效，请检查账号配置"
+		}
+		return nil, &navidromeFailure{kind: kind, message: message}
+	}
+	return body.Response.Search.Songs, nil
+}
+
+func navidromeContextFailure(ctx context.Context) error {
+	err := ctx.Err()
+	if errors.Is(err, context.DeadlineExceeded) {
+		return &navidromeFailure{kind: navidromeUnavailable, statusCode: -1, cause: err, message: "曲库连接超时，请稍后重试"}
+	}
+	return &navidromeFailure{kind: navidromeUnavailable, statusCode: -1, cause: err, message: "曲库核对已取消，请重新发起"}
 }

@@ -81,6 +81,7 @@ func (s webStudio) Rediscover(ctx context.Context, platform string, limit int) (
 		SkippedDismissed: batch.SkippedDismissed, SkippedQueued: batch.SkippedQueued,
 		SkippedArtistCap: batch.SkippedArtistCap, SkippedDuplicate: batch.SkippedDuplicate,
 		SkippedOther: batch.SkippedOther, Unavailable: batch.Unavailable,
+		LibraryStale: batch.LibraryStale, LibrarySnapshotAt: batch.LibrarySnapshotUnix(),
 	}, nil
 }
 

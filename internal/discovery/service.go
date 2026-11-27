@@ -370,17 +370,28 @@ func (s *Service) Recommend(ctx context.Context, user int64) ([]Track, error) {
 // already in the library, including different artist credits of the same title.
 // Unconfirmed counts distinct works whose platform search had no single version.
 type RediscoverBatch struct {
-	Tracks           []Track
-	SkippedOwned     int
-	Unconfirmed      int
-	SkippedShown     int
-	SkippedPending   int
-	SkippedDismissed int
-	SkippedQueued    int
-	SkippedArtistCap int
-	SkippedDuplicate int
-	SkippedOther     int
-	Unavailable      int
+	Tracks            []Track
+	SkippedOwned      int
+	Unconfirmed       int
+	SkippedShown      int
+	SkippedPending    int
+	SkippedDismissed  int
+	SkippedQueued     int
+	SkippedArtistCap  int
+	SkippedDuplicate  int
+	SkippedOther      int
+	Unavailable       int
+	LibraryStale      bool
+	LibrarySnapshotAt time.Time
+}
+
+// LibrarySnapshotUnix returns zero when the request did not use a library
+// snapshot, avoiding time.Time{}.Unix() at UI and persistence boundaries.
+func (batch RediscoverBatch) LibrarySnapshotUnix() int64 {
+	if batch.LibrarySnapshotAt.IsZero() {
+		return 0
+	}
+	return batch.LibrarySnapshotAt.Unix()
 }
 
 // RecommendLimited searches one download platform and stops after limit songs.
@@ -488,6 +499,13 @@ func (s *Service) searchRediscover(ctx context.Context, user int64, platform str
 
 func (s *Service) rediscoverBatch(ctx context.Context, state *recommendPick) RediscoverBatch {
 	batch := state.batch()
+	if s != nil && s.Library != nil {
+		if reporter, ok := s.Library.(interface{ SnapshotState() LibrarySnapshotState }); ok {
+			snapshot := reporter.SnapshotState()
+			batch.LibraryStale = snapshot.Stale
+			batch.LibrarySnapshotAt = snapshot.LoadedAt
+		}
+	}
 	batch.Tracks = s.hydrateNeteaseCovers(ctx, batch.Tracks, len(batch.Tracks))
 	return batch
 }

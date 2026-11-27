@@ -370,6 +370,7 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 			SkippedDismissed: batch.SkippedDismissed, SkippedQueued: batch.SkippedQueued,
 			SkippedArtistCap: batch.SkippedArtistCap, SkippedDuplicate: batch.SkippedDuplicate,
 			SkippedOther: batch.SkippedOther, Unavailable: batch.Unavailable, Requested: limit,
+			LibraryStale: batch.LibraryStale, LibrarySnapshotAt: batch.LibrarySnapshotUnix(),
 		})
 		if saveErr != nil {
 			_ = edit("结果没保存好，再试一次吧。", rediscoverResultRecoveryMarkup(platform, limit), "")
@@ -423,6 +424,9 @@ func discoveryRecommendationCard(card discovery.Card, page int) (string, *tb.Rep
 	}
 	fmt.Fprintf(&text, "🎵 <b>%s</b>\n", utils.EscapeHTML(heading))
 	text.WriteString("──────────────────\n")
+	if notice := rediscoverLibrarySnapshotNotice(card.LibraryStale, card.LibrarySnapshotAt); notice != "" {
+		fmt.Fprintf(&text, "%s\n", utils.EscapeHTML(notice))
+	}
 	if len(card.Tracks) > 1 {
 		fmt.Fprintf(&text, "本批 %d 首 · 第 %d 首\n", len(card.Tracks), page+1)
 	}
@@ -714,10 +718,29 @@ func rediscoverEmptyCopy(platform string, batch discovery.RediscoverBatch) strin
 		ArtistCap: batch.SkippedArtistCap, Duplicate: batch.SkippedDuplicate,
 		Other: batch.SkippedOther, Unavailable: batch.Unavailable,
 	}
+	notice := rediscoverLibrarySnapshotNotice(batch.LibraryStale, batch.LibrarySnapshotUnix())
+	var text string
 	if reasons := counts.emptyReasons(); len(reasons) > 0 {
-		return name + "这边暂时没合适的。" + strings.Join(reasons, "") + "换个平台，或者晚点再来看看。"
+		text = name + "这边暂时没合适的。" + strings.Join(reasons, "") + "换个平台，或者晚点再来看看。"
+	} else {
+		text = name + "这边暂时没找到合适的。换个平台，或者晚点再来看看。"
 	}
-	return name + "这边暂时没找到合适的。换个平台，或者晚点再来看看。"
+	if notice != "" {
+		return notice + "\n" + text
+	}
+	return text
+}
+
+func rediscoverLibrarySnapshotNotice(stale bool, snapshotUnix int64) string {
+	if !stale || snapshotUnix <= 0 {
+		return ""
+	}
+	age := time.Since(time.Unix(snapshotUnix, 0))
+	minutes := int(age / time.Minute)
+	if minutes < 1 {
+		minutes = 1
+	}
+	return fmt.Sprintf("曲库连接波动，本次使用了约 %d 分钟前的快照核对。", minutes)
 }
 
 func discoveryListenTitle(title, rawURL string) string {

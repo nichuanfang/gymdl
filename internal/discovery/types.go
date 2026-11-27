@@ -141,6 +141,10 @@ type Card struct {
 	SkippedDuplicate int `json:"skipped_duplicate,omitempty"`
 	SkippedOther     int `json:"skipped_other,omitempty"`
 	Unavailable      int `json:"unavailable,omitempty"`
+	// LibraryStale records that ownership was checked against a recent
+	// snapshot because Navidrome could not be refreshed during this request.
+	LibraryStale      bool  `json:"library_stale,omitempty"`
+	LibrarySnapshotAt int64 `json:"library_snapshot_at,omitempty"`
 	// Requested is the 3, 6, or 9 the user asked for.
 	Requested int `json:"requested,omitempty"`
 	// Page is the group currently shown on the Telegram message.
