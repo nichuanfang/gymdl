@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -744,6 +745,18 @@ func missingAIPlaylistSongIDs(planned, current []string) []string {
 }
 
 func (s *aiPlaylistService) retrieveCandidates(ctx context.Context, description string) ([]aiPlaylistCandidate, aiPlaylistSemanticQuery, error) {
+	candidates, semantic, err := s.recallPlaylistCandidates(ctx, description, nil)
+	if err != nil || len(candidates) == 0 {
+		return candidates, semantic, err
+	}
+	candidates, err = s.forgetMissingSongs(ctx, candidates)
+	if err != nil {
+		return nil, aiPlaylistSemanticQuery{}, err
+	}
+	return candidates, semantic, nil
+}
+
+func (s *aiPlaylistService) recallPlaylistCandidates(ctx context.Context, description string, excludedIDs []string) ([]aiPlaylistCandidate, aiPlaylistSemanticQuery, error) {
 	semantic, err := s.extractSemanticQuery(ctx, description)
 	if err != nil {
 		return nil, aiPlaylistSemanticQuery{}, err
@@ -780,6 +793,23 @@ func (s *aiPlaylistService) retrieveCandidates(ctx context.Context, description 
 	if semantic.PreferInstrumental {
 		filter = instrumentalMetadataFilter()
 	}
+	var exclusionFilter map[string]any
+	if len(excludedIDs) > 0 {
+		exclusionFilter = map[string]any{"id": map[string]any{"$nin": excludedIDs[:min(len(excludedIDs), 1000)]}}
+		if filter == nil {
+			filter = exclusionFilter
+		} else {
+			filter["id"] = exclusionFilter["id"]
+		}
+	}
+	excluded := make(map[string]struct{}, len(excludedIDs))
+	for _, id := range excludedIDs {
+		excluded[id] = struct{}{}
+	}
+	isExcluded := func(candidate aiPlaylistCandidate) bool {
+		_, present := excluded[candidate.ID]
+		return present
+	}
 	lists := make([][]aiPlaylistCandidate, 0, len(texts))
 	for index, vector := range vectors {
 		if !filled[index] {
@@ -789,22 +819,15 @@ func (s *aiPlaylistService) retrieveCandidates(ctx context.Context, description 
 		if err != nil {
 			return nil, aiPlaylistSemanticQuery{}, err
 		}
-		lists = append(lists, matches)
+		lists = append(lists, slices.DeleteFunc(matches, isExcluded))
 	}
 	unique := uniquePlaylistCandidates(fusePlaylistCandidates(lists))
 	if semantic.PreferInstrumental && len(unique) < s.config.PlaylistSize && len(vectors) > 0 {
-		extra, err := s.queryPinecone(ctx, vectors[0], nil)
+		extra, err := s.queryPinecone(ctx, vectors[0], exclusionFilter)
 		if err != nil {
 			return nil, aiPlaylistSemanticQuery{}, err
 		}
-		unique = uniquePlaylistCandidates(append(unique, extra...))
-	}
-	if len(unique) == 0 {
-		return nil, semantic, nil
-	}
-	unique, err = s.forgetMissingSongs(ctx, unique)
-	if err != nil {
-		return nil, aiPlaylistSemanticQuery{}, err
+		unique = uniquePlaylistCandidates(append(unique, slices.DeleteFunc(extra, isExcluded)...))
 	}
 	return unique, semantic, nil
 }

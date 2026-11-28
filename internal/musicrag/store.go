@@ -228,6 +228,34 @@ func (s *Store) Ready(ctx context.Context) ([]Song, error) {
 	return scanSongs(rows)
 }
 
+// ReadyByIDs returns indexed metadata for the requested library tracks.
+func (s *Store) ReadyByIDs(ctx context.Context, ids []string) (map[string]Song, error) {
+	const batchSize = 400
+	songs := make(map[string]Song, len(ids))
+	for start := 0; start < len(ids); start += batchSize {
+		batch := ids[start:min(start+batchSize, len(ids))]
+		args := make([]any, 1, len(batch)+1)
+		args[0] = StatusReady
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT music_id,title,artist,album,year,url,music_created_at,genre,mood,language,description,status,error_message
+			FROM music_rag WHERE status=? AND music_id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")+`)`, args...)
+		if err != nil {
+			return nil, err
+		}
+		found, err := scanSongs(rows)
+		_ = rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		for _, song := range found {
+			songs[song.MusicID] = song
+		}
+	}
+	return songs, nil
+}
+
 func (s *Store) IDs(ctx context.Context) (map[string]struct{}, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT music_id FROM music_rag WHERE status=?`, StatusReady)
 	if err != nil {

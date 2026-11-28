@@ -46,8 +46,8 @@ func TestAIPlaylistInitialMenuKeepsCancelAndShortResumeCallbacks(t *testing.T) {
 		resumePlans:     map[string]aiPlaylistResumePlan{strings.Repeat("b", 32): {}},
 	}
 	markup := aiPlaylistSessionMarkup(session)
-	if len(markup.InlineKeyboard) != 3 {
-		t.Fatalf("keyboard rows = %d, want new playlist, resume, cancel", len(markup.InlineKeyboard))
+	if len(markup.InlineKeyboard) != 4 {
+		t.Fatalf("keyboard rows = %d, want new playlist, review, resume, cancel", len(markup.InlineKeyboard))
 	}
 	if got := markup.InlineKeyboard[len(markup.InlineKeyboard)-1][0].Text; got != "取消" {
 		t.Fatalf("final button = %q, want cancel", got)
@@ -55,7 +55,10 @@ func TestAIPlaylistInitialMenuKeepsCancelAndShortResumeCallbacks(t *testing.T) {
 	if got := markup.InlineKeyboard[0][0].Text; got != "＋ 新建 AI 歌单" {
 		t.Fatalf("first menu action = %q, want create playlist", got)
 	}
-	resume := markup.InlineKeyboard[1][0]
+	if got := markup.InlineKeyboard[1][0].Text; got != "检查普通歌单" {
+		t.Fatalf("review action = %q", got)
+	}
+	resume := markup.InlineKeyboard[2][0]
 	if !strings.HasSuffix(resume.Data, "|0") {
 		t.Fatalf("resume callback should carry a short session index, got %q", resume.Data)
 	}
@@ -105,7 +108,7 @@ func assertTelegramButtons(t *testing.T, markup *tb.ReplyMarkup) {
 
 func TestAIPlaylistUnavailableMenuStillHasCancelButton(t *testing.T) {
 	markup := aiPlaylistSessionMarkup(pendingAIPlaylistSession{token: "token"})
-	if len(markup.InlineKeyboard) != 2 || markup.InlineKeyboard[0][0].Text != "＋ 新建 AI 歌单" || markup.InlineKeyboard[1][0].Text != "取消" {
+	if len(markup.InlineKeyboard) != 3 || markup.InlineKeyboard[0][0].Text != "＋ 新建 AI 歌单" || markup.InlineKeyboard[2][0].Text != "取消" {
 		t.Fatalf("unavailable menu should still allow cancel: %#v", markup.InlineKeyboard)
 	}
 }
@@ -402,11 +405,11 @@ func TestAIPlaylistMessageUsesPlainTextHouseStyle(t *testing.T) {
 func TestAIPlaylistCanSelectPopulatedTargetAndClearlyConfirmReplacement(t *testing.T) {
 	playlist := aiPlaylist{ID: "playlist", Name: "[AI] 夜间", Description: "舒缓的夜间音乐", SongCount: 28}
 	menu := pendingAIPlaylistSession{token: "token", playlists: []aiPlaylist{playlist}}
-	if message := formatAIPlaylistSession(menu); message != "🎵 生成歌单" || strings.Contains(message, "确认前不会修改") || strings.Contains(message, "选择一张") {
+	if message := formatAIPlaylistSession(menu); message != "🎵 AI 歌单" {
 		t.Fatalf("menu should stay a title and the playlist buttons: %q", message)
 	}
 	markup := aiPlaylistSessionMarkup(menu)
-	if got := markup.InlineKeyboard[1][0].Text; got != "夜间 · 28 首" {
+	if got := markup.InlineKeyboard[2][0].Text; got != "夜间 · 28 首" {
 		t.Fatalf("populated target label = %q", got)
 	}
 	selected := pendingAIPlaylistSession{

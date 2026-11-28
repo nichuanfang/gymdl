@@ -67,7 +67,7 @@ func helpText() string {
 <b>歌单</b>
 /assign_playlist 把尚未归档的歌放进已有歌单
 /playlist_desc 同步歌单并维护整理说明
-/ai_playlist 预览后创建或更新 [AI] 歌单
+/ai_playlist 生成 AI 歌单或检查普通歌单
 
 <b>曲库</b>
 /audio_check 逐首处理低码率、损坏、疑似缺尾和重复录音
@@ -356,7 +356,7 @@ func botCommands() []tb.Command {
 		{Text: "clear", Description: "清空对话"},
 		{Text: "assign_playlist", Description: "整理歌单"},
 		{Text: "playlist_desc", Description: "歌单描述"},
-		{Text: "ai_playlist", Description: "生成歌单"},
+		{Text: "ai_playlist", Description: "AI 歌单"},
 		{Text: "rediscover", Description: "找回遗珠"},
 		{Text: "recommend", Description: "个性化推荐"},
 		{Text: "favorites", Description: "收藏同步"},

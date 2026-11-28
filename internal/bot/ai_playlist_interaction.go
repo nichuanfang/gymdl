@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,8 @@ type pendingAIPlaylistSession struct {
 	confirmingDelete bool
 	processing       bool
 	pendingWrite     bool
+	review           *playlistReviewSession
+	reviewRevision   uint64
 	notice           string
 	expiresAt        time.Time
 }
@@ -161,6 +164,7 @@ func fillAIPlaylistMenu(ctx context.Context, session pendingAIPlaylistSession, s
 	session.awaitingSeed = false
 	session.confirmingDelete = false
 	session.pendingWrite = false
+	session.review = nil
 	session.playlists = nil
 	session.resumePlaylists = nil
 	session.resumePlans = make(map[string]aiPlaylistResumePlan)
@@ -237,6 +241,9 @@ func (app *BotApp) HandleAIPlaylistCallback(c tb.Context) error {
 	}
 	if session.processing {
 		return c.Respond(&tb.CallbackResponse{Text: "正在处理，请稍候。"})
+	}
+	if strings.HasPrefix(action, "r_") || session.review != nil {
+		return app.handlePlaylistReviewCallback(c, session, args)
 	}
 	if session.confirmingDelete && action != "delete" && action != "delete_yes" && action != "delete_no" && action != "cancel" {
 		return c.Respond(&tb.CallbackResponse{Text: "先确认删除，或点返回。"})
@@ -928,6 +935,9 @@ func (app *BotApp) handleAIPlaylistText(c tb.Context) (bool, error) {
 	if session.processing {
 		return true, c.Send("AI 歌单正在处理中，请稍候。")
 	}
+	if session.review != nil {
+		return true, app.handlePlaylistReviewText(c, session, request)
+	}
 	if session.confirmingDelete {
 		return true, c.Send("先确认删除，或点返回。")
 	}
@@ -1050,8 +1060,18 @@ func (app *BotApp) takeoverAIPlaylistCard(c tb.Context, session pendingAIPlaylis
 	if err != nil {
 		return err
 	}
-	session.message = message
-	app.updateAIPlaylistSession(session)
+	app.aiPlaylistSessionMu.Lock()
+	current, exists := app.aiPlaylistSessions[session.token]
+	moved := exists && !current.processing && current.message == old && current.reviewRevision == session.reviewRevision
+	if moved {
+		current.message = message
+		app.aiPlaylistSessions[session.token] = current
+	}
+	app.aiPlaylistSessionMu.Unlock()
+	if !moved {
+		app.retireMaintenanceCard(message, "歌单卡片已更新，请使用当前操作卡片。")
+		return nil
+	}
 	app.retireMaintenanceCard(old, maintenanceMovedText("i"))
 	return nil
 }
@@ -1074,7 +1094,7 @@ func (app *BotApp) selectAIPlaylistTarget(token string, playlist aiPlaylist) (pe
 	defer app.aiPlaylistSessionMu.Unlock()
 	app.ensureAIPlaylistSessionMapsLocked()
 	session, ok := app.aiPlaylistSessions[token]
-	if !ok || session.processing || session.target.ID != "" {
+	if !ok || session.processing || session.review != nil || session.target.ID != "" {
 		return pendingAIPlaylistSession{}, false
 	}
 	for _, configured := range session.playlists {
@@ -1098,7 +1118,7 @@ func (app *BotApp) beginAIPlaylistNameInput(token string) (pendingAIPlaylistSess
 	defer app.aiPlaylistSessionMu.Unlock()
 	app.ensureAIPlaylistSessionMapsLocked()
 	session, ok := app.aiPlaylistSessions[token]
-	if !ok || session.processing || session.target.ID != "" || session.creating || session.pendingWrite {
+	if !ok || session.processing || session.review != nil || session.target.ID != "" || session.creating || session.pendingWrite {
 		return pendingAIPlaylistSession{}, false
 	}
 	session.creating = true
@@ -1136,7 +1156,7 @@ func (app *BotApp) selectAIPlaylistCreateIntent(token string, intent aiPlaylistC
 	defer app.aiPlaylistSessionMu.Unlock()
 	app.ensureAIPlaylistSessionMapsLocked()
 	session, ok := app.aiPlaylistSessions[token]
-	if !ok || session.processing || session.target.ID != "" || session.pendingWrite {
+	if !ok || session.processing || session.review != nil || session.target.ID != "" || session.pendingWrite {
 		return pendingAIPlaylistSession{}, false
 	}
 	for _, configured := range session.createIntents {
@@ -1163,7 +1183,7 @@ func (app *BotApp) selectAIPlaylistResume(token, playlistID string) (pendingAIPl
 	defer app.aiPlaylistSessionMu.Unlock()
 	app.ensureAIPlaylistSessionMapsLocked()
 	session, ok := app.aiPlaylistSessions[token]
-	if !ok || session.processing || session.pendingWrite {
+	if !ok || session.processing || session.review != nil || session.pendingWrite {
 		return pendingAIPlaylistSession{}, false
 	}
 	if _, exists := session.resumePlans[playlistID]; !exists {
@@ -1442,6 +1462,11 @@ func cloneAIPlaylistSession(session pendingAIPlaylistSession) pendingAIPlaylistS
 		draft.ExistingSongIDs = append([]string(nil), draft.ExistingSongIDs...)
 		session.draft = &draft
 	}
+	if session.review != nil {
+		review := *session.review
+		review.selected = maps.Clone(review.selected)
+		session.review = &review
+	}
 	return session
 }
 
@@ -1559,6 +1584,10 @@ func aiPlaylistDraftIDs(draft aiPlaylistDraft) []string {
 }
 
 func formatAIPlaylistSession(session pendingAIPlaylistSession) string {
+	if session.review != nil {
+		text, _ := formatPlaylistReview(session)
+		return text
+	}
 	var text strings.Builder
 	if session.creating && session.pendingWrite {
 		fmt.Fprintf(&text, "继续创建\n\n%s\n\n上次已确认。\n继续后会补上预览里的歌。", aiPlaylistDisplayValue(session.newPlaylistName, 80))
@@ -1577,7 +1606,7 @@ func formatAIPlaylistSession(session pendingAIPlaylistSession) string {
 		return text.String()
 	}
 	if session.target.ID == "" && !session.creating {
-		text.WriteString("🎵 生成歌单")
+		text.WriteString("🎵 AI 歌单")
 		var lines []string
 		if len(session.playlists) == 0 {
 			lines = append(lines, "还没有 [AI] 歌单。", "可以直接新建。")
@@ -1708,6 +1737,10 @@ func writeAIPlaylistNotice(text *strings.Builder, session pendingAIPlaylistSessi
 }
 
 func aiPlaylistSessionMarkup(session pendingAIPlaylistSession) *tb.ReplyMarkup {
+	if session.review != nil {
+		_, markup := formatPlaylistReview(session)
+		return markup
+	}
 	markup := &tb.ReplyMarkup{}
 	rows := make([]tb.Row, 0, 8)
 	if session.creating && (session.awaitingName || session.newPlaylistName == "") {
@@ -1725,6 +1758,7 @@ func aiPlaylistSessionMarkup(session pendingAIPlaylistSession) *tb.ReplyMarkup {
 	}
 	if session.target.ID == "" && !session.creating {
 		rows = append(rows, markup.Row(markup.Data("＋ 新建 AI 歌单", aiPlaylistCallbackUnique, "new", session.token)))
+		rows = append(rows, markup.Row(markup.Data("检查普通歌单", aiPlaylistCallbackUnique, "r_open", session.token)))
 		for index, playlist := range session.playlists {
 			rows = append(rows, markup.Row(markup.Data(aiPlaylistTargetButtonLabel(playlist), aiPlaylistCallbackUnique, "select", session.token, strconv.Itoa(index))))
 		}

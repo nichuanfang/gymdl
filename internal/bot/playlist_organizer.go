@@ -577,10 +577,14 @@ func (s *playlistOrganizerService) navidromeLogin(ctx context.Context) (string, 
 }
 
 type navidromeAPIPlaylist struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Comment string `json:"comment"`
-	Public  bool   `json:"public"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Comment   string          `json:"comment"`
+	Public    bool            `json:"public"`
+	Sync      bool            `json:"sync"`
+	Rules     json.RawMessage `json:"rules"`
+	SongCount int             `json:"songCount"`
+	UpdatedAt string          `json:"updatedAt"`
 }
 
 func (s *playlistOrganizerService) createAIPlaylist(ctx context.Context, name, marker string) (aiPlaylist, error) {
@@ -660,6 +664,10 @@ func (s *playlistOrganizerService) findAIPlaylistByMarker(ctx context.Context, t
 }
 
 func (s *playlistOrganizerService) getAIPlaylistByID(ctx context.Context, id string) (navidromeAPIPlaylist, error) {
+	return s.getNavidromePlaylistByID(ctx, id)
+}
+
+func (s *playlistOrganizerService) getNavidromePlaylistByID(ctx context.Context, id string) (navidromeAPIPlaylist, error) {
 	if !safeNavidromeID(id) {
 		return navidromeAPIPlaylist{}, errors.New("AI 歌单 ID 无效")
 	}
