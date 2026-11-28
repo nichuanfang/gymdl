@@ -235,6 +235,15 @@ func (app *BotApp) restoreAudioChecks(api tb.API) {
 		}
 		if record.Phase == audioquality.SessionResults || record.Phase == audioquality.SessionReview {
 			if libraryErr == nil && library == session.library {
+				// Older versions persisted an expiry even for an unfinished
+				// review. Renew it once during upgrade so its controls remain
+				// usable until the user finishes the saved findings.
+				if audioCheckHasWork(session) && session.expires.Before(time.Now().Add(audioCheckTTL)) {
+					session.expires = time.Now().Add(audioCheckTTL)
+					if err := persistAudioCheckSession(session); err != nil {
+						utils.WarnWithFormat("无法续期曲库体检结果卡片: %v", err)
+					}
+				}
 				app.setAudioCheckSession(session)
 				// The last process may have saved results just before it
 				// could replace the Telegram progress card.

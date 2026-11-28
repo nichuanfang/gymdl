@@ -91,6 +91,38 @@ func TestAudioCheckRestoresCursorAndPendingDuplicateAfterTakeover(t *testing.T) 
 	}
 }
 
+func TestAudioCheckRenewsUnfinishedReviewSavedByOldVersion(t *testing.T) {
+	t.Chdir(t.TempDir())
+	api, calls := checkTestBot(t)
+	app := checkTestApp(t, api)
+	library, err := audioCheckLibrary(app.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := audioquality.Open(storage.DefaultDatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	chat := &tb.Chat{ID: 7, Type: tb.ChatPrivate}
+	oldExpiry := time.Now().Add(time.Minute)
+	session := audioCheckSession{token: "legacy", owner: 7, library: library, expires: oldExpiry,
+		message: &tb.Message{ID: 42, Chat: chat},
+		report: audioCheckReport{total: 2, checked: 2, resumeAvailable: true,
+			findings: []audioCheckFinding{{file: web.FileEntry{Path: "song.mp3"}, Result: audioquality.Result{Codec: "mp3", Bitrate: 96}}},
+		},
+	}
+	if err := checkpointAudioCheck(store, t.Context(), session); err != nil {
+		t.Fatal(err)
+	}
+	app.restoreAudioChecks(api)
+	checkWait(t, calls, "editMessageText", func(call checkCall) bool { return call.messageID == "42" })
+	restored := app.audioCheckSessions[7]
+	if restored.expires.Before(time.Now().Add(audioCheckTTL - time.Minute)) {
+		t.Fatalf("unfinished review was not renewed: %v", restored.expires)
+	}
+}
+
 func TestAudioCheckRecoversAfterRestart(t *testing.T) {
 	for _, paused := range []bool{false, true} {
 		t.Run(fmt.Sprintf("paused=%t", paused), func(t *testing.T) {
