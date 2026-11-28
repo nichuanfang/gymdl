@@ -23,6 +23,7 @@ import (
 	"github.com/nichuanfang/gymdl/core/linkparser"
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
 	"github.com/nichuanfang/gymdl/internal/netease"
+	"github.com/nichuanfang/gymdl/internal/qqmusic"
 	"github.com/nichuanfang/gymdl/processor/music"
 	"github.com/nichuanfang/gymdl/utils"
 )
@@ -72,6 +73,42 @@ func fromSearch(i web.SearchResultItem) Track {
 		sourceURL = "https://music.youtube.com/watch?v=" + id
 	}
 	return Track{Platform: i.Platform, ID: id, URL: sourceURL, CoverURL: i.CoverURL, Title: i.Name, Artist: i.Artists, Album: i.Album, Duration: i.DurationSec, Verified: i.Name != "" && i.Artists != ""}
+}
+
+// QQCover loads the album cover for the exact song MID without using playback credentials.
+func (p *Providers) QQCover(ctx context.Context, mid string) (string, error) {
+	if !qqmusic.ValidSongMID(mid) || p.Config == nil || p.Config.QQMusicApiConfig == nil {
+		return "", nil
+	}
+	cfg := p.Config.QQMusicApiConfig
+	endpoint := strings.TrimRight(strings.TrimSpace(cfg.Endpoint), "/")
+	if !cfg.Enable || endpoint == "" {
+		return "", nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/song/"+mid+"/detail", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := p.client().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("QQ song detail returned HTTP %d", resp.StatusCode)
+	}
+	var detail music.QQApiResponse[music.QQSongDetail]
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&detail); err != nil {
+		return "", err
+	}
+	track := detail.Data.TrackInfo
+	if track.Mid == "" {
+		track = detail.Data.LegacyTrackInfo
+	}
+	if detail.Code != 0 || track.Mid != mid {
+		return "", fmt.Errorf("QQ song detail did not match requested song")
+	}
+	return qqmusic.AlbumCoverURL(track.Album.Pmid, track.Album.Mid), nil
 }
 
 // neteaseRequestError is a transport failure. HTTP 400 is not retried.

@@ -3,10 +3,63 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nichuanfang/gymdl/config"
 )
+
+func TestRediscoverHydratesSelectedQQCover(t *testing.T) {
+	const mid = "0029Odqi2cHY2K"
+	const cover = "https://y.gtimg.cn/music/photo_new/T002R500x500M000001LGrR936b0WW_1.jpg"
+	for _, tc := range []struct {
+		name, cover, responseMID, wantCover string
+		wantRequests                        int
+	}{
+		{name: "missing cover", responseMID: mid, wantCover: cover, wantRequests: 1},
+		{name: "existing cover", cover: cover, wantCover: cover},
+		{name: "unexpected song", responseMID: "different", wantRequests: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			track := tasteTestTrack("qq", mid, "Luv(sic) Pt.6 (Uyama Hiroto Remix)", "Nujabes • Shing02")
+			track.CoverURL = tc.cover
+			requests := 0
+			provider := &Providers{
+				Config: &config.Config{QQMusicApiConfig: &config.QQMusicApiConfig{Enable: true, Endpoint: "http://qq.test"}},
+				Client: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					requests++
+					if r.Method != http.MethodGet || r.URL.Path != "/song/"+mid+"/detail" || r.Header.Get("Cookie") != "" {
+						t.Fatalf("unexpected QQ detail request: %s %s", r.Method, r.URL.Path)
+					}
+					body := `{"code":0,"data":{"track":{"mid":"` + tc.responseMID + `","album":{"pmid":"001LGrR936b0WW_1"}}}}`
+					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+				})},
+			}
+			service := &Service{Store: testStore(t), Provider: provider, Library: stubLibrary{}}
+			pool := &service.rediscoverPool
+			pool.queueLocked()
+			pool.entries[rediscoverPoolKey{user: 7, platform: "qq"}] = &rediscoverPoolEntry{
+				candidates: []bufferedRediscoverCandidate{{
+					rediscoverCandidate: rediscoverCandidate{source: track, track: track},
+					expires:             time.Now().Add(time.Minute),
+				}},
+			}
+
+			batch, err := service.RediscoverBuffered(t.Context(), 7, "qq", 1)
+			track.CoverURL = tc.wantCover
+			if err != nil || len(batch.Tracks) != 1 || batch.Tracks[0] != track {
+				t.Fatalf("rediscover = %+v, err=%v, want track %+v", batch, err, track)
+			}
+			if requests != tc.wantRequests {
+				t.Fatalf("detail requests = %d, want %d", requests, tc.wantRequests)
+			}
+		})
+	}
+}
 
 func TestRediscoverBufferRefillsOffTheRequestAndServesOneWithoutSearching(t *testing.T) {
 	ctx := t.Context()

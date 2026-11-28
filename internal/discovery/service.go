@@ -13,6 +13,7 @@ import (
 
 	"github.com/nichuanfang/gymdl/internal/audiodupe"
 	"github.com/nichuanfang/gymdl/internal/netease"
+	"github.com/nichuanfang/gymdl/internal/qqmusic"
 	"github.com/nichuanfang/gymdl/utils"
 )
 
@@ -507,6 +508,20 @@ func (s *Service) rediscoverBatch(ctx context.Context, state *recommendPick) Red
 		}
 	}
 	batch.Tracks = s.hydrateNeteaseCovers(ctx, batch.Tracks, len(batch.Tracks))
+	// Rediscover displays one track at a time.
+	if len(batch.Tracks) == 1 {
+		track := &batch.Tracks[0]
+		if loader, ok := s.Provider.(interface {
+			QQCover(context.Context, string) (string, error)
+		}); ok && track.Platform == "qq" && qqmusic.ValidSongMID(track.ID) && qqmusic.AlbumCoverID(track.CoverURL) == "" {
+			query, cancel := context.WithTimeout(ctx, 3*time.Second)
+			cover, err := loader.QQCover(query, track.ID)
+			cancel()
+			if err == nil && cover != "" {
+				track.CoverURL = cover
+			}
+		}
+	}
 	return batch
 }
 

@@ -389,7 +389,7 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string,
 			return
 		}
 		if len(batch.Tracks) == 0 {
-			utils.InfoWithFormat("[Discovery] 找回遗珠结束 平台=%s 找到=0 曲库已有=%d 待上传=%d 最近看过=%d 已排除=%d 版本未确认=%d 不可用=%d 耗时=%s",
+			utils.InfoWithFormat("[Discovery] 找回遗珠结束 平台=%s 找到=0 曲库已有=%d 入库相关跳过=%d 最近看过=%d 已排除=%d 版本未确认=%d 不可用=%d 耗时=%s",
 				aichat.PlatformLabel(platform), batch.SkippedOwned, batch.SkippedPending+batch.SkippedQueued, batch.SkippedShown,
 				batch.SkippedDismissed+batch.SkippedOther, batch.Unconfirmed+batch.Unavailable, batch.Unavailable,
 				time.Since(started).Round(time.Millisecond))
@@ -723,7 +723,7 @@ func (c rediscoverSkipCounts) notes() []string {
 		notes = append(notes, fmt.Sprintf("%d 首曲库已有", c.Owned))
 	}
 	if queued := c.Queued + c.Pending; queued > 0 {
-		notes = append(notes, fmt.Sprintf("%d 首正在排队或等上传", queued))
+		notes = append(notes, fmt.Sprintf("%d 首已有入库记录或正在处理", queued))
 	}
 	if c.Shown > 0 {
 		notes = append(notes, fmt.Sprintf("%d 首最近看过", c.Shown))
@@ -746,7 +746,7 @@ func (c rediscoverSkipCounts) notes() []string {
 func (c rediscoverSkipCounts) cardIssues() []string {
 	var issues []string
 	if queued := c.Queued + c.Pending; queued > 0 {
-		issues = append(issues, fmt.Sprintf("%d 首还在排队或等上传", queued))
+		issues = append(issues, fmt.Sprintf("%d 首已有入库记录或正在处理", queued))
 	}
 	if uncertain := c.Unconfirmed + c.Unavailable; uncertain > 0 {
 		issues = append(issues, fmt.Sprintf("%d 首没找到确定的版本", uncertain))
@@ -759,8 +759,8 @@ func (c rediscoverSkipCounts) cardIssues() []string {
 
 func (c rediscoverSkipCounts) emptyReasons() []string {
 	var reasons []string
-	if queued := c.Queued + c.Pending; queued > 0 {
-		reasons = append(reasons, fmt.Sprintf("还有 %d 首在等上传。", queued))
+	if ingestion := c.Queued + c.Pending; ingestion > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d 首已有入库记录或正在处理。", ingestion))
 	}
 	if uncertain := c.Unconfirmed + c.Unavailable; uncertain > 0 {
 		reasons = append(reasons, fmt.Sprintf("有 %d 首没找到确定的版本，先不推了。", uncertain))
@@ -768,8 +768,14 @@ func (c rediscoverSkipCounts) emptyReasons() []string {
 	if limited := c.ArtistCap + c.Duplicate; limited > 0 {
 		reasons = append(reasons, "有几首因为重复或同一个歌手出现太多，先跳过了。")
 	}
-	if c.Owned+c.Shown+c.Dismissed+c.Other > 0 {
-		reasons = append(reasons, "能找的基本曲库里都有了。")
+	if c.Owned > 0 {
+		reasons = append(reasons, "有些曲库里已经有了。")
+	}
+	if c.Shown > 0 {
+		reasons = append(reasons, "最近推荐过的已跳过。")
+	}
+	if c.Dismissed > 0 {
+		reasons = append(reasons, "已跳过你标记为不再推荐的歌曲。")
 	}
 	return reasons
 }

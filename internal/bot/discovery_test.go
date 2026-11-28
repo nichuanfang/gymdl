@@ -584,23 +584,35 @@ func TestRediscoverCardOmitsMissingFields(t *testing.T) {
 }
 
 func TestRediscoverEmptyCopyExplainsSeparateSkipReasons(t *testing.T) {
+	const ownedReason = "有些曲库里已经有了"
 	owned := rediscoverEmptyCopy("netease", discovery.RediscoverBatch{SkippedOwned: 2})
-	if !strings.Contains(owned, "曲库里都有了") || strings.Contains(owned, "没找到确定的版本") {
+	if !strings.Contains(owned, ownedReason) || strings.Contains(owned, "没找到确定的版本") {
 		t.Fatal(owned)
 	}
 	both := rediscoverEmptyCopy("qq", discovery.RediscoverBatch{SkippedOwned: 1, Unconfirmed: 3})
-	if !strings.Contains(both, "有 3 首没找到确定的版本") || !strings.Contains(both, "曲库里都有了") {
+	if !strings.Contains(both, "有 3 首没找到确定的版本") || !strings.Contains(both, ownedReason) {
 		t.Fatal(both)
 	}
 	only := rediscoverEmptyCopy("youtube", discovery.RediscoverBatch{Unconfirmed: 4})
 	if !strings.Contains(only, "有 4 首没找到确定的版本") {
 		t.Fatal(only)
 	}
-	reasons := rediscoverEmptyCopy("netease", discovery.RediscoverBatch{SkippedDismissed: 1, SkippedQueued: 2, SkippedArtistCap: 3, SkippedDuplicate: 4})
-	for _, want := range []string{"还有 2 首在等上传", "有几首因为重复或同一个歌手出现太多", "曲库里都有了"} {
+	reasons := rediscoverEmptyCopy("netease", discovery.RediscoverBatch{
+		SkippedDismissed: 1, SkippedShown: 2, SkippedQueued: 22, SkippedPending: 1, SkippedArtistCap: 3, SkippedDuplicate: 4,
+	})
+	for _, want := range []string{"23 首已有入库记录或正在处理", "有几首因为重复或同一个歌手出现太多", "最近推荐过的已跳过", "已跳过你标记为不再推荐的歌曲"} {
 		if !strings.Contains(reasons, want) {
 			t.Fatalf("missing %q: %s", want, reasons)
 		}
+	}
+	for _, unwanted := range []string{"等上传", "曲库里"} {
+		if strings.Contains(reasons, unwanted) {
+			t.Fatalf("unexpected %q: %s", unwanted, reasons)
+		}
+	}
+	other := rediscoverEmptyCopy("qq", discovery.RediscoverBatch{SkippedOther: 1})
+	if strings.Contains(other, "你标记") {
+		t.Fatal(other)
 	}
 }
 
