@@ -198,7 +198,7 @@ func (app *BotApp) handleAudioCheckDuplicate(c tb.Context, session audioCheckSes
 		if session.confirmTrash == "B" {
 			file, keep = keep, file
 		}
-		if err := trashAudioCheckCopy(ctx, cfg, file, keep); err != nil {
+		if err := trashAudioCheckCopy(ctx, cfg, file, &keep); err != nil {
 			utils.WarnWithFormat("[AudioCheck] 加入回收站失败: %v", err)
 			return c.Send("暂时无法确认已加入回收站，请重试。")
 		}
@@ -219,7 +219,7 @@ func (app *BotApp) handleAudioCheckDuplicate(c tb.Context, session audioCheckSes
 	return app.advanceAudioCheck(c, session)
 }
 
-func trashAudioCheckCopy(ctx context.Context, cfg *config.Config, file, keep web.FileEntry) error {
+func trashAudioCheckCopy(ctx context.Context, cfg *config.Config, file web.FileEntry, keep *web.FileEntry) error {
 	service, err := newPlaylistOrganizerService(cfg.PlaylistOrganizer)
 	if err != nil {
 		return err
@@ -228,12 +228,15 @@ func trashAudioCheckCopy(ctx context.Context, cfg *config.Config, file, keep web
 	if err != nil {
 		return err
 	}
-	keepID, err := web.LookupNavidromeAudioID(ctx, cfg.PlaylistOrganizer, keep.Path)
-	if err != nil {
-		return err
-	}
-	if keepID == songID {
-		return fmt.Errorf("两个路径指向同一首 Navidrome 歌曲")
+	var keepID string
+	if keep != nil {
+		keepID, err = web.LookupNavidromeAudioID(ctx, cfg.PlaylistOrganizer, keep.Path)
+		if err != nil {
+			return err
+		}
+		if keepID == songID {
+			return fmt.Errorf("两个路径指向同一首 Navidrome 歌曲")
+		}
 	}
 	trash := emptyTrashService{organizer: service}
 	_, ids, _, err := trash.readTrashPlaylist(ctx)
@@ -256,7 +259,7 @@ func trashAudioCheckCopy(ctx context.Context, cfg *config.Config, file, keep web
 		return err
 	}
 	if !slices.Contains(ids, songID) || slices.Contains(ids, keepID) {
-		return fmt.Errorf("回收站未返回预期的两个版本状态")
+		return fmt.Errorf("回收站未返回预期状态")
 	}
 	return nil
 }

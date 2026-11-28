@@ -4,9 +4,34 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/nichuanfang/gymdl/config"
 )
+
+// SearchMusicSourceCandidates keeps one page per platform so callers can
+// match the requested song before truncating the combined list.
+func SearchMusicSourceCandidates(ctx context.Context, keyword string, platforms []string) ([]SearchResultItem, SearchPlatformErrors) {
+	const pageSize = 24
+	results := make([][]SearchResultItem, len(platforms))
+	failures := make([]error, len(platforms))
+	var wg sync.WaitGroup
+	for i, platform := range platforms {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], failures[i] = cachedSearchPage(ctx, platform, keyword, pageSize, 0, searchProviderSearch)
+		}()
+	}
+	wg.Wait()
+	errs := make(SearchPlatformErrors)
+	for i, err := range failures {
+		if err != nil {
+			errs[platforms[i]] = err.Error()
+		}
+	}
+	return interleaveSearchResults(results), errs
+}
 
 // defaultAgentPlatforms keeps provider fan-out small: all four providers at
 // once multiplies latency and rate-limit exposure, and anonymous Netease is

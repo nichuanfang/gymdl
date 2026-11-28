@@ -10,6 +10,8 @@ const (
 	SessionRunning = "running"
 	SessionPaused  = "paused"
 	SessionResults = "results"
+	// SessionReview keeps an unfinished review available until it is completed.
+	SessionReview = "review"
 )
 
 // Session stores the Bot card and scan mode. File-level progress is already
@@ -45,8 +47,8 @@ func (s *Store) PauseSession(ctx context.Context, chat int64, token string) erro
 
 func (s *Store) Sessions(ctx context.Context) ([]Session, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT chat_id,token,phase,expires_at,payload
-		FROM audio_quality_sessions WHERE phase IN (?,?) OR expires_at>?
-		ORDER BY expires_at DESC`, SessionRunning, SessionPaused, time.Now().Unix())
+		FROM audio_quality_sessions WHERE phase IN (?,?,?) OR expires_at>?
+		ORDER BY expires_at DESC`, SessionRunning, SessionPaused, SessionReview, time.Now().Unix())
 	if err != nil {
 		return nil, err
 	}

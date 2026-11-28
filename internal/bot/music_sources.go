@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,7 +22,7 @@ import (
 )
 
 var musicSourceEditionSuffix = regexp.MustCompile(`\s*(?:\([^()]+\)|（[^（）]+）|\[[^\[\]]+\]|\s+-\s+.+)$`)
-var musicSourceEditionLabel = regexp.MustCompile(`(?i)\b(?:live|remix|remaster(?:ed)?|acoustic|instrumental|demo|version)\b|现场|現場|演唱会|演唱會|混音|伴奏|重制|重製|不插电|不插電`)
+var musicSourceEditionLabel = regexp.MustCompile(`(?i)\b(?:live|remix|remaster(?:ed)?|acoustic|instrumental|demo|version|feat\.?|ft\.?)\b|现场|現場|演唱会|演唱會|混音|伴奏|重制|重製|不插电|不插電|完整版|专辑版|專輯版`)
 
 func (app *BotApp) presentOtherMusicSources(ctx context.Context, c tb.Context, message *tb.Message, action pendingMusicAction) error {
 	return app.presentMusicSourceChoices(ctx, c, message, action, false)
@@ -29,18 +30,24 @@ func (app *BotApp) presentOtherMusicSources(ctx context.Context, c tb.Context, m
 
 func (app *BotApp) presentMusicSourceChoices(ctx context.Context, c tb.Context, message *tb.Message, action pendingMusicAction, confirm bool) error {
 	web.EnsureAgentRuntime(app.cfg)
-	query := strings.TrimSpace(action.artist + " " + musicSourceBaseTitle(action.title))
-	items, err := web.SearchForAgent(ctx, query, []string{"qq", "netease", "youtube", "bilibili"}, 32)
-	if err != nil {
-		if utils.Logger() != nil {
-			utils.WarnWithFormat("[Telegram] 搜索其他音源失败: %v", err)
-		}
-		_, err = c.Bot().Edit(message, "搜索音源失败，请稍后再试。")
-		return err
+	platforms := []string{"qq", "netease", "youtube", "bilibili"}
+	if app.cfg == nil || app.cfg.QQMusicApiConfig == nil || !app.cfg.QQMusicApiConfig.Enable {
+		platforms = platforms[1:]
 	}
-	items = otherMusicSourceMatches(action, items)
+	items, failed := findOtherMusicSources(ctx, action, platforms, web.SearchMusicSourceCandidates)
 	if len(items) == 0 {
-		_, err := c.Bot().Edit(message, "没找到匹配《"+displaySongValue(action.title)+"》的其他音源。")
+		markup := &tb.ReplyMarkup{}
+		text := "没找到匹配《" + utils.TruncateString(displaySongValue(action.title), 100) + "》的其他音源。"
+		if failed {
+			text += "\n部分平台搜索未完成，可以稍后重试。"
+		}
+		if action.checkToken != "" {
+			markup.Inline(markup.Row(
+				markup.Data("删除…", audioCheckCallback, "source_trash", action.checkToken),
+				markup.Data("返回体检", audioCheckCallback, "resume", action.checkToken),
+			))
+		}
+		_, err := c.Bot().Edit(message, text, markup)
 		return err
 	}
 
@@ -76,8 +83,24 @@ func (app *BotApp) presentMusicSourceChoices(ctx context.Context, c tb.Context, 
 	}
 	markup.Inline(rows...)
 	app.setMusicActionMessages(tokens, message, nil, c.Sender().ID, c.Chat().ID)
-	_, err = c.Bot().Edit(message, text.String(), tb.ModeHTML, markup)
+	_, err := c.Bot().Edit(message, text.String(), tb.ModeHTML, markup)
 	return err
+}
+
+func findOtherMusicSources(ctx context.Context, action pendingMusicAction, platforms []string, search func(context.Context, string, []string) ([]web.SearchResultItem, web.SearchPlatformErrors)) ([]web.SearchResultItem, bool) {
+	title := musicSourceBaseTitle(action.title)
+	if discovery.Normalize(title) == "" {
+		return nil, false
+	}
+	query := strings.TrimSpace(title + " " + discovery.PrimaryArtist(action.artist))
+	raw, failures := search(ctx, query, platforms)
+	matches := otherMusicSourceMatches(action, raw)
+	if len(matches) == 0 && query != title && ctx.Err() == nil {
+		retry, retryFailures := search(ctx, title, platforms)
+		matches = otherMusicSourceMatches(action, retry)
+		failures = retryFailures
+	}
+	return matches, len(failures) > 0
 }
 
 func (app *BotApp) confirmMusicSourceChoice(c tb.Context, action pendingMusicAction) error {
@@ -103,7 +126,6 @@ func (app *BotApp) confirmMusicSourceChoice(c tb.Context, action pendingMusicAct
 
 func otherMusicSourceMatches(action pendingMusicAction, items []web.SearchResultItem) []web.SearchResultItem {
 	title := discovery.Normalize(musicSourceBaseTitle(action.title))
-	artists := strings.FieldsFunc(action.artist, func(r rune) bool { return r == '/' || r == '／' })
 	seen := map[string]bool{musicdedupe.CanonicalURL(action.sourceURL): true}
 	matches := make([]web.SearchResultItem, 0, 8)
 	for _, item := range items {
@@ -116,16 +138,16 @@ func otherMusicSourceMatches(action pendingMusicAction, items []web.SearchResult
 		if title == "" || !strings.Contains(name, title) {
 			continue
 		}
-		if !musicSourceArtistMatches(artists, discovery.Normalize(item.Artists), name) {
+		if !musicSourceArtistMatches(action.artist, item) {
 			continue
 		}
 		seen[link] = true
 		matches = append(matches, item)
-		if len(matches) == cap(matches) {
-			break
-		}
 	}
-	return matches
+	sort.SliceStable(matches, func(i, j int) bool {
+		return (discovery.Normalize(matches[i].Name) == title) && discovery.Normalize(matches[j].Name) != title
+	})
+	return matches[:min(len(matches), 8)]
 }
 
 func musicSourceBaseTitle(title string) string {
@@ -137,14 +159,15 @@ func musicSourceBaseTitle(title string) string {
 	return title
 }
 
-func musicSourceArtistMatches(artists []string, itemArtists, itemTitle string) bool {
-	for _, name := range artists {
-		artist := discovery.Normalize(name)
-		if artist != "" && (strings.Contains(itemArtists, artist) || strings.Contains(itemTitle, artist)) {
-			return true
-		}
+func musicSourceArtistMatches(artist string, item web.SearchResultItem) bool {
+	if discovery.Normalize(artist) == "" || discovery.ArtistCreditsOverlap(artist, item.Artists) {
+		return true
 	}
-	return len(artists) == 0
+	if item.Platform != "youtube" && item.Platform != "bilibili" {
+		return false
+	}
+	credit := discovery.Normalize(discovery.PrimaryArtist(artist))
+	return credit != "" && (strings.Contains(discovery.Normalize(item.Artists), credit) || strings.Contains(discovery.Normalize(item.Name), credit))
 }
 
 func sameMusicSource(item web.SearchResultItem, sourceURL string) bool {

@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -149,6 +150,23 @@ func TestOtherMusicSourcesIncludeDifferentEditionsAndExcludeCurrentSource(t *tes
 	}
 	if got := otherMusicSourceMatches(action, items); !reflect.DeepEqual(got, items[1:3]) {
 		t.Fatalf("alternate sources = %#v", got)
+	}
+}
+
+func TestOtherMusicSourcesRetryByTitleAfterFiltering(t *testing.T) {
+	action := pendingMusicAction{title: "东方之珠（Live）", artist: "罗大佑、合唱", sourceURL: "https://music.163.com/song?id=1"}
+	want := web.SearchResultItem{Platform: "qq", Name: "東方之珠", Artists: "羅大佑", URL: "https://y.qq.com/n/ryqq/songDetail/abc"}
+	var queries []string
+	items, failed := findOtherMusicSources(t.Context(), action, []string{"netease", "qq"},
+		func(_ context.Context, query string, _ []string) ([]web.SearchResultItem, web.SearchPlatformErrors) {
+			queries = append(queries, query)
+			if len(queries) == 1 {
+				return []web.SearchResultItem{{Platform: "netease", Name: "东方之珠", Artists: "罗大佑", URL: action.sourceURL}}, nil
+			}
+			return []web.SearchResultItem{want}, nil
+		})
+	if failed || !reflect.DeepEqual(items, []web.SearchResultItem{want}) || !reflect.DeepEqual(queries, []string{"东方之珠 罗大佑", "东方之珠"}) {
+		t.Fatalf("fallback: items=%+v failed=%v queries=%q", items, failed, queries)
 	}
 }
 

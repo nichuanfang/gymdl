@@ -34,14 +34,17 @@ type audioCheckSession struct {
 	report            audioCheckReport
 	index             int
 	running           bool
+	paused            bool
 	busy              bool
 	notice            string
 	skipped           map[audioquality.FileVersion]struct{}
 	startedAt         time.Time
 	state             *audioCheckScanState
+	checkpoint        *savedAudioCheckScan
 	processed         int
 	skippedDuplicates map[audioCheckPair]struct{}
 	confirmTrash      string
+	trashed           map[audioquality.FileVersion]struct{}
 }
 
 func (app *BotApp) AudioCheckCommand(c tb.Context) error {
@@ -95,6 +98,7 @@ func (app *BotApp) startAudioCheck(c tb.Context, previous *audioCheckSession) er
 		}
 		session.message = previous.message
 		session.state, session.report = previous.state, previous.report
+		session.checkpoint, session.trashed = previous.checkpoint, previous.trashed
 		session.skipped, session.skippedDuplicates = previous.skipped, previous.skippedDuplicates
 		session.processed, session.notice = previous.processed, previous.notice
 		if !previous.startedAt.IsZero() {
@@ -218,6 +222,22 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 	if _, err := exec.LookPath("fpcalc"); err != nil {
 		fingerprint = false
 	}
+	if state == nil && session.checkpoint != nil {
+		if !audioCheckTransportReady(ctx, cfg) {
+			app.completeAudioCheck(api, session, "WebDAV 当前连不上，已保留进度，可稍后继续。", true)
+			return
+		}
+		state, err = restoreAudioCheckScan(ctx, store, fingerprints, session)
+		if err != nil {
+			if app.audioCheckIsStopping() {
+				return
+			}
+			utils.WarnWithFormat("[AudioCheck] 无法载入扫描进度: %v", err)
+			app.completeAudioCheck(api, session, "暂时无法载入检查进度，可继续体检重试。", true)
+			return
+		}
+		fingerprint = state.duplicates != nil
+	}
 	if state == nil {
 		// Every file is downloaded before it can be inspected, so an
 		// unreachable tunnel would mark the whole library unreadable. Check it
@@ -252,17 +272,21 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 		}
 	}
 	session.state = state
+	session.report = state.report
+	session.report.findings = nil
 	lastUpdate := time.Now()
 	progress := func(report audioCheckReport) {
-		if time.Since(lastUpdate) < 5*time.Second {
-			return
-		}
-		lastUpdate = time.Now()
 		session.report = report
-		if err := app.editAudioCheckProgress(api, session); err != nil && !strings.Contains(err.Error(), "message is not modified") {
+		session.checkpoint = state.checkpoint()
+		show := time.Since(lastUpdate) >= 5*time.Second
+		if show {
+			lastUpdate = time.Now()
+		}
+		if err := app.saveAudioCheckProgress(api, store, session, show); err != nil && !strings.Contains(err.Error(), "message is not modified") {
 			utils.WarnWithFormat("[AudioCheck] 更新进度失败: %v", err)
 		}
 	}
+	progress(state.report)
 
 	finding, err := state.scanNext(ctx, cfg, store, fingerprints, session, progress)
 	if app.audioCheckIsStopping() {
@@ -270,12 +294,15 @@ func (app *BotApp) runAudioCheck(ctx context.Context, api tb.API, cfg *config.Co
 	}
 	session.index = 0
 	session.report = state.report
+	session.report.findings = nil
+	session.checkpoint = state.checkpoint()
 	if finding != nil {
 		session.report.findings = []audioCheckFinding{*finding}
 	} else if err == nil && session.report.deferred > 0 {
 		// The cursor is exhausted. Continuing must list the library again so
 		// it can retry the files that could not be fetched in this pass.
 		session.state = nil
+		session.checkpoint = nil
 	}
 	notice := session.notice
 	if strings.HasPrefix(notice, "容器重启后") || strings.HasPrefix(notice, "已停止") {
@@ -349,6 +376,7 @@ func (app *BotApp) presentAudioCheck(api tb.API, session audioCheckSession) erro
 	session.token = audioCheckToken()
 	session.expires = time.Now().Add(audioCheckTTL)
 	session.running = false
+	session.paused = false
 	session.busy = false
 	current, hasCurrent := currentAudioCheckFinding(session)
 	if hasCurrent {
@@ -389,7 +417,7 @@ func (app *BotApp) storeAudioCheckSessionLocked(session audioCheckSession) {
 		app.audioCheckSessions = make(map[int64]audioCheckSession)
 	}
 	for chatID, old := range app.audioCheckSessions {
-		if !old.running && time.Now().After(old.expires) {
+		if !old.running && !audioCheckHasWork(old) && time.Now().After(old.expires) {
 			delete(app.audioCheckSessions, chatID)
 		}
 	}
@@ -404,8 +432,8 @@ func (app *BotApp) HandleAudioCheckCallback(c tb.Context) error {
 	action, token := args[0], args[1]
 	// The 返回体检 button lives on a source/download card, so it is handled
 	// before the "is this the current card message" check that follows.
-	if action == "resume" {
-		return app.resumeAudioCheckCard(c, token)
+	if action == "resume" || action == "source_trash" {
+		return app.resumeAudioCheckCard(c, token, action == "source_trash")
 	}
 	chat := c.Chat().ID
 	app.audioCheckMu.Lock()
@@ -431,6 +459,8 @@ func (app *BotApp) HandleAudioCheckCallback(c tb.Context) error {
 			return c.Respond(&tb.CallbackResponse{Text: "暂时无法保存停止状态，请稍后再试。", ShowAlert: true})
 		}
 		cancel()
+		session.paused = true
+		app.audioCheckSessions[chat] = session
 		app.audioCheckMu.Unlock()
 		return c.Respond(&tb.CallbackResponse{Text: "正在停止并整理已完成结果…"})
 	}
@@ -501,9 +531,45 @@ func (app *BotApp) HandleAudioCheckCallback(c tb.Context) error {
 		return app.advanceAudioCheck(c, session)
 	case "play", "sources":
 		return app.openAudioCheckFile(c, session, finding, action == "sources")
+	case "back":
+		session.confirmTrash = ""
+		_ = c.Respond()
+		return app.presentAudioCheck(c.Bot(), session)
+	case "confirm":
+		if session.confirmTrash != "source" {
+			return c.Respond(&tb.CallbackResponse{Text: "请先选择要删除的歌曲。"})
+		}
+		return app.trashAudioCheckFinding(c, session, finding)
 	default:
 		return c.Respond(&tb.CallbackResponse{Text: "这张卡片不支持该操作。"})
 	}
+}
+
+func (app *BotApp) trashAudioCheckFinding(c tb.Context, session audioCheckSession, finding audioCheckFinding) error {
+	_ = c.Respond(&tb.CallbackResponse{Text: "正在核对文件并加入回收站…"})
+	cfg := config.WithLiveTaskOverrides(app.cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	app.audioCheckTrashMu.Lock()
+	_, err := audioCheckCurrentFile(ctx, cfg, session, finding.file)
+	if err == nil {
+		err = trashAudioCheckCopy(ctx, cfg, finding.file, nil)
+	}
+	app.audioCheckTrashMu.Unlock()
+	if err != nil {
+		utils.WarnWithFormat("[AudioCheck] 无法确认曲库文件已加入回收站")
+		return c.Send("无法确认已加入回收站。请核对文件和 Navidrome 回收站后重试。")
+	}
+	if session.trashed == nil {
+		session.trashed = make(map[audioquality.FileVersion]struct{})
+	}
+	version := audioFileVersion(finding.file)
+	session.trashed[version] = struct{}{}
+	if session.state != nil && session.state.duplicates != nil {
+		session.state.duplicates.trashed[version] = true
+	}
+	session.notice = "已加入 Navidrome 回收站歌单。"
+	return app.advanceAudioCheck(c, session)
 }
 
 func currentAudioCheckFinding(session audioCheckSession) (audioCheckFinding, bool) {
@@ -522,9 +588,8 @@ func (app *BotApp) advanceAudioCheck(c tb.Context, session audioCheckSession) er
 	if _, hasNext := currentAudioCheckFinding(session); hasNext {
 		return app.presentAudioCheck(c.Bot(), session)
 	}
-	if session.state == nil && len(session.report.findings) > 0 {
-		// Cards saved by older versions may have completed the quality pass
-		// before fingerprinting was part of the check.
+	if len(session.report.findings) > 0 && session.state == nil {
+		// A restored card still needs to finish its saved pass after review.
 		session.report.resumeAvailable = true
 	}
 	session.report.findings = nil
@@ -533,6 +598,11 @@ func (app *BotApp) advanceAudioCheck(c tb.Context, session audioCheckSession) er
 		return app.presentAudioCheck(c.Bot(), session)
 	}
 	return app.startAudioCheck(c, &session)
+}
+
+func audioCheckHasWork(session audioCheckSession) bool {
+	_, hasFinding := currentAudioCheckFinding(session)
+	return hasFinding || audioCheckCanContinue(session)
 }
 
 func audioCheckCurrentFile(ctx context.Context, cfg *config.Config, session audioCheckSession, file web.FileEntry) (string, error) {
@@ -546,7 +616,7 @@ func audioCheckCurrentFile(ctx context.Context, cfg *config.Config, session audi
 func (app *BotApp) openAudioCheckFile(c tb.Context, session audioCheckSession, finding audioCheckFinding, sources bool) error {
 	_ = c.Respond(&tb.CallbackResponse{Text: "正在核对文件…"})
 	cfg := config.WithLiveTaskOverrides(app.cfg)
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	currentPath, err := audioCheckCurrentFile(ctx, cfg, session, finding.file)
 	if err != nil {
@@ -639,8 +709,13 @@ func formatAudioCheckCard(session audioCheckSession) (string, *tb.ReplyMarkup) {
 		if audioquality.LowBitrate(finding.Codec, finding.Bitrate) {
 			fmt.Fprintf(&text, "\n⚠️ 低码率 · %s %d kbps", utils.EscapeHTML(strings.ToUpper(finding.Codec)), finding.Bitrate)
 		}
-		rows = append(rows, markup.Row(button("▶️ 试听", "play"), button("其他音源", "sources")),
-			markup.Row(button("跳过并继续", "skip"), button("标记正常", "normal")))
+		if session.confirmTrash == "source" {
+			text.WriteString("\n\n将这首歌加入 Navidrome 回收站歌单？")
+			rows = append(rows, markup.Row(button("确认加入回收站", "confirm"), button("返回", "back")))
+		} else {
+			rows = append(rows, markup.Row(button("▶️ 试听", "play"), button("其他音源", "sources")),
+				markup.Row(button("跳过并继续", "skip"), button("标记正常", "normal")))
+		}
 	}
 	if report.total > 0 || session.notice == "" {
 		fmt.Fprintf(&text, "\n\n已检查 %d/%d 首", report.checked, report.total)
@@ -699,18 +774,35 @@ func formatAudioCheckProgressCard(session audioCheckSession) (string, *tb.ReplyM
 }
 
 func (app *BotApp) editAudioCheckProgress(api tb.API, session audioCheckSession) error {
-	app.audioCheckCardMu.Lock()
-	defer app.audioCheckCardMu.Unlock()
+	return app.saveAudioCheckProgress(api, nil, session, true)
+}
+
+func (app *BotApp) saveAudioCheckProgress(api tb.API, store *audioquality.Store, session audioCheckSession, show bool) error {
+	if show {
+		app.audioCheckCardMu.Lock()
+		defer app.audioCheckCardMu.Unlock()
+	}
 	chat := session.message.Chat.ID
 	app.audioCheckMu.Lock()
-	if binding, ok := app.audioCheckSessions[chat]; ok {
-		session.message, session.token = binding.message, binding.token
-		binding.report = session.report
-		app.audioCheckSessions[chat] = binding
+	binding, ok := app.audioCheckSessions[chat]
+	if !ok || !binding.running || binding.paused {
+		app.audioCheckMu.Unlock()
+		return nil
+	}
+	binding.report, binding.checkpoint, binding.notice = session.report, session.checkpoint, session.notice
+	app.audioCheckSessions[chat] = binding
+	var saveErr error
+	if store != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		saveErr = checkpointAudioCheck(store, ctx, binding)
+		cancel()
 	}
 	app.audioCheckMu.Unlock()
-	text, markup := formatAudioCheckProgressCard(session)
-	_, err := api.Edit(session.message, text, tb.ModeHTML, markup)
+	if saveErr != nil || !show {
+		return saveErr
+	}
+	text, markup := formatAudioCheckProgressCard(binding)
+	_, err := api.Edit(binding.message, text, tb.ModeHTML, markup)
 	return err
 }
 

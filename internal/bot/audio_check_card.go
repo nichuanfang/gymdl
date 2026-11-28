@@ -24,11 +24,7 @@ func (app *BotApp) currentAudioCheck(chat, owner int64) (audioCheckSession, bool
 	if !ok || current.owner != owner || current.message == nil || current.message.ID == 0 {
 		return audioCheckSession{}, false
 	}
-	if !current.running && time.Now().After(current.expires) {
-		return audioCheckSession{}, false
-	}
-	_, hasFinding := currentAudioCheckFinding(current)
-	return current, current.running || current.busy || hasFinding || audioCheckCanContinue(current)
+	return current, current.running || current.busy || audioCheckHasWork(current)
 }
 
 // takeoverAudioCheckCard re-sends the live card at the bottom of the chat and
@@ -81,6 +77,7 @@ func (app *BotApp) commitAudioCheckBinding(previous, next audioCheckSession, mes
 	current.message = message
 	current.token = next.token
 	current.expires = next.expires
+	current.confirmTrash = next.confirmTrash
 	if err := takeoverPersistHook(current); err != nil {
 		utils.WarnWithFormat("无法保存体检卡片接管: %v", err)
 		return false
@@ -99,7 +96,7 @@ func (app *BotApp) liveAudioCheckBinding(chat int64) (audioCheckSession, bool) {
 
 // resumeAudioCheckCard brings the task's current card back to the bottom. It is
 // the 返回体检 target on the source/download cards, which carry the card token.
-func (app *BotApp) resumeAudioCheckCard(c tb.Context, token string) error {
+func (app *BotApp) resumeAudioCheckCard(c tb.Context, token string, trash bool) error {
 	app.audioCheckCardMu.Lock()
 	defer app.audioCheckCardMu.Unlock()
 	current, ok := app.liveAudioCheckBinding(c.Chat().ID)
@@ -111,6 +108,15 @@ func (app *BotApp) resumeAudioCheckCard(c tb.Context, token string) error {
 	}
 	if current.busy {
 		return c.Respond(&tb.CallbackResponse{Text: "体检卡片正在处理上一项操作，请稍后再试。"})
+	}
+	if trash {
+		finding, ok := currentAudioCheckFinding(current)
+		if current.running || !ok || finding.duplicate != nil {
+			return c.Respond(&tb.CallbackResponse{Text: "当前没有可加入回收站的歌曲。", ShowAlert: true})
+		}
+		current.confirmTrash = "source"
+		_ = c.Respond()
+		return app.takeoverAudioCheckCard(c, current)
 	}
 	_ = c.Respond(&tb.CallbackResponse{Text: "正在返回体检…"})
 	return app.takeoverAudioCheckCard(c, current)

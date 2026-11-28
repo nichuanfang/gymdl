@@ -93,6 +93,16 @@ func artistCredits(artist string) []string {
 	return out
 }
 
+// PrimaryArtist returns the first credit as written for provider searches.
+func PrimaryArtist(artist string) string {
+	for _, credit := range artistSplit.Split(artist, -1) {
+		if Normalize(credit) != "" {
+			return strings.TrimSpace(credit)
+		}
+	}
+	return ""
+}
+
 func artistsOverlap(left, right string) bool {
 	if strings.TrimSpace(left) == "" || strings.TrimSpace(right) == "" {
 		return false
@@ -107,6 +117,11 @@ func artistsOverlap(left, right string) bool {
 		}
 	}
 	return false
+}
+
+// ArtistCreditsOverlap matches individual credits without substring matches.
+func ArtistCreditsOverlap(left, right string) bool {
+	return (Normalize(left) != "" && Normalize(left) == Normalize(right)) || artistsOverlap(left, right)
 }
 
 func albumWorkKey(album string) string {

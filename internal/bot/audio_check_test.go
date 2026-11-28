@@ -179,10 +179,9 @@ func TestAudioCheckTelegramCommandAndReview(t *testing.T) {
 		t.Fatalf("expired callback accepted: %q", got.text)
 	}
 	command()
-	rescan := next("editMessageText")
-	waitScan()
-	if !strings.Contains(rescan.text, "已检查 1/2 首") || !strings.Contains(rescan.text, "低码率") {
-		t.Fatalf("reviewed file reappeared on next scan: %q", rescan.text)
+	restored := next("sendMessage")
+	if !strings.Contains(restored.text, "已检查 2/2 首") || !strings.Contains(restored.text, "低码率") {
+		t.Fatalf("expired card lost its pending review: %q", restored.text)
 	}
 }
 

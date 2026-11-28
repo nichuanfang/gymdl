@@ -12,10 +12,84 @@ import (
 	"time"
 
 	"github.com/nichuanfang/gymdl/config"
+	"github.com/nichuanfang/gymdl/internal/audiodupe"
 	"github.com/nichuanfang/gymdl/internal/audioquality"
+	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
 	"github.com/nichuanfang/gymdl/internal/storage"
 	tb "gopkg.in/telebot.v4"
 )
+
+func TestAudioCheckRestoresCursorAndPendingDuplicateAfterTakeover(t *testing.T) {
+	if tool := missingAudioCheckTool(); tool != "" {
+		t.Skipf("missing %s", tool)
+	}
+	t.Chdir(t.TempDir())
+	api, calls := checkTestBot(t)
+	app := checkTestApp(t, api)
+	library, err := audioCheckLibrary(app.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := audioquality.Open(storage.DefaultDatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	fingerprints, err := audiodupe.Open(storage.DefaultDatabasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fingerprints.Close()
+	files := []web.FileEntry{{Path: "a.mp3", Name: "a.mp3", Size: 100, ModTime: time.Unix(100, 0)},
+		{Path: "b.mp3", Name: "b.mp3", Size: 100, ModTime: time.Unix(100, 0)}}
+	fp := audiodupe.Fingerprint{Duration: 180, Items: make([]uint32, 300)}
+	for i := range fp.Items {
+		fp.Items[i] = uint32(i) * 2654435761
+	}
+	for _, file := range files {
+		version := audioFileVersion(file)
+		result := audioquality.Result{Title: "Saved recording", Codec: "mp3", Bitrate: 320, Duration: 180}
+		if err := store.Save(t.Context(), library, audioquality.CachedResult{FileVersion: version, Result: result}); err != nil {
+			t.Fatal(err)
+		}
+		if err := fingerprints.SaveFingerprint(t.Context(), file.Path, version.Size, version.Mod, fp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	chat := &tb.Chat{ID: 7, Type: tb.ChatPrivate}
+	user := &tb.User{ID: 7}
+	session := audioCheckSession{token: "old", owner: 7, library: library, expires: time.Now().Add(time.Hour),
+		message: &tb.Message{ID: 42, Chat: chat}, running: true, processed: 3,
+		report:     audioCheckReport{total: 2, checked: 2},
+		checkpoint: &savedAudioCheckScan{Files: files, Cursor: 2, Fingerprint: true, Pending: true}}
+	app.setAudioCheckSession(session)
+	api.Handle("/audio_check", app.AudioCheckCommand)
+	api.ProcessUpdate(tb.Update{Message: &tb.Message{ID: 90, Text: "/audio_check", Sender: user, Chat: chat}})
+	moved := checkWait(t, calls, "sendMessage", nil)
+	if !strings.Contains(moved.text, "已检查 2/2 首") {
+		t.Fatalf("takeover lost progress: %+v", moved)
+	}
+	checkWait(t, calls, "editMessageText", func(call checkCall) bool { return call.messageID == "42" })
+	restarted := &BotApp{cfg: app.cfg, bot: api}
+	defer restarted.stopAudioCheck()
+	restarted.restoreAudioChecks(api)
+	progress := checkWait(t, calls, "editMessageText", func(call checkCall) bool {
+		return strings.Contains(call.text, "容器重启后")
+	})
+	if progress.messageID != "101" || !strings.Contains(progress.text, "已检查 2/2 首") {
+		t.Fatalf("restart restored the wrong message or progress: %+v", progress)
+	}
+	result := checkWait(t, calls, "editMessageText", func(call checkCall) bool {
+		return strings.Contains(call.text, "疑似重复录音")
+	})
+	waitForAudioCheckScan(t, restarted)
+	current, _ := restarted.liveAudioCheckBinding(7)
+	finding, ok := currentAudioCheckFinding(current)
+	if result.messageID != "101" || !ok || finding.duplicate == nil || finding.file.Path != "b.mp3" ||
+		finding.duplicate.File.Path != "a.mp3" || current.report.checked != 2 || current.processed != 3 {
+		t.Fatalf("restart lost review state: %+v", current)
+	}
+}
 
 func TestAudioCheckRecoversAfterRestart(t *testing.T) {
 	for _, paused := range []bool{false, true} {

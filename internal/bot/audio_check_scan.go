@@ -136,8 +136,7 @@ func newAudioCheckScanState(ctx context.Context, cfg *config.Config, store *audi
 	return state, nil
 }
 
-// scanNext stops at the first actionable finding. The cursor and lookup index
-// live with the card, while file results survive a process restart.
+// scanNext stops at the first actionable finding.
 func (s *audioCheckScanState) scanNext(ctx context.Context, cfg *config.Config, store *audioquality.Store, fingerprints *audiodupe.Store, session audioCheckSession, progress func(audioCheckReport)) (*audioCheckFinding, error) {
 	for s.pending != nil || s.cursor < len(s.files) {
 		if err := ctx.Err(); err != nil {
@@ -161,7 +160,8 @@ func (s *audioCheckScanState) scanNext(ctx context.Context, cfg *config.Config, 
 			return nil, err
 		}
 		_, skipped := session.skipped[item.FileVersion]
-		trashed := s.duplicates != nil && s.duplicates.trashed[item.FileVersion]
+		_, trashed := session.trashed[item.FileVersion]
+		trashed = trashed || s.duplicates != nil && s.duplicates.trashed[item.FileVersion]
 		if !skipped && !trashed && !item.Unreadable && !item.Reviewed && !item.NeedsReview() &&
 			!item.RetryAt.IsZero() && !time.Now().Before(item.RetryAt) {
 			web.EnsureAgentRuntime(cfg)

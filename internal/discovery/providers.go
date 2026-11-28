@@ -578,6 +578,7 @@ func acceptPlatformHit(source, hit Track) bool {
 // An explicit source URL is preserved; searches never invent links or editions.
 var ErrAmbiguousRecording = errors.New("跨平台存在多个可能版本，需要确认")
 var ErrNoUniqueRecording = errors.New("未找到可唯一确认的同歌手、同版本曲目")
+var ErrRecordingSearchIncomplete = errors.New("部分平台搜索未完成")
 
 func (p *Providers) Resolve(ctx context.Context, t Track, exclude string) (Track, error) {
 	if t.URL != "" && t.Verified && t.Platform != exclude {
@@ -590,20 +591,39 @@ func (p *Providers) Resolve(ctx context.Context, t Track, exclude string) (Track
 		}
 		exclude = t.Platform
 	}
-	for _, platform := range []string{"netease", "qq", "youtube"} {
+	platforms := []string{"netease", "youtube"}
+	if p.Config != nil && p.Config.QQMusicApiConfig != nil && p.Config.QQMusicApiConfig.Enable {
+		platforms = []string{"netease", "qq", "youtube"}
+	}
+	return resolveRecordingPlatforms(ctx, platforms, exclude, func(ctx context.Context, platform string) (Track, error) {
+		return p.matchOnPlatform(ctx, t, platform)
+	})
+}
+
+func resolveRecordingPlatforms(ctx context.Context, platforms []string, exclude string, lookup func(context.Context, string) (Track, error)) (Track, error) {
+	var ambiguous, incomplete bool
+	for _, platform := range platforms {
 		if platform == exclude {
 			continue
 		}
-		if platform == "qq" && (p.Config == nil || p.Config.QQMusicApiConfig == nil || !p.Config.QQMusicApiConfig.Enable) {
-			continue
+		if ctx.Err() != nil {
+			return Track{}, ErrRecordingSearchIncomplete
 		}
-		hit, err := p.matchOnPlatform(ctx, t, platform)
-		if errors.Is(err, ErrAmbiguousRecording) {
-			return Track{}, err
-		}
-		if err == nil {
+		hit, err := lookup(ctx, platform)
+		switch {
+		case err == nil:
 			return hit, nil
+		case errors.Is(err, ErrAmbiguousRecording):
+			ambiguous = true
+		case !errors.Is(err, ErrNoUniqueRecording):
+			incomplete = true
 		}
+	}
+	if ambiguous {
+		return Track{}, ErrAmbiguousRecording
+	}
+	if incomplete || ctx.Err() != nil {
+		return Track{}, ErrRecordingSearchIncomplete
 	}
 	return Track{}, ErrNoUniqueRecording
 }
@@ -624,27 +644,78 @@ func (p *Providers) ResolveOn(ctx context.Context, t Track, platform string) (Tr
 }
 
 func (p *Providers) matchOnPlatform(ctx context.Context, t Track, platform string) (Track, error) {
-	hits, _, err := web.SearchSinglesForAgent(ctx, t.Title+" "+t.Artist, []string{platform}, 10)
-	if err != nil {
-		return Track{}, err
-	}
-	matches := map[string]Track{}
-	for _, h := range hits {
-		other := fromSearch(h.SearchResultItem)
-		if !acceptPlatformHit(t, other) {
-			continue
+	query := strings.TrimSpace(t.Title + " " + t.Artist)
+	hits, failures := web.SearchMusicSourceCandidates(ctx, query, []string{platform})
+	matches, incomplete := p.recordingMatches(ctx, t, hits)
+	if len(matches) == 0 && ctx.Err() == nil {
+		fallback := strings.TrimSpace(t.Title + " " + PrimaryArtist(t.Artist))
+		if fallback == query {
+			fallback = strings.TrimSpace(t.Title)
 		}
-		matches[other.ID] = other
+		if fallback != "" && fallback != query {
+			hits, failures = web.SearchMusicSourceCandidates(ctx, fallback, []string{platform})
+			matches, incomplete = p.recordingMatches(ctx, t, hits)
+		}
 	}
 	if len(matches) > 1 {
 		return Track{}, ErrAmbiguousRecording
 	}
-	if len(matches) == 1 {
-		for _, hit := range matches {
-			return hit, nil
-		}
+	if incomplete || len(failures) > 0 || ctx.Err() != nil {
+		return Track{}, ErrRecordingSearchIncomplete
+	}
+	for _, hit := range matches {
+		return hit, nil
 	}
 	return Track{}, ErrNoUniqueRecording
+}
+
+func (p *Providers) recordingMatches(ctx context.Context, source Track, hits []web.SearchResultItem) (map[string]Track, bool) {
+	matches := make(map[string]Track)
+	var incomplete bool
+	checkedVideos := make(map[string]bool)
+	for _, h := range hits {
+		other := fromSearch(h)
+		if other.ID == "" || other.URL == "" {
+			continue
+		}
+		if h.Platform == "youtube" {
+			if checkedVideos[other.ID] || web.ClassifyAgentResult(h) != web.AgentKindSingle || !youtubeRecordingCandidate(source, other) {
+				continue
+			}
+			if len(checkedVideos) >= 3 {
+				incomplete = true
+				break
+			}
+			checkedVideos[other.ID] = true
+			other.Verified = false
+			probe, cancel := context.WithTimeout(ctx, 8*time.Second)
+			verified, skip, err := p.Enrich(probe, other)
+			cancel()
+			if err != nil {
+				incomplete = true
+				continue
+			}
+			if skip {
+				continue
+			}
+			other = verified
+		}
+		if acceptPlatformHit(source, other) {
+			matches[other.ID] = other
+			if len(matches) > 1 {
+				break
+			}
+		}
+	}
+	return matches, incomplete
+}
+
+func youtubeRecordingCandidate(source, video Track) bool {
+	title := Normalize(source.Title)
+	artist := Normalize(PrimaryArtist(source.Artist))
+	name := Normalize(video.Title)
+	return title != "" && artist != "" && strings.Contains(name, title) &&
+		(strings.Contains(name, artist) || strings.Contains(Normalize(video.Artist), artist))
 }
 
 // Personal special playlists do not always expose a channel owner. DATASYNC_ID

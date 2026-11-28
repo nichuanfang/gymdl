@@ -544,6 +544,22 @@ func TestMatchingKeepsEditionAndDuration(t *testing.T) {
 	}
 }
 
+func TestRecordingLookupContinuesAfterAmbiguousPlatform(t *testing.T) {
+	want := Track{Platform: "youtube", ID: "verified"}
+	var searched []string
+	hit, err := resolveRecordingPlatforms(t.Context(), []string{"netease", "qq", "youtube"}, "qq",
+		func(_ context.Context, platform string) (Track, error) {
+			searched = append(searched, platform)
+			if platform == "netease" {
+				return Track{}, ErrAmbiguousRecording
+			}
+			return want, nil
+		})
+	if err != nil || hit != want || strings.Join(searched, ",") != "netease,youtube" {
+		t.Fatalf("hit=%+v err=%v platforms=%v", hit, err, searched)
+	}
+}
+
 type stubLibrary struct {
 	owned map[string]bool
 	err   error

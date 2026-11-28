@@ -2395,6 +2395,8 @@ func (app *BotApp) switchFailedJobSource(c tb.Context, id string) error {
 			note := "没有找到可确认的同版录音，原任务未改。"
 			if errors.Is(resolveErr, discovery.ErrAmbiguousRecording) {
 				note = "其他平台有多个可能版本，未自动替换原任务。"
+			} else if errors.Is(resolveErr, discovery.ErrRecordingSearchIncomplete) {
+				note = "部分平台搜索未完成，可稍后重试。原任务未改。"
 			}
 			text, markup := discoveryFailedCard(job, 0, 1)
 			_ = editDiscoveryMessage(c, text+"\n\n没能换平台："+utils.EscapeHTML(note), markup, true)
