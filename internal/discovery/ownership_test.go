@@ -22,6 +22,7 @@ func TestOwnedWorkMatchesLibraryDespiteMessyCredits(t *testing.T) {
 	add("Song", "Artist A", "Album A", 200)
 	add("Song", "Artist B", "Album B", 180)
 	add("Go", "Someone", "Short", 100)
+	add("Say You Love Me (Album Version)", "Patti Austin", "The Best Of Patti Austin", 336)
 
 	cases := []struct {
 		title, artist, album string
@@ -38,6 +39,7 @@ func TestOwnedWorkMatchesLibraryDespiteMessyCredits(t *testing.T) {
 		{"Song Remix", "Artist A", "Album A", 200, false},
 		{"Song", "Artist C", "Other Album", 200, false},
 		{"Go", "Different Person", "Other", 90, false},
+		{"Say You Love Me", "Patti Austin", "The Best Of Patti Austin", 336, true},
 		{"Missing", "Nobody", "None", 10, false},
 	}
 	for _, tc := range cases {

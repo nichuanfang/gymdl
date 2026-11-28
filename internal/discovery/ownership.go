@@ -20,6 +20,7 @@ import (
 var (
 	featWord        = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:feat\.?|ft\.?|featuring)(?:[^a-z0-9]|$)`)
 	trailingFeat    = regexp.MustCompile(`(?i)\s+(?:feat\.?|ft\.?|featuring)\s+.+$`)
+	trailingVersion = regexp.MustCompile(`(?i)\s*[(\[（【]\s*(?:album|original|digital(?:ly)?\s+remaster(?:ed)?|remaster(?:ed)?|explicit|clean)(?:\s+(?:version|edition))?(?:\s+\d{4})?\s*[)\]）】]\s*$`)
 	artistSplit     = regexp.MustCompile(`(?i)\s*(?:,|，|、|;|；|/|／|&|＆|•|·|・|\||｜|\bx\b|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b)\s*`)
 	albumEditionIn  = regexp.MustCompile(`(?i)\s*[(\[（【][^)\]）】]{0,80}(?:remaster(?:ed)?|deluxe|anniversary|edition|version|single|live)[^)\]）】]{0,24}[)\]）】]\s*`)
 	albumEditionEnd = regexp.MustCompile(`(?i)(?:\s*-\s*|\s+)(?:single|ep|deluxe(?:\s+edition)?|remaster(?:ed)?(?:\s+edition)?|live|anniversary(?:\s+edition)?)(?:\s+\d{4})?\s*$`)
@@ -37,7 +38,8 @@ var genericAlbumToken = map[string]bool{
 }
 
 func ownershipTitle(title string) string {
-	return Normalize(trailingFeat.ReplaceAllString(stripFeatGroups(title), " "))
+	cleaned := trailingFeat.ReplaceAllString(stripFeatGroups(title), " ")
+	return Normalize(trailingVersion.ReplaceAllString(cleaned, " "))
 }
 
 func stripFeatGroups(value string) string {

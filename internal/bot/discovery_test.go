@@ -487,10 +487,10 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 			t.Fatalf("old button still present: %s", unwanted)
 		}
 	}
-	if !labels["入库"] || !labels["不再推荐"] || !labels["换一首"] || !labels["更多切换"] || !labels["取消"] {
+	if !labels["入库"] || !labels["不再推荐"] || !labels["换一首"] || !labels["更多设置"] || !labels["取消"] {
 		t.Fatalf("missing song actions: %#v", labels)
 	}
-	if got := buttonRowTexts(markup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "换一首" || got[1][1] != "更多切换" || got[1][2] != "取消" {
+	if got := buttonRowTexts(markup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "换一首" || got[1][1] != "更多设置" || got[1][2] != "取消" {
 		t.Fatalf("button rows = %#v", got)
 	}
 	if markup.InlineKeyboard[0][0].Data != "download|card|0" || markup.InlineKeyboard[1][0].Data != "find|netease|1|card" || markup.InlineKeyboard[1][1].Data != "rediscover_settings|card" || markup.InlineKeyboard[1][2].Data != "cancel|card" {
@@ -500,7 +500,7 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	if strings.Contains(second, "第一首") || !strings.Contains(second, "第二首") || !strings.Contains(second, "本批 4 首 · 第 2 首") {
 		t.Fatalf("second song did not stay on the saved card: %s", second)
 	}
-	if got := buttonRowTexts(secondMarkup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "换一首" || got[1][1] != "更多切换" || got[1][2] != "取消" {
+	if got := buttonRowTexts(secondMarkup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "换一首" || got[1][1] != "更多设置" || got[1][2] != "取消" {
 		t.Fatalf("middle action rows = %#v", got)
 	}
 	last, lastMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 3)
@@ -555,7 +555,7 @@ func TestRediscoverCardKeepsTheOriginalFrameAndAddsCompactFacts(t *testing.T) {
 	if text != want {
 		t.Fatalf("card = %q, want %q", text, want)
 	}
-	if got := buttonRowTexts(markup); len(got) != 1 || len(got[0]) != 3 || got[0][0] != "换一首" || got[0][1] != "更多切换" || got[0][2] != "取消" {
+	if got := buttonRowTexts(markup); len(got) != 1 || len(got[0]) != 3 || got[0][0] != "换一首" || got[0][1] != "更多设置" || got[0][2] != "取消" {
 		t.Fatalf("button rows = %#v", got)
 	}
 }
@@ -788,7 +788,7 @@ func TestRediscoverPagerMovesAcrossTheSavedCard(t *testing.T) {
 	if !strings.Contains(text, "第二首") || !strings.Contains(text, "本批 3 首 · 第 2 首") {
 		t.Fatalf("middle card = %s", text)
 	}
-	if got := buttonRowTexts(markup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "换一首" || got[1][1] != "更多切换" || got[1][2] != "取消" {
+	if got := buttonRowTexts(markup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "换一首" || got[1][1] != "更多设置" || got[1][2] != "取消" {
 		t.Fatalf("middle action rows = %#v", got)
 	}
 }
@@ -1397,7 +1397,7 @@ func TestRediscoverCardMoreSwitchAndReturn(t *testing.T) {
 		return ctx
 	}
 	settings := click("rediscover_settings", "")
-	if !strings.Contains(settings.edited, "更多切换") || !strings.Contains(settings.edited, "当前为 QQ 音乐") {
+	if !strings.Contains(settings.edited, "更多设置") || !strings.Contains(settings.edited, "当前为 QQ 音乐") {
 		t.Fatalf("settings card = %q", settings.edited)
 	}
 	if settings.responses != 1 {
@@ -1530,7 +1530,7 @@ func TestRediscoverProgressFollowsTheDownload(t *testing.T) {
 func TestCompletedRecommendationOffersTheIngestedCard(t *testing.T) {
 	track := discovery.Track{Platform: "netease", ID: "1", Title: "执迷不悔", Artist: "谭咏麟", IngestID: "job123456789abc", CardAction: discovery.Completed}
 	_, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: []discovery.Track{track}, Requested: 1}, 0)
-	if got := buttonRowTexts(markup); len(got) != 2 || len(got[0]) != 1 || got[0][0] != "查看歌曲" || got[1][0] != "换一首" || got[1][1] != "更多切换" || got[1][2] != "取消" {
+	if got := buttonRowTexts(markup); len(got) != 2 || len(got[0]) != 1 || got[0][0] != "查看歌曲" || got[1][0] != "换一首" || got[1][1] != "更多设置" || got[1][2] != "取消" {
 		t.Fatalf("completed rediscover rows = %#v", got)
 	}
 	if markup.InlineKeyboard[0][0].Data != "view|job123456789abc" {

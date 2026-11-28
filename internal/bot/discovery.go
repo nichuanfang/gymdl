@@ -269,7 +269,7 @@ func rediscoverResultRecoveryMarkup(platform string, limit int, autoPlatform boo
 	markup.Inline(
 		markup.Row(
 			next,
-			markup.Data("更多切换", discoveryCallbackUnique, "source", "menu"),
+			markup.Data("更多设置", discoveryCallbackUnique, "source", "menu"),
 		),
 		markup.Row(markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
 	)
@@ -536,7 +536,7 @@ func discoverySongButtons(markup *tb.ReplyMarkup, card discovery.Card, page int)
 		next = markup.Data("换一首", discoveryCallbackUnique, "find_auto", strconv.Itoa(rediscoverCardRequested(card)), card.Token)
 	}
 	appendDiscoveryRows(markup, markup.Row(next,
-		markup.Data("更多切换", discoveryCallbackUnique, "rediscover_settings", card.Token),
+		markup.Data("更多设置", discoveryCallbackUnique, "rediscover_settings", card.Token),
 		markup.Data("取消", discoveryCallbackUnique, "cancel", card.Token),
 	))
 }
@@ -555,7 +555,7 @@ func (app *BotApp) showRediscoverSettings(c tb.Context, token string) error {
 		return err
 	}
 	text, _ := app.renderDiscoveryCard(card, card.Page)
-	text += "\n\n<b>更多切换</b>\n选择遗珠来源。当前为 " + utils.EscapeHTML(aichat.PlatformLabel(rediscoverCardPlatform(card.Tracks)))
+	text += "\n\n<b>更多设置</b>\n选择遗珠来源。当前为 " + utils.EscapeHTML(aichat.PlatformLabel(rediscoverCardPlatform(card.Tracks)))
 	return app.editDiscoveryCard(c, card, card.Page, text, rediscoverSettingsMarkup(card), true)
 }
 
