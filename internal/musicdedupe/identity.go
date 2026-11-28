@@ -16,6 +16,13 @@ var appleSongID = regexp.MustCompile(`/song/[^/]+/([0-9]+)(?:$|/)`)
 
 func IdentityFromLink(kind processor.LinkType, rawURL string) Track {
 	track := Track{Platform: string(kind)}
+	if kind == processor.LinkQQMusic {
+		if id, ok := music.QQMusicTrackID(rawURL); ok {
+			track.PlatformTrackID = id
+			track.SourceURL = rawURL
+		}
+		return track
+	}
 	if !IsSingleTrackLink(kind, rawURL) {
 		return track
 	}
@@ -26,10 +33,6 @@ func IdentityFromLink(kind processor.LinkType, rawURL string) Track {
 		linkType, id := utils.ParseMusicID(rawURL)
 		if linkType == 1 && id > 0 {
 			track.PlatformTrackID = strconv.Itoa(id)
-		}
-	case processor.LinkQQMusic:
-		if id, ok := music.QQMusicTrackID(rawURL); ok {
-			track.PlatformTrackID = id
 		}
 	case processor.LinkYoutubeMusic:
 		if parsed, err := url.Parse(rawURL); err == nil {

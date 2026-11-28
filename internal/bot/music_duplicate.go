@@ -42,8 +42,20 @@ func (app *BotApp) handleMusicWithDuplicateCheck(session *dispatch.Session, p mu
 		}
 		return errMusicDedupeUnavailable
 	}
+	originalLink := session.Link
+	if qq, ok := p.(*music.QQMusicProcessor); ok {
+		resolved, err := qq.ResolveShareURL(originalLink)
+		if err != nil {
+			if _, editErr := session.Bot.Edit(session.Msg, err.Error(), tb.ModeHTML); editErr != nil {
+				return editErr
+			}
+			return err
+		}
+		session.Link = resolved
+	}
 	track := musicdedupe.IdentityFromLink(p.Name(), session.Link)
-	if musicdedupe.IsSingleTrackLink(p.Name(), session.Link) {
+	if track.SourceURL != "" {
+		track.SourceURL = originalLink
 		metadata, err := resolveMusicMetadata(session.Cfg, p.Name(), session.Link)
 		if err == nil && metadata != nil {
 			track.MetadataResolved = true

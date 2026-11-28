@@ -455,7 +455,7 @@ func (app *BotApp) HandleAICandidateCallback(c tb.Context) error {
 		}
 		_ = c.Respond(&tb.CallbackResponse{Text: "开始下载…"})
 		err := app.startAIDownload(c, candidate)
-		if errors.Is(err, errDuplicateConfirmationPending) ||
+		if music.IsQQShareLinkError(err) || errors.Is(err, errDuplicateConfirmationPending) ||
 			errors.Is(err, errMusicDownloadAlreadyProcessing) ||
 			errors.Is(err, errMusicDedupeUnavailable) ||
 			errors.Is(err, errCandidateNotDownloadable) ||

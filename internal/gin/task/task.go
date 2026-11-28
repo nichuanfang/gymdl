@@ -155,6 +155,11 @@ func (tm *TaskManager) SubmitTask(rawURL string) (*Task, error) {
 }
 
 func (tm *TaskManager) SubmitTaskWithOptions(rawURL string, keepSimilar bool) (*Task, error) {
+	return tm.SubmitTaskWithResolvedURL(rawURL, "", keepSimilar)
+}
+
+// SubmitTaskWithResolvedURL reuses a QQ share link resolved during Web preflight.
+func (tm *TaskManager) SubmitTaskWithResolvedURL(rawURL, resolvedURL string, keepSimilar bool) (*Task, error) {
 	if tm.historyErr != nil {
 		return nil, fmt.Errorf("下载历史数据库不可用: %v", tm.historyErr)
 	}
@@ -179,14 +184,18 @@ func (tm *TaskManager) SubmitTaskWithOptions(rawURL string, keepSimilar bool) (*
 	}
 	tm.tasks[task.ID] = task
 	tm.order = append(tm.order, task.ID)
+	snapshot := *task
 	tm.mu.Unlock()
 
-	go tm.runTask(task, executor, cfg)
-	return task, nil
+	if resolvedURL == "" || executor.Name() != processor.LinkQQMusic {
+		resolvedURL = link
+	}
+	go tm.runTask(task, executor, cfg, resolvedURL)
+	return &snapshot, nil
 }
 
 // runTask 执行下载任务
-func (tm *TaskManager) runTask(task *Task, executor processor.Processor, cfg *config.Config) {
+func (tm *TaskManager) runTask(task *Task, executor processor.Processor, cfg *config.Config, link string) {
 	// 获取并发槽位
 	tm.sem <- struct{}{}
 	defer func() { <-tm.sem }()
@@ -201,7 +210,7 @@ func (tm *TaskManager) runTask(task *Task, executor processor.Processor, cfg *co
 	switch expr := executor.(type) {
 	case music.Processor:
 		expr.Init(cfg)
-		tm.execMusicTask(task, expr)
+		tm.execMusicTask(task, expr, link)
 	case video.Processor:
 		expr.Init(cfg)
 		tm.execVideoTask(task, expr)
@@ -214,10 +223,18 @@ func (tm *TaskManager) runTask(task *Task, executor processor.Processor, cfg *co
 }
 
 // execMusicTask 执行音乐下载任务
-func (tm *TaskManager) execMusicTask(task *Task, p music.Processor) {
+func (tm *TaskManager) execMusicTask(task *Task, p music.Processor, link string) {
 	tm.updateTask(task.ID, func(t *Task) { t.Status = TaskStatusRunning })
 
-	_, err := music.RunWorkflowWithHooks(context.Background(), p, task.URL, func(progress string) {
+	if qq, ok := p.(*music.QQMusicProcessor); ok {
+		var err error
+		link, err = qq.ResolveShareURL(link)
+		if err != nil {
+			tm.finishMusicTask(task.ID, p, err)
+			return
+		}
+	}
+	_, err := music.RunWorkflowWithHooks(context.Background(), p, link, func(progress string) {
 		tm.updateTask(task.ID, func(t *Task) { t.Progress = progress })
 	}, music.WorkflowHooks{BeforeStore: func() error {
 		return reviewProcessorAudio(p, task.KeepSimilar)
@@ -291,7 +308,7 @@ func (tm *TaskManager) updateTask(id string, fn func(*Task)) {
 
 	tm.notifySubscribers(&snapshot)
 
-	if t.Status == TaskStatusCompleted || t.Status == TaskStatusFailed || t.Status == TaskStatusCancelled {
+	if snapshot.Status == TaskStatusCompleted || snapshot.Status == TaskStatusFailed || snapshot.Status == TaskStatusCancelled {
 		tm.moveToHistory(id)
 	}
 }

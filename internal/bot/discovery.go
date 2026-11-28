@@ -230,26 +230,46 @@ func (app *BotApp) RediscoverCommand(c tb.Context) error {
 	if err := app.discoveryAvailable(c); err != nil {
 		return c.Send(err.Error())
 	}
-	text, markup := discoveryPlatformMenu()
-	return c.Send(text, markup)
+	platform := rediscoverAutoPlatform()
+	return app.startRediscover(c, platform, []string{"source", platform, "1"}, true)
+}
+
+var rediscoverPlatformPicker = func() string {
+	if time.Now().UnixNano()&1 == 0 {
+		return "netease"
+	}
+	return "qq"
+}
+
+func rediscoverAutoPlatform() string {
+	platform := rediscoverPlatformPicker()
+	if platform != "netease" && platform != "qq" {
+		return "netease"
+	}
+	return platform
 }
 
 func discoveryPlatformMenu() (string, *tb.ReplyMarkup) {
 	markup := &tb.ReplyMarkup{}
 	appendDiscoveryRows(markup,
 		markup.Row(markup.Data("网易云", discoveryCallbackUnique, "source", "netease"), markup.Data("QQ 音乐", discoveryCallbackUnique, "source", "qq")),
+		markup.Row(markup.Data("随机选择 QQ / 网易云", discoveryCallbackUnique, "find_auto", "1")),
 		markup.Row(markup.Data("YouTube", discoveryCallbackUnique, "source", "youtube")),
 		markup.Row(markup.Data("取消", discoveryCallbackUnique, "cancel", "menu"), markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
 	)
 	return "🎵 找回遗珠", markup
 }
 
-func rediscoverResultRecoveryMarkup(platform string, limit int) *tb.ReplyMarkup {
+func rediscoverResultRecoveryMarkup(platform string, limit int, autoPlatform bool) *tb.ReplyMarkup {
 	markup := &tb.ReplyMarkup{}
+	next := markup.Data("换一首", discoveryCallbackUnique, "find", platform, strconv.Itoa(limit))
+	if autoPlatform {
+		next = markup.Data("换一首", discoveryCallbackUnique, "find_auto", strconv.Itoa(limit))
+	}
 	markup.Inline(
 		markup.Row(
-			markup.Data("再来一首", discoveryCallbackUnique, "find_menu", platform, strconv.Itoa(limit)),
-			markup.Data("换平台", discoveryCallbackUnique, "source", "menu"),
+			next,
+			markup.Data("更多切换", discoveryCallbackUnique, "source", "menu"),
 		),
 		markup.Row(markup.Data("收藏同步", discoveryCallbackUnique, "favorites", "menu")),
 	)
@@ -275,7 +295,7 @@ func (app *BotApp) goDiscovery(fn func()) {
 	}()
 }
 
-func (app *BotApp) startRediscover(c tb.Context, platform string, args []string) error {
+func (app *BotApp) startRediscover(c tb.Context, platform string, args []string, autoPlatform bool) error {
 	if (len(args) != 3 && len(args) != 4) || !validRediscoverPlatform(platform) {
 		return c.Respond(&tb.CallbackResponse{Text: "平台不对，重选一下吧", ShowAlert: true})
 	}
@@ -286,9 +306,11 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 	if !app.rediscoverCommandMu.TryLock() {
 		return c.Respond(&tb.CallbackResponse{Text: "上一首还在找，稍等一下", ShowAlert: true})
 	}
-	if err = c.Respond(&tb.CallbackResponse{Text: "正在查找…"}); err != nil {
-		app.rediscoverCommandMu.Unlock()
-		return err
+	if c.Callback() != nil {
+		if err = c.Respond(&tb.CallbackResponse{Text: "正在查找…"}); err != nil {
+			app.rediscoverCommandMu.Unlock()
+			return err
+		}
 	}
 	utils.InfoWithFormat("[Discovery] 找回遗珠开始 平台=%s", aichat.PlatformLabel(platform))
 	if c.Message() == nil || c.Sender() == nil || c.Chat() == nil {
@@ -298,8 +320,19 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 	progress := fmt.Sprintf("⌛ 正在从%s帮你找歌…", aichat.PlatformLabel(platform))
 	user, chat := c.Sender().ID, c.Chat().ID
 	api, message := contextBot(c), c.Message()
-	sameMessage := true
-	if len(args) == 4 {
+	sameMessage := c.Callback() != nil
+	if c.Callback() == nil {
+		if api == nil {
+			app.rediscoverCommandMu.Unlock()
+			return c.Send("暂时无法发送查找进度，请重试。")
+		}
+		message, err = api.Send(c.Chat(), progress)
+		if err != nil {
+			app.rediscoverCommandMu.Unlock()
+			return err
+		}
+		sameMessage = true
+	} else if len(args) == 4 {
 		app.rediscoverMu.Lock()
 		previous, loadErr := app.discovery.Store.Card(context.Background(), args[3], user, chat)
 		if loadErr != nil || previous.Kind != "recommend" || (previous.MessageID != 0 && previous.MessageID != message.ID) {
@@ -352,7 +385,7 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 		batch, findErr := app.discovery.RediscoverBuffered(ctx, user, platform, limit)
 		if findErr != nil {
 			utils.WarnWithFormat("[Discovery] 找回遗珠失败 平台=%s 耗时=%s: %s", aichat.PlatformLabel(platform), time.Since(started).Round(time.Millisecond), discoveryPublicError(findErr))
-			_ = edit("这次没找成："+utils.EscapeHTML(discoveryPublicError(findErr))+"\n可以再试一次，或者换个平台。", rediscoverResultRecoveryMarkup(platform, limit), "")
+			_ = edit("这次没找成："+utils.EscapeHTML(discoveryPublicError(findErr))+"\n可以再试一次，或者换个平台。", rediscoverResultRecoveryMarkup(platform, limit, autoPlatform), "")
 			return
 		}
 		if len(batch.Tracks) == 0 {
@@ -360,7 +393,7 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 				aichat.PlatformLabel(platform), batch.SkippedOwned, batch.SkippedPending+batch.SkippedQueued, batch.SkippedShown,
 				batch.SkippedDismissed+batch.SkippedOther, batch.Unconfirmed+batch.Unavailable, batch.Unavailable,
 				time.Since(started).Round(time.Millisecond))
-			_ = edit(utils.EscapeHTML(rediscoverEmptyCopy(platform, batch)), rediscoverResultRecoveryMarkup(platform, limit), "")
+			_ = edit(utils.EscapeHTML(rediscoverEmptyCopy(platform, batch)), rediscoverResultRecoveryMarkup(platform, limit, autoPlatform), "")
 			return
 		}
 		card, saveErr := app.discovery.Store.SaveCard(ctx, discovery.Card{
@@ -370,10 +403,11 @@ func (app *BotApp) startRediscover(c tb.Context, platform string, args []string)
 			SkippedDismissed: batch.SkippedDismissed, SkippedQueued: batch.SkippedQueued,
 			SkippedArtistCap: batch.SkippedArtistCap, SkippedDuplicate: batch.SkippedDuplicate,
 			SkippedOther: batch.SkippedOther, Unavailable: batch.Unavailable, Requested: limit,
+			AutoPlatform: autoPlatform,
 			LibraryStale: batch.LibraryStale, LibrarySnapshotAt: batch.LibrarySnapshotUnix(),
 		})
 		if saveErr != nil {
-			_ = edit("结果没保存好，再试一次吧。", rediscoverResultRecoveryMarkup(platform, limit), "")
+			_ = edit("结果没保存好，再试一次吧。", rediscoverResultRecoveryMarkup(platform, limit, autoPlatform), "")
 			return
 		}
 		text, markup := app.renderDiscoveryCard(card, 0)
@@ -497,12 +531,63 @@ func discoverySongButtons(markup *tb.ReplyMarkup, card discovery.Card, page int)
 		appendTasteActions(markup, card)
 		return
 	}
-	rediscoverActionRow := tb.Row{}
-	if platform := rediscoverCardPlatform(card.Tracks); validRediscoverPlatform(platform) {
-		rediscoverActionRow = append(rediscoverActionRow, markup.Data("重新拾遗", discoveryCallbackUnique, "find", platform, strconv.Itoa(rediscoverCardRequested(card)), card.Token))
+	next := markup.Data("换一首", discoveryCallbackUnique, "find", track.Platform, strconv.Itoa(rediscoverCardRequested(card)), card.Token)
+	if card.AutoPlatform {
+		next = markup.Data("换一首", discoveryCallbackUnique, "find_auto", strconv.Itoa(rediscoverCardRequested(card)), card.Token)
 	}
-	rediscoverActionRow = append(rediscoverActionRow, markup.Data("取消", discoveryCallbackUnique, "cancel", card.Token))
-	appendDiscoveryRows(markup, rediscoverActionRow)
+	appendDiscoveryRows(markup, markup.Row(next,
+		markup.Data("更多切换", discoveryCallbackUnique, "rediscover_settings", card.Token),
+		markup.Data("取消", discoveryCallbackUnique, "cancel", card.Token),
+	))
+}
+
+func (app *BotApp) showRediscoverSettings(c tb.Context, token string) error {
+	if c.Sender() == nil || c.Chat() == nil || c.Message() == nil {
+		return c.Respond(&tb.CallbackResponse{Text: "这张卡片已过期", ShowAlert: true})
+	}
+	app.rediscoverMu.Lock()
+	defer app.rediscoverMu.Unlock()
+	card, err := app.discovery.Store.Card(context.Background(), token, c.Sender().ID, c.Chat().ID)
+	if err != nil || card.Kind != "recommend" || (card.MessageID != 0 && card.MessageID != c.Message().ID) {
+		return c.Respond(&tb.CallbackResponse{Text: "这张卡片已过期", ShowAlert: true})
+	}
+	if err := c.Respond(); err != nil {
+		return err
+	}
+	text, _ := app.renderDiscoveryCard(card, card.Page)
+	text += "\n\n<b>更多切换</b>\n选择遗珠来源。当前为 " + utils.EscapeHTML(aichat.PlatformLabel(rediscoverCardPlatform(card.Tracks)))
+	return app.editDiscoveryCard(c, card, card.Page, text, rediscoverSettingsMarkup(card), true)
+}
+
+func rediscoverSettingsMarkup(card discovery.Card) *tb.ReplyMarkup {
+	markup := &tb.ReplyMarkup{}
+	markup.Inline(
+		markup.Row(
+			markup.Data("网易云", discoveryCallbackUnique, "rediscover_platform", card.Token, "netease"),
+			markup.Data("QQ 音乐", discoveryCallbackUnique, "rediscover_platform", card.Token, "qq"),
+		),
+		markup.Row(markup.Data("YouTube", discoveryCallbackUnique, "rediscover_platform", card.Token, "youtube")),
+		markup.Row(markup.Data("随机选择 QQ / 网易云", discoveryCallbackUnique, "find_auto", "1", card.Token)),
+		markup.Row(markup.Data("返回歌曲卡片", discoveryCallbackUnique, "rediscover_back", card.Token)),
+	)
+	return markup
+}
+
+func (app *BotApp) showRediscoverCard(c tb.Context, token string) error {
+	if c.Sender() == nil || c.Chat() == nil || c.Message() == nil {
+		return c.Respond(&tb.CallbackResponse{Text: "这张卡片已过期", ShowAlert: true})
+	}
+	app.rediscoverMu.Lock()
+	defer app.rediscoverMu.Unlock()
+	card, err := app.discovery.Store.Card(context.Background(), token, c.Sender().ID, c.Chat().ID)
+	if err != nil || card.Kind != "recommend" || (card.MessageID != 0 && card.MessageID != c.Message().ID) {
+		return c.Respond(&tb.CallbackResponse{Text: "这张卡片已过期", ShowAlert: true})
+	}
+	if err := c.Respond(); err != nil {
+		return err
+	}
+	text, markup := app.renderDiscoveryCard(card, card.Page)
+	return app.editDiscoveryCard(c, card, card.Page, text, markup, true)
 }
 
 func rediscoverCardRequested(card discovery.Card) int {
@@ -1475,9 +1560,28 @@ func (app *BotApp) HandleDiscoveryCallback(c tb.Context) error {
 		if !validRediscoverPlatform(key) {
 			return c.Respond(&tb.CallbackResponse{Text: "平台无效", ShowAlert: true})
 		}
-		return app.startRediscover(c, key, []string{"source", key, "1"})
+		return app.startRediscover(c, key, []string{"source", key, "1"}, false)
 	case "find", "find_menu":
-		return app.startRediscover(c, key, args)
+		return app.startRediscover(c, key, args, false)
+	case "find_auto":
+		if len(args) != 2 && len(args) != 3 {
+			return c.Respond(&tb.CallbackResponse{Text: "按钮参数无效", ShowAlert: true})
+		}
+		platform := rediscoverAutoPlatform()
+		findArgs := []string{"find", platform, args[1]}
+		if len(args) == 3 {
+			findArgs = append(findArgs, args[2])
+		}
+		return app.startRediscover(c, platform, findArgs, true)
+	case "rediscover_settings":
+		return app.showRediscoverSettings(c, key)
+	case "rediscover_back":
+		return app.showRediscoverCard(c, key)
+	case "rediscover_platform":
+		if len(args) != 3 || !validRediscoverPlatform(args[2]) {
+			return c.Respond(&tb.CallbackResponse{Text: "平台无效", ShowAlert: true})
+		}
+		return app.startRediscover(c, args[2], []string{"find", args[2], "1", key}, false)
 	case "cancel":
 		if key != "menu" && key != "card" {
 			app.rediscoverMu.Lock()

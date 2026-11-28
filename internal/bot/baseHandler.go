@@ -54,7 +54,7 @@ func (app *BotApp) HandleText(c tb.Context) error {
 	if err != nil {
 		return err
 	}
-	utils.InfoWithFormat("[Telegram] 解析成功: %s", link)
+	utils.InfoWithFormat("[Telegram] 已识别链接 平台=%s", executor.Name())
 
 	// 创建会话对象
 	session := &dispatch.Session{
@@ -82,7 +82,8 @@ func (app *BotApp) HandleText(c tb.Context) error {
 		err = errors.New(fmt.Sprintf("未知处理器类型: %v", expr))
 	}
 	if err != nil {
-		if errors.Is(err, errMusicDownloadAlreadyProcessing) || errors.Is(err, errDuplicateConfirmationPending) || errors.Is(err, errMusicDedupeUnavailable) {
+		if music.IsQQShareLinkError(err) || errors.Is(err, errMusicDownloadAlreadyProcessing) ||
+			errors.Is(err, errDuplicateConfirmationPending) || errors.Is(err, errMusicDedupeUnavailable) {
 			return nil // handleMusicWithDuplicateCheck already edited the status message
 		}
 		errMsg := fmt.Sprintf(

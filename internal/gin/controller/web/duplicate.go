@@ -40,11 +40,13 @@ type duplicateTrackInfo struct {
 }
 
 type duplicateCheckResult struct {
-	Status    string              `json:"status"` // duplicate, clear, unknown, not_applicable
-	Reason    string              `json:"reason,omitempty"`
-	Target    *duplicateTrackInfo `json:"target,omitempty"`
-	Match     *duplicateMatch     `json:"match,omitempty"`
-	CheckedAt time.Time           `json:"checked_at"`
+	Status      string              `json:"status"` // duplicate, clear, unknown, not_applicable
+	Reason      string              `json:"reason,omitempty"`
+	Target      *duplicateTrackInfo `json:"target,omitempty"`
+	Match       *duplicateMatch     `json:"match,omitempty"`
+	CheckedAt   time.Time           `json:"checked_at"`
+	resolvedURL string
+	linkError   error
 }
 
 var duplicatePreflight = checkDuplicateCandidate
@@ -73,6 +75,18 @@ func checkDuplicateCandidate(cfg *config.Config, rawURL string) duplicateCheckRe
 		result.Status = "not_applicable"
 		result.Reason = "无法识别为单曲链接"
 		return result
+	}
+	if qq, ok := executor.(*music.QQMusicProcessor); ok {
+		if cfg.QQMusicApiConfig != nil {
+			qq.Init(cfg)
+		}
+		var err error
+		link, err = qq.ResolveShareURL(link)
+		if err != nil {
+			result.linkError = err
+			return result
+		}
+		result.resolvedURL = link
 	}
 	if !isSingleDownloadLink(executor.Name(), link) {
 		result.Status = "not_applicable"

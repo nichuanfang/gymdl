@@ -15,6 +15,7 @@ import (
 	"github.com/nichuanfang/gymdl/internal/gin/controller/web"
 	"github.com/nichuanfang/gymdl/internal/musicdedupe"
 	"github.com/nichuanfang/gymdl/processor"
+	"github.com/nichuanfang/gymdl/processor/music"
 	"github.com/nichuanfang/gymdl/utils"
 	tb "gopkg.in/telebot.v4"
 )
@@ -174,7 +175,7 @@ func (app *BotApp) downloadOtherMusicSource(c tb.Context, action pendingMusicAct
 	}
 	taskConfig.AdditionalConfig.MusicMode = true
 	err := app.downloadMusicCandidate(c, aichat.Candidate{Name: action.title, URL: action.choice}, taskConfig)
-	if errors.Is(err, errDuplicateConfirmationPending) || errors.Is(err, errMusicDownloadAlreadyProcessing) ||
+	if music.IsQQShareLinkError(err) || errors.Is(err, errDuplicateConfirmationPending) || errors.Is(err, errMusicDownloadAlreadyProcessing) ||
 		errors.Is(err, errMusicDedupeUnavailable) || errors.Is(err, errCandidateNotDownloadable) || errors.Is(err, errCandidateDownloadFailed) {
 		return nil // The download card already shows the outcome.
 	}

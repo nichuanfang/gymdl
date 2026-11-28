@@ -164,14 +164,6 @@ type QQRefreshResponse struct {
 	Timestamp int64        `json:"timestamp"`
 }
 
-// ⚙️ QQ 音乐常见短链/跳转域名（后缀匹配）
-var redirectHostSuffixes = []string{
-	"y.qq.com",
-	"c.y.qq.com",
-	"c6.y.qq.com",
-	"music.qq.com",
-}
-
 // Init 初始化（只使用自建 API）
 func (qm *QQMusicProcessor) Init(cfg *config.Config) {
 	qm.cfg = cfg
@@ -194,8 +186,7 @@ func (qm *QQMusicProcessor) Init(cfg *config.Config) {
 		if err == nil {
 			tr.Proxy = http.ProxyURL(proxyURL)
 		} else {
-			// 打印错误日志，但不中断程序，可选择回退到直连
-			fmt.Printf("警告: 代理地址 [%s] 解析失败: %v，将使用直连模式\n", cfg.QQMusicApiConfig.ProxyUrl, err)
+			utils.WarnWithFormat("[QQMusic] 代理地址格式无效，将使用直连模式")
 		}
 	}
 	redirectFunc := func(req *http.Request, via []*http.Request) error {
@@ -866,130 +857,6 @@ func (qmApi *QQMusicAPI) refreshMusicKeyHeaders(cfg *config.Config, data *Musick
 
 /* ------------------------ 拓展方法 ------------------------ */
 
-// parseQQMusicLink 解析 QQ 音乐分享链接，自动识别跳转并返回最终 ID
-func (qm *QQMusicProcessor) parseQQMusicLink(raw string) (QQMusicLink, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return QQMusicLink{}, err
-	}
-
-	hostname := u.Hostname()
-	needRedirect := false
-	for _, suffix := range redirectHostSuffixes {
-		if strings.HasSuffix(hostname, suffix) {
-			needRedirect = true
-			break
-		}
-	}
-
-	// 1️⃣ 优先尝试直接解析
-	result := qm.tryParseDirect(raw)
-	if result.id != "" {
-		return result, nil
-	}
-
-	// 2️⃣ 需要跳转的域名 → 获取最终 URL 再解析
-	if needRedirect {
-		finalURL, err := qm.getFinalURL(raw)
-		if err != nil {
-			return QQMusicLink{}, fmt.Errorf("重定向失败: %w", err)
-		}
-		return qm.tryParseDirect(finalURL), nil
-	}
-
-	// 3️⃣ 兜底：再试一次最终 URL
-	finalURL, err := qm.getFinalURL(raw)
-	if err != nil {
-		return QQMusicLink{}, err
-	}
-	return qm.tryParseDirect(finalURL), nil
-}
-
-// getFinalURL 返回最终重定向后的真实 URL。
-func (qm *QQMusicProcessor) getFinalURL(raw string) (string, error) {
-	start := time.Now()
-
-	utils.DebugWithFormat("[QQMusic] 🔗 检查重定向: %s", raw)
-
-	req, err := http.NewRequest(http.MethodGet, raw, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("User-Agent", UserAgent)
-	req.Header.Set("Referer", "https://y.qq.com/")
-	req.Header.Set("Connection", "close")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
-	req.Header.Set("Cookie", "")
-
-	// Link-identification helpers may use a zero-value QQMusicProcessor, so
-	// qm.client can be nil. Use a bounded fallback client in that case.
-	client := qm.client
-	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.Request == nil || resp.Request.URL == nil {
-		return "", errors.New("无法解析最终 URL")
-	}
-
-	finalURL := resp.Request.URL.String()
-	utils.DebugWithFormat("[QQMusic] ✅ 最终URL: %s (耗时 %v)", finalURL, time.Since(start).Truncate(time.Millisecond))
-	return finalURL, nil
-}
-
-// tryParseDirect 直接解析
-func (qm *QQMusicProcessor) tryParseDirect(raw string) QQMusicLink {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return QQMusicLink{}
-	}
-
-	q := u.Query()
-	path := u.Path
-
-	var result QQMusicLink
-
-	switch {
-	case strings.Contains(path, "/playlist/") || q.Has("id"):
-		result.isSong = false
-		result.id = getFirstNonEmpty(q.Get("id"), lastPathSegment(path))
-	case strings.Contains(path, "/songDetail/") || q.Has("songid"):
-		result.isSong = true
-		result.id = getFirstNonEmpty(q.Get("songid"), lastPathSegment(path))
-	default:
-		if sid := q.Get("songid"); sid != "" {
-			result.isSong = true
-			result.id = sid
-		} else if pid := q.Get("id"); pid != "" {
-			result.isSong = false
-			result.id = pid
-		}
-	}
-
-	return result
-}
-
-func lastPathSegment(path string) string {
-	segs := strings.Split(strings.Trim(path, "/"), "/")
-	if len(segs) > 0 {
-		return segs[len(segs)-1]
-	}
-	return ""
-}
-
-func getFirstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
-}
-
 // 整理到本地
 func (qm *QQMusicProcessor) tidyToLocal(files []os.DirEntry) error {
 	dstDir := qm.cfg.Tidy.DistDir
@@ -1065,31 +932,6 @@ func (qm *QQMusicProcessor) safeCoverFileName(songName string, songArtists strin
 	return fmt.Sprintf("%s - %s.%s",
 		utils.SanitizeFileName(songArtists),
 		utils.SanitizeFileName(songName)+"_cover", "jpg")
-}
-
-// IsQQMusicSingleLink identifies a direct or redirected QQ single-song link.
-// Playlist links deliberately return false so bulk downloads are not prompted
-// once for every track.
-func IsQQMusicSingleLink(rawURL string) bool {
-	p := &QQMusicProcessor{}
-	if parsed := p.tryParseDirect(rawURL); parsed.id != "" {
-		return parsed.isSong
-	}
-	parsed, err := p.parseQQMusicLink(rawURL)
-	return err == nil && parsed.id != "" && parsed.isSong
-}
-
-// QQMusicTrackID returns the provider-owned id for a single-song URL.
-func QQMusicTrackID(rawURL string) (string, bool) {
-	p := &QQMusicProcessor{}
-	if parsed := p.tryParseDirect(rawURL); parsed.id != "" {
-		return parsed.id, parsed.isSong
-	}
-	parsed, err := p.parseQQMusicLink(rawURL)
-	if err != nil || parsed.id == "" || !parsed.isSong {
-		return "", false
-	}
-	return parsed.id, true
 }
 
 // ResolveQQSingleMetadata reuses the same song detail and target-quality

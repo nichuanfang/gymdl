@@ -487,24 +487,24 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 			t.Fatalf("old button still present: %s", unwanted)
 		}
 	}
-	if !labels["入库"] || !labels["不再推荐"] || !labels["重新拾遗"] || !labels["取消"] {
+	if !labels["入库"] || !labels["不再推荐"] || !labels["换一首"] || !labels["更多切换"] || !labels["取消"] {
 		t.Fatalf("missing song actions: %#v", labels)
 	}
-	if got := buttonRowTexts(markup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "重新拾遗" || got[1][1] != "取消" {
+	if got := buttonRowTexts(markup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "换一首" || got[1][1] != "更多切换" || got[1][2] != "取消" {
 		t.Fatalf("button rows = %#v", got)
 	}
-	if markup.InlineKeyboard[0][0].Data != "download|card|0" || markup.InlineKeyboard[1][0].Data != "find|netease|1|card" || markup.InlineKeyboard[1][1].Data != "cancel|card" {
-		t.Fatalf("callbacks = %s / %s / %s", markup.InlineKeyboard[0][0].Data, markup.InlineKeyboard[1][0].Data, markup.InlineKeyboard[1][1].Data)
+	if markup.InlineKeyboard[0][0].Data != "download|card|0" || markup.InlineKeyboard[1][0].Data != "find|netease|1|card" || markup.InlineKeyboard[1][1].Data != "rediscover_settings|card" || markup.InlineKeyboard[1][2].Data != "cancel|card" {
+		t.Fatalf("unexpected callbacks: %#v", markup.InlineKeyboard)
 	}
 	second, secondMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 1)
 	if strings.Contains(second, "第一首") || !strings.Contains(second, "第二首") || !strings.Contains(second, "本批 4 首 · 第 2 首") {
 		t.Fatalf("second song did not stay on the saved card: %s", second)
 	}
-	if got := buttonRowTexts(secondMarkup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "重新拾遗" || got[1][1] != "取消" {
+	if got := buttonRowTexts(secondMarkup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "换一首" || got[1][1] != "更多切换" || got[1][2] != "取消" {
 		t.Fatalf("middle action rows = %#v", got)
 	}
 	last, lastMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks}, 3)
-	if strings.Contains(last, "第一首") || !strings.Contains(last, "第四首") || !buttonTexts(lastMarkup)["重新拾遗"] || !buttonTexts(lastMarkup)["取消"] {
+	if strings.Contains(last, "第一首") || !strings.Contains(last, "第四首") || !buttonTexts(lastMarkup)["换一首"] || !buttonTexts(lastMarkup)["取消"] {
 		t.Fatalf("last song lost its action row: %s %#v", last, buttonTexts(lastMarkup))
 	}
 	skipped, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks, SkippedOwned: 4}, 0)
@@ -515,7 +515,7 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	if strings.Contains(short, "没找到确定的版本") || strings.Contains(short, "曲库已有") || strings.Contains(short, "这首怎么样") {
 		t.Fatalf("card should not explain skipped candidates: %s", short)
 	}
-	if buttonTexts(shortMarkup)["未处理的全部入库"] || buttonTexts(shortMarkup)["下一首"] || !buttonTexts(shortMarkup)["入库"] || !buttonTexts(shortMarkup)["重新拾遗"] {
+	if buttonTexts(shortMarkup)["未处理的全部入库"] || buttonTexts(shortMarkup)["下一首"] || !buttonTexts(shortMarkup)["入库"] || !buttonTexts(shortMarkup)["换一首"] {
 		t.Fatalf("single song action row = %#v", buttonTexts(shortMarkup))
 	}
 	full, _ := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: tracks[:3], Unconfirmed: 2, Requested: 3}, 0)
@@ -529,14 +529,14 @@ func TestDiscoveryCardShowsOneSongAtATime(t *testing.T) {
 	if !strings.Contains(actedText, "排队") || strings.Contains(actedText, "不再推荐") || strings.Contains(actedText, "第二首") {
 		t.Fatalf("the queued song was not alone: %s", actedText)
 	}
-	if buttonTexts(actedMarkup)["入库"] || buttonTexts(actedMarkup)["不再推荐"] || buttonTexts(actedMarkup)["这组入库"] || buttonTexts(actedMarkup)["未处理的全部入库"] || !buttonTexts(actedMarkup)["重新拾遗"] {
+	if buttonTexts(actedMarkup)["入库"] || buttonTexts(actedMarkup)["不再推荐"] || buttonTexts(actedMarkup)["这组入库"] || buttonTexts(actedMarkup)["未处理的全部入库"] || !buttonTexts(actedMarkup)["换一首"] {
 		t.Fatalf("finished song kept action buttons: %#v", buttonTexts(actedMarkup))
 	}
 	dismissedText, dismissedMarkup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: acted}, 1)
 	if !strings.Contains(dismissedText, "不再推荐") || !strings.Contains(dismissedText, "第二首") {
 		t.Fatalf("dismissed song lost its status: %s", dismissedText)
 	}
-	if buttonTexts(dismissedMarkup)["入库"] || buttonTexts(dismissedMarkup)["不再推荐"] || !buttonTexts(dismissedMarkup)["重新拾遗"] || !buttonTexts(dismissedMarkup)["取消"] {
+	if buttonTexts(dismissedMarkup)["入库"] || buttonTexts(dismissedMarkup)["不再推荐"] || !buttonTexts(dismissedMarkup)["换一首"] || !buttonTexts(dismissedMarkup)["取消"] {
 		t.Fatalf("dismissed song lost cancel/redraw: %#v", buttonTexts(dismissedMarkup))
 	}
 	if shortMarkup == nil {
@@ -555,7 +555,7 @@ func TestRediscoverCardKeepsTheOriginalFrameAndAddsCompactFacts(t *testing.T) {
 	if text != want {
 		t.Fatalf("card = %q, want %q", text, want)
 	}
-	if got := buttonRowTexts(markup); len(got) != 1 || len(got[0]) != 2 || got[0][0] != "重新拾遗" || got[0][1] != "取消" {
+	if got := buttonRowTexts(markup); len(got) != 1 || len(got[0]) != 3 || got[0][0] != "换一首" || got[0][1] != "更多切换" || got[0][2] != "取消" {
 		t.Fatalf("button rows = %#v", got)
 	}
 }
@@ -788,7 +788,7 @@ func TestRediscoverPagerMovesAcrossTheSavedCard(t *testing.T) {
 	if !strings.Contains(text, "第二首") || !strings.Contains(text, "本批 3 首 · 第 2 首") {
 		t.Fatalf("middle card = %s", text)
 	}
-	if got := buttonRowTexts(markup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "重新拾遗" || got[1][1] != "取消" {
+	if got := buttonRowTexts(markup); len(got) != 2 || got[0][0] != "入库" || got[0][1] != "不再推荐" || got[1][0] != "换一首" || got[1][1] != "更多切换" || got[1][2] != "取消" {
 		t.Fatalf("middle action rows = %#v", got)
 	}
 }
@@ -1313,6 +1313,11 @@ func TestRediscoverMenuAsksOnlyForPlatform(t *testing.T) {
 		t.Fatalf("platform menu = %q", text)
 	}
 	labels := buttonTexts(markup)
+	for _, required := range []string{"随机选择 QQ / 网易云", "网易云", "QQ 音乐", "YouTube"} {
+		if !labels[required] {
+			t.Fatalf("missing platform option %q: %#v", required, labels)
+		}
+	}
 	for _, unwanted := range []string{"3 首", "6 首", "9 首"} {
 		if labels[unwanted] {
 			t.Fatalf("count selector still present: %s", unwanted)
@@ -1335,6 +1340,72 @@ func TestRediscoverMenuAsksOnlyForPlatform(t *testing.T) {
 				t.Fatalf("button does not fit Telegram: %s", raw)
 			}
 		}
+	}
+}
+
+func TestRediscoverStartsWithOneRandomCatalog(t *testing.T) {
+	original := rediscoverPlatformPicker
+	t.Cleanup(func() { rediscoverPlatformPicker = original })
+	for _, want := range []string{"netease", "qq"} {
+		rediscoverPlatformPicker = func() string { return want }
+		if got := rediscoverAutoPlatform(); got != want {
+			t.Fatalf("random platform = %q, want %q", got, want)
+		}
+		card := discovery.Card{
+			Token: "card", AutoPlatform: true, Requested: 1,
+			Tracks: []discovery.Track{{Platform: want, Title: "遗珠", Artist: "歌手"}},
+		}
+		_, markup := discoveryRecommendationCard(card, 0)
+		if got := buttonRowTexts(markup)[1][0]; got != "换一首" {
+			t.Fatalf("random card action = %q", got)
+		}
+		if got := markup.InlineKeyboard[1][0].Data; got != "find_auto|1|card" {
+			t.Fatalf("random card callback = %q", got)
+		}
+	}
+}
+
+func TestRediscoverCardMoreSwitchAndReturn(t *testing.T) {
+	store, err := discovery.Open(filepath.Join(t.TempDir(), "bot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	card, err := store.SaveCard(context.Background(), discovery.Card{
+		User: 1, Chat: 1, Kind: "recommend", AutoPlatform: true, Requested: 1,
+		MessageID: 42,
+		Tracks:    []discovery.Track{{Platform: "qq", ID: "1", Title: "遗珠", Artist: "歌手"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &BotApp{
+		cfg:       &config.Config{Telegram: &config.TelegramConfig{AllowedUsers: []string{"1"}}},
+		discovery: &discovery.Service{Store: store},
+	}
+	click := func(action, extra string) *discoveryCallbackContext {
+		ctx := &discoveryCallbackContext{
+			args:     []string{action, card.Token, extra},
+			sender:   &tb.User{ID: 1},
+			chat:     &tb.Chat{ID: 1, Type: tb.ChatPrivate},
+			callback: &tb.Callback{ID: "cb", Message: &tb.Message{ID: 42}},
+			message:  &tb.Message{ID: 42, Chat: &tb.Chat{ID: 1, Type: tb.ChatPrivate}},
+		}
+		if err := app.HandleDiscoveryCallback(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return ctx
+	}
+	settings := click("rediscover_settings", "")
+	if !strings.Contains(settings.edited, "更多切换") || !strings.Contains(settings.edited, "当前为 QQ 音乐") {
+		t.Fatalf("settings card = %q", settings.edited)
+	}
+	if settings.responses != 1 {
+		t.Fatal("settings click returned no visible callback feedback")
+	}
+	returned := click("rediscover_back", "")
+	if !strings.Contains(returned.edited, "遗珠") {
+		t.Fatalf("returned card = %q", returned.edited)
 	}
 }
 
@@ -1459,7 +1530,7 @@ func TestRediscoverProgressFollowsTheDownload(t *testing.T) {
 func TestCompletedRecommendationOffersTheIngestedCard(t *testing.T) {
 	track := discovery.Track{Platform: "netease", ID: "1", Title: "执迷不悔", Artist: "谭咏麟", IngestID: "job123456789abc", CardAction: discovery.Completed}
 	_, markup := discoveryRecommendationCard(discovery.Card{Token: "card", Tracks: []discovery.Track{track}, Requested: 1}, 0)
-	if got := buttonRowTexts(markup); len(got) != 2 || len(got[0]) != 1 || got[0][0] != "查看歌曲" || got[1][0] != "重新拾遗" || got[1][1] != "取消" {
+	if got := buttonRowTexts(markup); len(got) != 2 || len(got[0]) != 1 || got[0][0] != "查看歌曲" || got[1][0] != "换一首" || got[1][1] != "更多切换" || got[1][2] != "取消" {
 		t.Fatalf("completed rediscover rows = %#v", got)
 	}
 	if markup.InlineKeyboard[0][0].Data != "view|job123456789abc" {

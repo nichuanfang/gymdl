@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nichuanfang/gymdl/internal/gin/response"
 	"github.com/nichuanfang/gymdl/internal/gin/task"
+	"github.com/nichuanfang/gymdl/processor/music"
 	"github.com/nichuanfang/gymdl/utils"
 )
 
@@ -42,9 +44,18 @@ func HandleSubmitTask(c *gin.Context) {
 		return
 	}
 
+	var resolvedURL string
 	if !req.ForceDownload {
 		checkStarted := time.Now()
 		check := duplicatePreflight(GetWebConfig(), req.URL)
+		if check.linkError != nil {
+			status := http.StatusUnprocessableEntity
+			if errors.Is(check.linkError, music.ErrQQShareUnavailable) {
+				status = http.StatusServiceUnavailable
+			}
+			response.Fail(c, status, check.linkError.Error())
+			return
+		}
 		if utils.Logger() != nil {
 			utils.InfoWithFormat("[WebDuplicate] preflight status=%s elapsed=%s reason=%s", check.Status, time.Since(checkStarted).Round(time.Millisecond), check.Reason)
 		}
@@ -59,9 +70,10 @@ func HandleSubmitTask(c *gin.Context) {
 			})
 			return
 		}
+		resolvedURL = check.resolvedURL
 	}
 
-	t, err := manager.SubmitTaskWithOptions(req.URL, req.ForceDownload)
+	t, err := manager.SubmitTaskWithResolvedURL(req.URL, resolvedURL, req.ForceDownload)
 	if err != nil {
 		response.Fail(c, http.StatusBadRequest, err.Error())
 		return

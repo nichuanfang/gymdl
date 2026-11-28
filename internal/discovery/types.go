@@ -147,6 +147,8 @@ type Card struct {
 	LibrarySnapshotAt int64 `json:"library_snapshot_at,omitempty"`
 	// Requested is the 3, 6, or 9 the user asked for.
 	Requested int `json:"requested,omitempty"`
+	// AutoPlatform keeps randomized rediscover cards randomized when drawing again.
+	AutoPlatform bool `json:"auto_platform,omitempty"`
 	// Page is the group currently shown on the Telegram message.
 	Page  int        `json:"page,omitempty"`
 	Taste *TasteCard `json:"taste,omitempty"`

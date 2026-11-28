@@ -429,3 +429,80 @@ func TestDuplicateSourceMetadataDoesNotCacheFailures(t *testing.T) {
 		t.Fatalf("failed lookups must not be cached; calls=%d", calls.Load())
 	}
 }
+
+func TestQQShareWebSubmitReportsResolutionFailure(t *testing.T) {
+	previousConfig := GetWebConfig()
+	t.Cleanup(func() { SetWebConfig(previousConfig) })
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		upstreamStatus, webStatus, requests int
+		message                             string
+	}{
+		{http.StatusServiceUnavailable, http.StatusServiceUnavailable, 2, "QQ 音乐分享链接暂时打不开"},
+		{http.StatusNotFound, http.StatusUnprocessableEntity, 1, "请从 QQ 音乐重新分享"},
+	} {
+		var requests atomic.Int32
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests.Add(1)
+			w.WriteHeader(tc.upstreamStatus)
+		}))
+		t.Cleanup(upstream.Close)
+		SetWebConfig(&config.Config{QQMusicApiConfig: &config.QQMusicApiConfig{ProxyUrl: upstream.URL}})
+
+		result := submitTaskRequest(t, `{"url":"http://c6.y.qq.com/base/fcgi-bin/u?__=private-share-token"}`)
+		body := result.Body.String()
+		if result.Code != tc.webStatus || !strings.Contains(body, tc.message) ||
+			strings.Contains(body, "private-share-token") || strings.Contains(body, "confirmation_required") {
+			t.Errorf("Web response = %d %s", result.Code, body)
+		}
+		if int(requests.Load()) != tc.requests {
+			t.Errorf("QQ requests = %d, want %d", requests.Load(), tc.requests)
+		}
+	}
+}
+
+func TestQQShareWebSubmitReusesPreflightLink(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousManager, previousConfig := manager, GetWebConfig()
+	t.Cleanup(func() {
+		manager = previousManager
+		SetWebConfig(previousConfig)
+	})
+
+	const short = "http://c6.y.qq.com/base/fcgi-bin/u?__=playlist-share"
+	var requests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Location", "https://y.qq.com/n/ryqq/playlist/123")
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := &config.Config{
+		AdditionalConfig: &config.AdditionalConfig{},
+		QQMusicApiConfig: &config.QQMusicApiConfig{ProxyUrl: upstream.URL},
+	}
+	SetWebConfig(cfg)
+	tm := webtask.NewTaskManagerWithDBPath(cfg, filepath.Join(t.TempDir(), "tasks.sqlite3"), "")
+	if err := tm.InitializationError(); err != nil {
+		t.Fatal(err)
+	}
+	manager = tm
+	t.Cleanup(func() { _ = tm.Close() })
+	result := submitTaskRequest(t, `{"url":"`+short+`"}`)
+	if result.Code != http.StatusOK {
+		t.Fatalf("submit returned %d %s", result.Code, result.Body.String())
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		history, _ := tm.GetHistory(0, 1)
+		if len(history) == 1 {
+			// The fake configuration intentionally stops at the credential check.
+			if history[0].URL != short || requests.Load() != 1 || !strings.Contains(history[0].Error, "QQ音乐Api服务不可用") {
+				t.Fatalf("unexpected task outcome: %+v, share requests=%d", history[0], requests.Load())
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("QQ task did not reach history")
+}

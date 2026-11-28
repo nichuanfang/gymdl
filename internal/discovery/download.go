@@ -43,11 +43,27 @@ func Download(ctx context.Context, cfg *config.Config, store *musicdedupe.Store,
 	taskCfg := config.WithLiveTaskOverrides(cfg)
 	link, executor := linkparser.ParseLinkWithConfig(taskCfg, musicSourceURL(t))
 	p, ok := executor.(music.Processor)
-	if !ok || link == "" || !musicdedupe.IsSingleTrackLink(p.Name(), link) {
+	if !ok || link == "" {
 		return DownloadResult{}, fmt.Errorf("候选不是受支持的音乐单曲链接")
 	}
+	originalLink := link
+	qq, isQQ := p.(*music.QQMusicProcessor)
+	if isQQ {
+		qq.Init(taskCfg)
+		var err error
+		link, err = qq.ResolveShareURL(link)
+		if err != nil {
+			return DownloadResult{}, err
+		}
+	}
 	identity := musicdedupe.IdentityFromLink(p.Name(), link)
-	p.Init(taskCfg)
+	if identity.SourceURL == "" {
+		return DownloadResult{}, fmt.Errorf("候选不是受支持的音乐单曲链接")
+	}
+	identity.SourceURL = originalLink
+	if !isQQ {
+		p.Init(taskCfg)
+	}
 	result := DownloadResult{}
 	_, err := music.RunWorkflowWithHooks(ctx, p, link, nil, music.WorkflowHooks{Before: func() error {
 		if core.GlobalWebDAV != nil && core.GlobalWebDAV.Outbox != nil {
